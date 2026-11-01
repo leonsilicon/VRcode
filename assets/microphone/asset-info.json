@@ -1,0 +1,33 @@
+{
+  "triangles": 4988,
+  "mesh_objects": 5,
+  "materials": 5,
+  "dimensions_m": [
+    0.0565,
+    0.222,
+    0.0565
+  ],
+  "grip_origin_gltf_m": [
+    0,
+    0,
+    0
+  ],
+  "mouth_anchor_gltf_m": [
+    0,
+    0.144,
+    0
+  ],
+  "textures": [
+    {
+      "name": "MIC_Grille_BaseColor",
+      "width": 1024,
+      "height": 512
+    },
+    {
+      "name": "MIC_Grille_Normal",
+      "width": 1024,
+      "height": 512
+    }
+  ],
+  "glb_bytes": 239788
+}

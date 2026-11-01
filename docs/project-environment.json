@@ -1,0 +1,20 @@
+{
+  "inspected": "2026-11-01 (start-of-task snapshot)",
+  "snapshot_note": "Other work added the native Android app scaffolding during this task. The platform flags below record the environment inspector's initial result, before those files existed.",
+  "is_react_native": false,
+  "is_native_ios": false,
+  "is_native_android": false,
+  "project_type": "Planning repository with a native macOS Swift service under active development",
+  "platforms": ["macOS 26+", "Meta Quest (planned Kotlin + Meta Spatial SDK 0.14)"],
+  "build": "swift build --package-path mac",
+  "run": "swift run --package-path mac vrcode-mac",
+  "connection_tests": "bun test scripts/tests",
+  "isolation": "No Quest app source in this repository at inspection; the current headset app is in the external xmux checkout.",
+  "architecture": {
+    "terminal_state": "cmux session main on Mac",
+    "xmux_bridge": "../../leonsilicon/xmux; TLS, pairing and Bonjour _xmux._tcp; port 7272",
+    "vrcode_service": "mac/; separate framed TCP speech stream; port 7273; loopback by default",
+    "wireless_development": "scripts/quest-link.ts: Wi-Fi ADB with reverse tunnels for both ports"
+  },
+  "qa": "Argent lists Quest 3 as an authorized physical Android device. Prefer Argent for supported app interactions; networking setup uses adb because no equivalent Argent tool exists."
+}

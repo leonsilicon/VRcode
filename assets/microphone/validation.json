@@ -1,0 +1,55 @@
+{
+  "status": "passed",
+  "blender": "5.2.3 LTS",
+  "checks": [
+    "GLB header and length",
+    "One scene, only intended asset nodes",
+    "5 meshes / 5 primitives / 5 opaque backface-culled materials",
+    "4988 triangles",
+    "Embedded textures; no external URIs",
+    "Explicit normals, UVs, tangents",
+    "No glTF extensions required or used",
+    "Y-up mouth anchor and grip origin",
+    "Fresh Blender process re-import",
+    "Dimensions within 1 micrometer",
+    "Closed outward mesh surfaces after seam welding",
+    "Rendered actual re-imported GLB"
+  ],
+  "roundtrip_dimensions_blender_xyz_m": [
+    0.05649999901652336,
+    0.05649999901652336,
+    0.22199999541044235
+  ],
+  "mesh_health": [
+    {
+      "mesh": "MIC_Body",
+      "closed": true,
+      "outward_winding": true
+    },
+    {
+      "mesh": "MIC_Grille",
+      "closed": true,
+      "outward_winding": true
+    },
+    {
+      "mesh": "MIC_Indicator",
+      "closed": true,
+      "outward_winding": true
+    },
+    {
+      "mesh": "MIC_RubberParts",
+      "closed": true,
+      "outward_winding": true
+    },
+    {
+      "mesh": "MIC_Trim",
+      "closed": true,
+      "outward_winding": true
+    }
+  ],
+  "not_verified": [
+    "Quest runtime loading",
+    "Hand attachment",
+    "Gesture detection on headset"
+  ]
+}

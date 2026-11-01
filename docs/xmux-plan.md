@@ -117,7 +117,7 @@ Fixtures `packages/dev/improve/xmux/testing/fixtures/traces/*.xmtrace`: JSON lin
 
 Rust bridge:
 - Unit (`cargo test`, `insta` snapshots, `proptest`): run -> cell conversion (wide lead/tail, graphemes, attrs, underline, default colors) in `cells.rs`; dirty-row coalescing invariants in `coalesce.rs`; protobuf + LZ4 round trips with pinned wire-byte goldens in `xmux-proto`'s `framing.rs` tests; reconnect/snapshot-on-gap, generation bump, lease release, `client.sizing.set(false)` once per connection, against a scripted `FakeCmux` in `tests/reconnect.rs`.
-- Integration (`cargo test --features daemon`, one CI job on a macOS runner): start `npx cmux server start --session xmux-test`; attach -> first item is a snapshot; `input.write("echo hi\n")` shows up in a patch; `viewer.resize` changes metadata; a split shows up in `session.events` as a `split` node; release on disconnect. Each test owns a session name, 30 s timeout.
+- Integration (`cargo test --features daemon`, one CI job on a macOS runner): start `bunx --bun cmux server start --session xmux-test`; attach -> first item is a snapshot; `input.write("echo hi\n")` shows up in a patch; `viewer.resize` changes metadata; a split shows up in `session.events` as a `split` node; release on disconnect. Each test owns a session name, 30 s timeout.
 - Conformance: every trace replayed through the bridge, decoded, compared to `expected/*.grid.json`.
 
 Kotlin core (`xmux-core`, `xmux-client`, JVM unit tests with JUnit5/kotlin.test):
@@ -138,7 +138,7 @@ Thresholds (release build, 90 Hz, from today's measurements):
 | 32 windows, 4 active | alive 60 s, Stale <= 5/s, GPU <= 85% (today 78%) |
 | idle window (`static`) | zero `framesDrawnTotal` growth over 10 s |
 
-Regression tracking: `results/smoke/index.csv` (date, commit, scenario, N, fps, stale, LCnt, app_ms, gpu, hwui_p50, hwui_p99, draw_calls, rss); `vpx _quest-smoke-report.py` prints the delta vs the previous commit and fails on > 20% p99 or stale-frame regression; the VrApi line parser has its own unit test.
+Regression tracking: `results/smoke/index.csv` (date, commit, scenario, N, fps, stale, LCnt, app_ms, gpu, hwui_p50, hwui_p99, draw_calls, rss); `vpx _quest-smoke-report.ts` prints the delta vs the previous commit and fails on > 20% p99 or stale-frame regression; the VrApi line parser has its own unit test.
 
 ## Packaging, publishing, CI (facts verified 2026-10-30 by the packaging pass)
 
@@ -154,7 +154,7 @@ Rust bridge:
 - Distribution: cargo-dist 0.33 (`axodotdev/cargo-dist`, alive again) with `targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]`, shell installer, GitHub attestations. 0.x ships ad-hoc signed binaries (curl/Homebrew downloads carry no quarantine); Developer ID signing + `notarytool` lands at 1.0 through a custom publish job. Hand-maintained tap `leonsilicon/homebrew-xmux` with a `service do ... end` block so `brew services start xmux-bridge` works; `xmux-bridge service install` writes a user LaunchAgent (`~/Library/LaunchAgents/dev.xmux.bridge.plist`, per-user because the cmux socket is per-user); `serve` is the foreground entry point.
 
 GitHub Actions:
-- `rust.yml` (paths `packages/dev/improve/xmux/bridge/**`, `Cargo.*`, `packages/dev/improve/xmux/schema/**`): `macos-latest` for fmt, clippy `-D warnings`, `cargo test`, then the daemon integration job (`actions/setup-node`, `npx cmux@<pinned> server start --session ci`, wait for the socket, `cargo test -p xmux-bridge --features daemon`, stop). `ubuntu-latest` only for `cargo check -p xmux-proto`.
+- `rust.yml` (paths `packages/dev/improve/xmux/bridge/**`, `Cargo.*`, `packages/dev/improve/xmux/schema/**`): `macos-latest` for fmt, clippy `-D warnings`, `cargo test`, then the daemon integration job (`oven-sh/setup-bun`, `bunx --bun cmux@<pinned> server start --session ci`, wait for the socket, `cargo test -p xmux-bridge --features daemon`, stop). `ubuntu-latest` only for `cargo check -p xmux-proto`.
 - `android.yml`: `ubuntu-latest`, JDK 17, `gradle/actions/setup-gradle`: assemble release AARs + app, `testReleaseUnitTest`, `lint`, `apiCheck`; optional emulator job with `reactivecircus/android-emulator-runner@v2` (API 34, x86_64, KVM) running `:xmux-core:connectedDebugAndroidTest` only (Spatial code cannot run on x86_64).
 - `release-android.yml` on `v*` tags: `publishToMavenCentral`, `dokkaGenerate` + Pages deploy. `release.yml`: dist-generated plan/build/host/announce plus the tap bump; `dist generate --check` in `rust.yml` keeps them in sync.
 
@@ -179,7 +179,7 @@ Horizon Store (standalone app): App Lab is gone, everything is the Meta Horizon 
 
 ## Verification
 
-- `cargo test` and `cargo test --features daemon` at the repo root (the latter with a local `npx cmux server start --session dev`).
+- `cargo test` and `cargo test --features daemon` at the repo root (the latter with a local `bunx --bun cmux server start --session dev`).
 - `./gradlew test apiCheck lint` at the repo root; `./gradlew :xmux-core:pixel6Api34DebugAndroidTest` for goldens.
 - `preview` on the emulator with `--es scenario split2panes` (argent screenshot), then with the live bridge over Wi-Fi.
 - `vpx _quest-stress` for 1/16/32 windows on the Quest (Wi-Fi adb at `10.10.90.253:5555` while on the cafe network), results in `results/smoke/`.
@@ -198,7 +198,7 @@ Horizon Store (standalone app): App Lab is gone, everything is the Meta Horizon 
 - cmux-tui hierarchy: session -> workspaces -> screens -> split tree -> panes -> tabs -> terminals. A screen owns one binary split tree (`split` with direction+ratio, `leaf` pane with tabs, `stack`, `viewport`). Closing tabs/panes/screens detaches views; only `terminal.close` ends a terminal.
 - Public API `cmux.protocol/2` over Unix socket (JSON lines) or WebSocket: `session.events` (typed snapshot + ordered deltas; screen snapshots carry their complete `LayoutDocument`), `terminal.attach(cols,rows,read_only)` -> `attachment_lease`, stream items `RenderSnapshot`/`RenderPatch` (rows of runs: text, resolved fg/bg, attrs, underline style, width hints; cursor; `full_reset`), `terminal.input.write/keys/mouse` (idempotent), `terminal.viewer.resize(lease,cols,rows)`, `terminal.viewer.release`, `client.sizing.set(enabled,exclusive)`, `pane.focus_direction{left,right,up,down}`, `pane.neighbor.get`.
 - Official SDKs: C++20 (no third-party deps, `cmux::Client::connect()` discovers the socket), Rust, TypeScript, Python, Go, Java, Zig. The raw protocol v12 render mode used by the old repo adapter is private.
-- Daemon available via npm (`npx cmux server start --session <name>`).
+- Daemon available via npm (`bunx --bun cmux server start --session <name>`).
 
 **Quest 3 (device queried 2026-10-29; Khronos OpenXR inventory 2026-10-08)**
 - Android 14, OpenGL ES 3.2, Adreno Vulkan, 4 KB pages. Compositor layer cap 16.

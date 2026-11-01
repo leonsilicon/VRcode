@@ -1,0 +1,11 @@
+.gradle/
+.kotlin/
+.build/
+.cxx/
+**/build/
+local.properties
+.DS_Store
+/artifacts/
+.argent/artifacts/
+
+mac/.build/

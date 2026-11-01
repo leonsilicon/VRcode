@@ -1,0 +1,91 @@
+package dev.improve.vrcode.speech
+
+import android.annotation.SuppressLint
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import kotlin.math.sqrt
+
+/**
+ * 16 kHz mono 16-bit microphone capture in 50 ms chunks. [onChunk] runs on the capture thread with
+ * the PCM bytes and an RMS level in 0..1.
+ */
+class MicCapture(private val onChunk: (pcm: ByteArray, level: Float) -> Unit) {
+  private var record: AudioRecord? = null
+  private var thread: Thread? = null
+
+  @Volatile private var running = false
+
+  /** Starts capturing; returns an error message instead when the microphone cannot be opened. */
+  @SuppressLint("MissingPermission") // the activity checks RECORD_AUDIO before voice mode starts
+  fun start(): String? {
+    if (running) return null
+    val minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+    if (minBuffer <= 0) return "microphone unavailable"
+    val r =
+      try {
+        AudioRecord(
+          MediaRecorder.AudioSource.VOICE_RECOGNITION,
+          SAMPLE_RATE,
+          AudioFormat.CHANNEL_IN_MONO,
+          AudioFormat.ENCODING_PCM_16BIT,
+          maxOf(minBuffer, CHUNK_BYTES * 4),
+        )
+      } catch (e: RuntimeException) {
+        return "microphone unavailable: ${e.message}"
+      }
+    if (r.state != AudioRecord.STATE_INITIALIZED) {
+      r.release()
+      return "microphone unavailable"
+    }
+    r.startRecording()
+    record = r
+    running = true
+    thread =
+      Thread({
+        val buffer = ByteArray(CHUNK_BYTES)
+        // An uncaught exception on this raw thread would terminate the whole headset app.
+        try {
+          while (running) {
+            val n = r.read(buffer, 0, buffer.size)
+            if (n > 0) runCatching { onChunk(buffer.copyOf(n), rms(buffer, n)) }
+              .onFailure { android.util.Log.e("vrcode-mic", "Dropped a microphone chunk", it) }
+          }
+        } catch (error: Exception) {
+          // read() throws once the recorder is released under a slow join in stop().
+          if (running) android.util.Log.e("vrcode-mic", "Microphone capture stopped", error)
+        }
+      }, "vrcode-mic").apply { start() }
+    return null
+  }
+
+  fun stop() {
+    if (!running) return
+    running = false
+    thread?.join(500)
+    thread = null
+    record?.let {
+      runCatching { it.stop() }
+      it.release()
+    }
+    record = null
+  }
+
+  private fun rms(pcm: ByteArray, length: Int): Float {
+    var sum = 0.0
+    var i = 0
+    while (i + 1 < length) {
+      val s = ((pcm[i + 1].toInt() shl 8) or (pcm[i].toInt() and 0xFF)).toShort().toDouble()
+      sum += s * s
+      i += 2
+    }
+    val samples = length / 2
+    if (samples == 0) return 0f
+    return (sqrt(sum / samples) / 8000.0).toFloat().coerceIn(0f, 1f)
+  }
+
+  companion object {
+    const val SAMPLE_RATE = 16000
+    const val CHUNK_BYTES = SAMPLE_RATE / 20 * 2 // 50 ms
+  }
+}

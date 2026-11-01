@@ -1,0 +1,212 @@
+diff --git a/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api b/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
+index 5aaafd5..9bc445f 100644
+--- a/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
++++ b/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
+@@ -186,6 +186,7 @@ public final class dev/improve/xmux/spatial/XmuxSpatial {
+ 	public final fun onSceneTick ()V
+ 	public final fun registerFeatures ()Ljava/util/List;
+ 	public final fun registerPanels ()Ljava/util/List;
++	public final fun setFontSize (F)V
+ 	public final fun unmount (Ldev/improve/xmux/spatial/ScreenWindow;)V
+ }
+ 
+diff --git a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt
+index 908c886..08ca653 100644
+--- a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt
++++ b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt
+@@ -25,7 +25,7 @@ import dev.improve.xmux.window.frame.TerminalWindowState
+ internal class ScreenBinding(
+   val session: XmuxSession,
+   val screen: ScreenId,
+-  private val font: TerminalFont,
++  var font: TerminalFont,
+   private val terminals: TerminalRefs,
+   private val onFocus: () -> Unit,
+ ) : ScreenView.Listener {
+diff --git a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
+index 0d77fa5..7e8c863 100644
+--- a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
++++ b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
+@@ -128,10 +128,12 @@ public class XmuxSpatial(
+   private val activity: AppSystemActivity,
+   public val config: SpatialConfig = SpatialConfig(),
+ ) {
+-  public val font: TerminalFont by lazy { TerminalFont(activity, config.fontPx) }
++  private val defaultFont: TerminalFont by lazy { TerminalFont(activity, config.fontPx) }
++  private var displayFont: TerminalFont? = null
++  public val font: TerminalFont get() = displayFont ?: defaultFont
+   /** Panel size of a grid window ([SpatialConfig.cols] x [SpatialConfig.rows]). */
+   public val spec: PanelSpec by lazy {
+-    PanelSpec.of(font, config.cols, config.rows, config.paddingPx, WindowChrome.Default.headerHeightDp, config.windowWidthM)
++    PanelSpec.of(defaultFont, config.cols, config.rows, config.paddingPx, WindowChrome.Default.headerHeightDp, config.windowWidthM)
+   }
+ 
+   /** Physical size of one panel pixel, so every window shares one text size. */
+@@ -147,6 +149,18 @@ public class XmuxSpatial(
+ 
+   public val windows: List<ScreenWindow> get() = mounted
+ 
++  /** Changes local text size, keeping sessions and window poses. Call on the main thread. */
++  public fun setFontSize(sizePx: Float) {
++    require(sizePx.isFinite() && sizePx > 0f) { "Font size must be positive and finite" }
++    if (font.paint.textSize == sizePx) return
++    displayFont = TerminalFont(activity, sizePx)
++    for (window in mounted.toList()) {
++      window.binding?.let { it.font = font; it.tick() }
++      if (window.entity != null) respawn(window)
++      else window.spec = windowSpec(window)
++    }
++  }
++
+   /** The window that last got a tap; keyboard input goes to its focused pane. */
+   public var focused: ScreenWindow? = null
+     private set
+@@ -194,7 +208,8 @@ public class XmuxSpatial(
+   public fun mount(content: WindowContent, placement: Placement = Placement.InFrontOfHead): ScreenWindow {
+     val index = mounted.size
+     val header = content.chrome.headerHeightDp
+-    val windowSpec = if (header == WindowChrome.Default.headerHeightDp) spec else PanelSpec.of(font, config.cols, config.rows, config.paddingPx, header, config.windowWidthM)
++    val pixels = PanelSpec.of(font, config.cols, config.rows, config.paddingPx, header, config.windowWidthM)
++    val windowSpec = PanelSpec(pixels.widthPx, pixels.heightPx, pixels.widthPx * metresPerPx)
+     val window = ScreenWindow(index, content, null, index < config.maxLayers, null, windowSpec, content.chrome)
+     window.pending = placement
+     mounted.add(window)
+@@ -328,12 +343,20 @@ public class XmuxSpatial(
+     window.entity?.destroy()
+     window.entity = null
+     window.screenView = null
++    window.view = null
+     window.binding?.view = null
+-    window.spec = specFor(window.binding!!, window.chrome)
++    window.spec = windowSpec(window)
+     spawn(window)
+     if (pose != null) window.setPose(pose)
+   }
+ 
++  private fun windowSpec(window: ScreenWindow): PanelSpec {
++    window.binding?.let { return specFor(it, window.chrome) }
++    val grid = window.content!!.grid
++    val pixels = PanelSpec.of(font, grid.cols, grid.rows, config.paddingPx, window.chrome.headerHeightDp, config.windowWidthM)
++    return PanelSpec(pixels.widthPx, pixels.heightPx, pixels.widthPx * metresPerPx)
++  }
++
+   private fun spawn(window: ScreenWindow) {
+     val registrationId = nextRegistration++
+     activity.registerPanel(registration(registrationId, window))
+diff --git a/packages/dev/improve/xmux/components/terminal-grid/api/xmux-terminal-grid.api b/packages/dev/improve/xmux/components/terminal-grid/api/xmux-terminal-grid.api
+index 84628fe..33f96ec 100644
+--- a/packages/dev/improve/xmux/components/terminal-grid/api/xmux-terminal-grid.api
++++ b/packages/dev/improve/xmux/components/terminal-grid/api/xmux-terminal-grid.api
+@@ -1,6 +1,26 @@
++public final class dev/improve/xmux/terminal/grid/GridAppearance {
++	public fun <init> ()V
++	public fun <init> (Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ldev/improve/xmux/cell/grid/CursorShape;)V
++	public synthetic fun <init> (Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ldev/improve/xmux/cell/grid/CursorShape;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
++	public final fun component1 ()Ljava/lang/Integer;
++	public final fun component2 ()Ljava/lang/Integer;
++	public final fun component3 ()Ljava/lang/Integer;
++	public final fun component4 ()Ldev/improve/xmux/cell/grid/CursorShape;
++	public final fun copy (Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ldev/improve/xmux/cell/grid/CursorShape;)Ldev/improve/xmux/terminal/grid/GridAppearance;
++	public static synthetic fun copy$default (Ldev/improve/xmux/terminal/grid/GridAppearance;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ldev/improve/xmux/cell/grid/CursorShape;ILjava/lang/Object;)Ldev/improve/xmux/terminal/grid/GridAppearance;
++	public fun equals (Ljava/lang/Object;)Z
++	public final fun getBackground ()Ljava/lang/Integer;
++	public final fun getCursorColor ()Ljava/lang/Integer;
++	public final fun getCursorShape ()Ldev/improve/xmux/cell/grid/CursorShape;
++	public final fun getForeground ()Ljava/lang/Integer;
++	public fun hashCode ()I
++	public fun toString ()Ljava/lang/String;
++}
++
+ public final class dev/improve/xmux/terminal/grid/TerminalGridView : android/view/View {
+ 	public fun <init> (Landroid/content/Context;Ldev/improve/xmux/cell/grid/CellGrid;Ldev/improve/xmux/terminal/font/TerminalFont;)V
+ 	public final fun cellAt (FF)Lkotlin/Pair;
++	public final fun getAppearance ()Ldev/improve/xmux/terminal/grid/GridAppearance;
+ 	public final fun getBodyColor ()I
+ 	public final fun getContentHeight ()I
+ 	public final fun getContentWidth ()I
+@@ -11,6 +31,7 @@ public final class dev/improve/xmux/terminal/grid/TerminalGridView : android/vie
+ 	public final fun getLastDrawCalls ()I
+ 	public final fun getPaddingPx ()F
+ 	public final fun refreshIfDirty ()V
++	public final fun setAppearance (Ldev/improve/xmux/terminal/grid/GridAppearance;)V
+ 	public final fun setBodyColor (I)V
+ 	public final fun setCursorColor (I)V
+ 	public final fun setGrid (Ldev/improve/xmux/cell/grid/CellGrid;)V
+diff --git a/packages/dev/improve/xmux/components/terminal-grid/src/main/kotlin/dev/improve/xmux/terminal/grid/TerminalGridView.kt b/packages/dev/improve/xmux/components/terminal-grid/src/main/kotlin/dev/improve/xmux/terminal/grid/TerminalGridView.kt
+index 72a0be0..486585c 100644
+--- a/packages/dev/improve/xmux/components/terminal-grid/src/main/kotlin/dev/improve/xmux/terminal/grid/TerminalGridView.kt
++++ b/packages/dev/improve/xmux/components/terminal-grid/src/main/kotlin/dev/improve/xmux/terminal/grid/TerminalGridView.kt
+@@ -13,6 +13,14 @@ import dev.improve.xmux.terminal.font.TerminalFont
+ import kotlin.math.ceil
+ import kotlin.math.floor
+ 
++/** Local display overrides. Null values follow the terminal; the streamed grid is never changed. */
++public data class GridAppearance(
++  public val foreground: Int? = null,
++  public val background: Int? = null,
++  public val cursorColor: Int? = null,
++  public val cursorShape: CursorShape? = null,
++)
++
+ /**
+  * Draws a [CellGrid] with `Canvas.drawGlyphs`.
+  *
+@@ -38,6 +46,12 @@ public class TerminalGridView(context: Context, grid: CellGrid, public val font:
+   /** Color behind cells with the default (transparent) background; used for inverse video. */
+   public var bodyColor: Int = 0xFF1E1E1E.toInt()
+   public var cursorColor: Int = 0xFFD4D4D4.toInt()
++  public var appearance: GridAppearance = GridAppearance()
++    set(value) {
++      if (field == value) return
++      field = value
++      invalidate()
++    }
+ 
+   private val textPaint = Paint(font.paint)
+   private val fillPaint = Paint()
+@@ -98,7 +112,9 @@ public class TerminalGridView(context: Context, grid: CellGrid, public val font:
+ 
+   /** What shows behind cells with the default background. */
+   private val background: Int
+-    get() = if (grid.defaultBg != CellGrid.DEFAULT_BG) grid.defaultBg else bodyColor
++    get() = appearance.background ?: if (grid.defaultBg != CellGrid.DEFAULT_BG) grid.defaultBg else bodyColor
++
++  private val foreground: Int get() = appearance.foreground ?: grid.defaultFg
+ 
+   override fun onDraw(canvas: Canvas) {
+     val ch = font.cellHeight
+@@ -107,9 +123,9 @@ public class TerminalGridView(context: Context, grid: CellGrid, public val font:
+     val last = ceil((clip.bottom - paddingPx) / ch).toInt().coerceIn(0, grid.rows - 1)
+     var calls = 0
+     for (b in batches) b.n = 0
+-    if (grid.defaultBg != CellGrid.DEFAULT_BG) {
++    if (appearance.background != null || grid.defaultBg != CellGrid.DEFAULT_BG) {
+       // The terminal has its own background (the Mac's theme): paint the whole grid with it.
+-      fillPaint.color = grid.defaultBg
++      fillPaint.color = background
+       canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), fillPaint)
+       calls++
+     }
+@@ -128,9 +144,9 @@ public class TerminalGridView(context: Context, grid: CellGrid, public val font:
+     drawnFrames++
+   }
+ 
+-  private fun fgAt(i: Int): Int = CellStyle.effectiveFg(grid.fg[i], grid.bg[i], grid.attrs[i], grid.defaultFg, background)
++  private fun fgAt(i: Int): Int = CellStyle.effectiveFg(grid.fg[i], grid.bg[i], grid.attrs[i], foreground, background)
+ 
+-  private fun bgAt(i: Int): Int = CellStyle.effectiveBg(grid.fg[i], grid.bg[i], grid.attrs[i], grid.defaultFg)
++  private fun bgAt(i: Int): Int = CellStyle.effectiveBg(grid.fg[i], grid.bg[i], grid.attrs[i], foreground)
+ 
+   private fun applyStyle(color: Int, style: Int) {
+     textPaint.color = color
+@@ -240,8 +256,8 @@ public class TerminalGridView(context: Context, grid: CellGrid, public val font:
+     val ch = font.cellHeight
+     val top = paddingPx + grid.cursorRow * ch
+     val x = paddingPx + grid.cursorCol * cw
+-    fillPaint.color = cursorColor
+-    when (grid.cursorShape) {
++    fillPaint.color = appearance.cursorColor ?: cursorColor
++    when (appearance.cursorShape ?: grid.cursorShape) {
+       CursorShape.Underline -> {
+         canvas.drawRect(x, top + ch - 3f, x + cw, top + ch, fillPaint)
+         return 1

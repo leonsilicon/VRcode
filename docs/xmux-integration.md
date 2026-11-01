@@ -70,18 +70,52 @@ example with the connect panel, pairing and a demo window. API for vrcode's inpu
   for xmux windows: on the Quest it passed through a screen window and hit the panel behind it.
 - `xmux.focus(hit.window, hit.pane)`: lock the target and keep hardware-keyboard routing in step.
 - `session.terminal(id).write(text)` then `.keys(Key("enter"))`; Escape is `Key("escape")`.
-- `session.focusDirection(screenId, Direction.Left)` for thumb swipes between panes.
 - `xmux.follow(session, chrome = { screen -> WindowChrome(trailingSlot = { ... }) })` for the mic
   glyph; the slot reads Compose state, so flipping a `mutableStateOf` updates the header.
 
 ## Running it
 
+VRcode's [background cmux controls](cmux-control.md) now cover the full pinned public operation
+catalog through the Mac service, including pane/tab/workspace operations beyond xmux's input and
+focus protocol. Open Actions on the Quest; these controls address the daemon directly without
+focusing a Mac application. The [interaction inventory](cmux-interactions.md) records all native
+keyboard/menu actions and the frontend/provider boundaries.
+
+- The app's Connection settings now defaults to Automatic, using the secure Mac relay for
+  both xmux and the vrcode service. It also offers explicit network, USB, Wi-Fi ADB and native
+  Bluetooth carriers. See [connection setup](local-wireless.md) for pairing and platform setup.
+- Wi-Fi ADB fallback: run `bun scripts/quest-link.ts wifi`, then choose Wi-Fi debugging on the
+  Quest. Its dedicated endpoint is `127.0.0.1:27274`, forwarded to Mac relay port 7274. The older
+  7272/7273 forwards remain available for legacy debug clients.
 - Bridge from source: `cd ../../leonsilicon/xmux && vpr bridge:serve` (cmux session `main`, port
   7272); approve the headset with `cargo run -q -p xmux-bridged -- pair <code>`.
 - Venue Wi-Fi that isolates clients: plug the Quest into the Mac, `adb reverse tcp:7272 tcp:7272`, and
   connect to `127.0.0.1:7272` (verified on an emulator; pairing survives the address change).
 - No cmux at hand (or as a demo fallback): `xmux-bridge serve --replay
   packages/dev/improve/xmux/testing/fixtures/traces/split2panes.xmtrace --loop`.
+
+## Window appearance (2026-11-01)
+
+Settings → Appearance → Window style offers macOS traffic lights or Windows controls on the right.
+The choice saves automatically and updates already mounted terminals through Compose state;
+the terminal body, panel dimensions, loading state, header slots and control callbacks stay intact.
+
+This uses the `WindowChrome.header` customization hook and public `WindowHeader` default renderer
+added to the local xmux checkout. For an older xmux checkout, apply the corresponding patch once
+from the vrcode root before building:
+
+```sh
+git -C ../../leonsilicon/xmux apply "$(pwd)/patches/xmux-custom-header.patch"
+```
+
+The settings and header renderers live in `settings-ui`, which can run its Compose instrumentation
+tests without the Quest runtime. Existing control actions are preserved: a control with no callback
+is decorative/disabled, just as the original traffic lights were.
+
+Terminal color themes, text size, and cursor controls are also available on Appearance. They use
+the additional `patches/xmux-terminal-appearance.patch` for render-only color overrides and local
+font sizing. See [terminal appearance](terminal-appearance.md) for patch setup, bundled theme
+sources, behavior, and verification.
 
 ## Notes for the day
 

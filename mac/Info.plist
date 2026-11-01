@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>dev.improve.vrcode.mac</string>
+  <key>CFBundleName</key><string>vrcode Mac</string>
+  <key>CFBundleExecutable</key><string>vrcode-mac</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSBluetoothAlwaysUsageDescription</key><string>Connect your Quest to this Mac using Bluetooth when Wi-Fi is unavailable.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Connect your Quest to the local terminal and speech services.</string>
+  <key>NSBonjourServices</key><array><string>_vrcode._tcp</string></array>
+</dict></plist>

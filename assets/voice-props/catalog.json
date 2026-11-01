@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "units": "meters",
+  "up": "+Y",
+  "status": "app picker integrated; headset QA pending",
+  "variants": [
+    {
+      "id": "microphone",
+      "label": "The Classic",
+      "file": "../microphone/microphone.glb",
+      "gripNode": "MIC_Grip",
+      "speechAnchorNode": "MIC_MouthAnchor",
+      "speechAnchorM": [
+        0,
+        0.144,
+        0
+      ],
+      "dimensionsM": [
+        0.0565,
+        0.222,
+        0.0565
+      ],
+      "triangles": 4988,
+      "materials": 5,
+      "bytes": 239788,
+      "license": "original vrcode asset",
+      "author": "vrcode",
+      "source": "../microphone/README.md",
+      "indicator": "MIC_ListeningIndicator",
+      "handFit": "headset calibration pending"
+    },
+    {
+      "id": "news-microphone",
+      "label": "News microphone",
+      "file": "news-microphone.glb",
+      "gripNode": "PROP_Grip_news_microphone",
+      "speechAnchorNode": "PROP_SpeechAnchor_news_microphone",
+      "speechAnchorM": [
+        0,
+        0.205,
+        0
+      ],
+      "dimensionsM": [
+        0.0623,
+        0.28,
+        0.062
+      ],
+      "triangles": 6800,
+      "materials": 5,
+      "bytes": 320908,
+      "license": "original vrcode asset",
+      "author": "vrcode",
+      "source": "README.md",
+      "indicator": "shared app UI; no built-in emissive indicator",
+      "handFit": "headset calibration pending"
+    },
+    {
+      "id": "megaphone",
+      "label": "The Announcer",
+      "file": "megaphone.glb",
+      "gripNode": "PROP_Grip_megaphone",
+      "speechAnchorNode": "PROP_SpeechAnchor_megaphone",
+      "speechAnchorM": [
+        -2.8726963030578645e-9,
+        0.10046793520450592,
+        0.06571963429450989
+      ],
+      "dimensionsM": [
+        0.17257336527109146,
+        0.22667835652828217,
+        0.2800000011920929
+      ],
+      "triangles": 15814,
+      "materials": 1,
+      "bytes": 4284996,
+      "license": "CC0-1.0",
+      "author": "Ethan Simon-Law",
+      "source": "https://polyhaven.com/a/Megaphone_01",
+      "indicator": "shared app UI; no built-in emissive indicator",
+      "handFit": "initial grip placement; headset calibration pending"
+    },
+    {
+      "id": "banana",
+      "label": "Banana Phone",
+      "file": "banana.glb",
+      "gripNode": "PROP_Grip_banana",
+      "speechAnchorNode": "PROP_SpeechAnchor_banana",
+      "speechAnchorM": [
+        0.008471732959151268,
+        0.12707597017288208,
+        -9.593969174659378e-9
+      ],
+      "dimensionsM": [
+        0.10493867471814156,
+        0.19999999552965164,
+        0.04590143635869026
+      ],
+      "triangles": 5016,
+      "materials": 1,
+      "bytes": 4236560,
+      "license": "CC0-1.0",
+      "author": "Alexander Shulha",
+      "source": "https://polyhaven.com/a/bananas",
+      "indicator": "shared app UI; no built-in emissive indicator",
+      "handFit": "initial grip placement; headset calibration pending"
+    }
+  ]
+}

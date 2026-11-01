@@ -1,0 +1,16 @@
+{
+  "name": "vrcode-tooling",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.4",
+  "scripts": {
+    "test": "bun run check:scripts && bun test scripts/tests",
+    "check:scripts": "bun scripts/check-scripts.ts",
+    "quest-link": "bun scripts/quest-link.ts",
+    "mac:run": "bun scripts/run-mac-service.ts",
+    "check:relay:android": "bun scripts/check-relay-android.ts",
+    "cmux:sync": "bun scripts/sync-cmux-catalog.ts",
+    "assets:validate": "bun scripts/validate-assets.ts",
+    "assets:preview": "bun scripts/render-assets.ts"
+  }
+}

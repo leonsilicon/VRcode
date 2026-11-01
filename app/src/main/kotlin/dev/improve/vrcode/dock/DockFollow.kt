@@ -1,0 +1,69 @@
+package dev.improve.vrcode.dock
+
+import com.meta.spatial.core.Pose
+import com.meta.spatial.core.Vector3
+import kotlin.math.abs
+import kotlin.math.exp
+
+/**
+ * Lazy follow, so the dock does not feel welded to the face. It stays put while the head turns
+ * less than [yawDeadZoneDeg] or moves less than [moveDeadZoneM] from where the dock last settled.
+ * Beyond that it eases toward [DockPlacement.pose] with an exponential time constant of
+ * [timeConstantS] until it catches up, then rests again. It appears in place without animating,
+ * and snaps after a recenter or teleport.
+ */
+internal class DockFollow(
+  private val yawDeadZoneDeg: Float = 14f,
+  private val moveDeadZoneM: Float = 0.10f,
+  private val timeConstantS: Float = 0.45f,
+) {
+  private var eye: Vector3? = null
+  private var yawDeg = 0f
+  private var settling = false
+
+  /** The dock's current pose, or null until the first update after [reset]. */
+  var pose: Pose? = null
+    private set
+
+  fun update(head: Pose, dtS: Float): Pose {
+    val targetYaw = DockPlacement.yawDegrees(head)
+    val current = eye
+    if (current == null || (head.t - current).length() > SNAP_M) {
+      eye = head.t
+      yawDeg = targetYaw
+      settling = false
+    } else {
+      val yawError = wrap(targetYaw - yawDeg)
+      val moveError = (head.t - current).length()
+      if (abs(yawError) > yawDeadZoneDeg || moveError > moveDeadZoneM) settling = true
+      if (settling) {
+        val step = 1f - exp(-dtS.coerceIn(0f, MAX_STEP_S) / timeConstantS)
+        yawDeg = wrap(yawDeg + yawError * step)
+        eye = current + (head.t - current) * step
+        if (abs(yawError) * (1f - step) < SETTLED_DEG && moveError * (1f - step) < SETTLED_M) settling = false
+      }
+    }
+    return DockPlacement.poseAt(eye ?: head.t, yawDeg).also { pose = it }
+  }
+
+  fun reset() {
+    eye = null
+    settling = false
+    pose = null
+  }
+
+  private fun wrap(degrees: Float): Float {
+    var d = degrees % 360f
+    if (d > 180f) d -= 360f
+    if (d < -180f) d += 360f
+    return d
+  }
+
+  private companion object {
+    const val SNAP_M = 1.5f
+    /** A stalled frame must not jump the dock across the view. */
+    const val MAX_STEP_S = 0.1f
+    const val SETTLED_DEG = 0.5f
+    const val SETTLED_M = 0.005f
+  }
+}

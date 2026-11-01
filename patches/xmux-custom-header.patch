@@ -1,0 +1,71 @@
+diff --git a/packages/dev/improve/xmux/components/window-frame/README.md b/packages/dev/improve/xmux/components/window-frame/README.md
+index ef09808..41beb08 100644
+--- a/packages/dev/improve/xmux/components/window-frame/README.md
++++ b/packages/dev/improve/xmux/components/window-frame/README.md
+@@ -3,3 +3,9 @@
+ Compose window chrome, title/loading state, and a frame around an Android body view.
+ 
+ Gradle module `:xmux-window-frame`; artifact `dev.improve.xmux:xmux-window-frame`.
++
++`WindowChrome.header` optionally replaces the header with app-owned Compose content. It receives
++the live `TerminalWindowState` and the chrome configuration; read Compose state inside this lambda
++to change an existing window's appearance without recreating its terminal view. Keep the custom
++header at `chrome.headerHeightDp` so the spatial panel's sizing and hit testing stay aligned.
++Call `WindowHeader(state, chrome)` to render the default traffic-light header.
+diff --git a/packages/dev/improve/xmux/components/window-frame/api/xmux-window-frame.api b/packages/dev/improve/xmux/components/window-frame/api/xmux-window-frame.api
+index 6e77145..2a1a372 100644
+--- a/packages/dev/improve/xmux/components/window-frame/api/xmux-window-frame.api
++++ b/packages/dev/improve/xmux/components/window-frame/api/xmux-window-frame.api
+@@ -18,10 +18,11 @@ public final class dev/improve/xmux/window/frame/WindowChrome {
+ 	public static final field $stable I
+ 	public static final field Companion Ldev/improve/xmux/window/frame/WindowChrome$Companion;
+ 	public fun <init> ()V
+-	public fun <init> (IIJJJLkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;)V
+-	public synthetic fun <init> (IIJJJLkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
++	public fun <init> (IIJJJLkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function4;)V
++	public synthetic fun <init> (IIJJJLkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function4;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+ 	public final fun getBodyColor ()J
+ 	public final fun getCornerRadiusDp ()I
++	public final fun getHeader ()Lkotlin/jvm/functions/Function4;
+ 	public final fun getHeaderColor ()J
+ 	public final fun getHeaderHeightDp ()I
+ 	public final fun getLeadingSlot ()Lkotlin/jvm/functions/Function2;
+@@ -38,5 +39,6 @@ public final class dev/improve/xmux/window/frame/WindowChrome$Companion {
+ 
+ public final class dev/improve/xmux/window/frame/WindowFrameKt {
+ 	public static final fun WindowFrame (Ldev/improve/xmux/window/frame/TerminalWindowState;Landroidx/compose/ui/Modifier;Ldev/improve/xmux/window/frame/WindowChrome;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Landroidx/compose/runtime/Composer;II)V
++	public static final fun WindowHeader (Ldev/improve/xmux/window/frame/TerminalWindowState;Ldev/improve/xmux/window/frame/WindowChrome;Landroidx/compose/runtime/Composer;II)V
+ }
+ 
+diff --git a/packages/dev/improve/xmux/components/window-frame/src/main/kotlin/dev/improve/xmux/window/frame/WindowFrame.kt b/packages/dev/improve/xmux/components/window-frame/src/main/kotlin/dev/improve/xmux/window/frame/WindowFrame.kt
+index deec84d..9cde2cb 100644
+--- a/packages/dev/improve/xmux/components/window-frame/src/main/kotlin/dev/improve/xmux/window/frame/WindowFrame.kt
++++ b/packages/dev/improve/xmux/components/window-frame/src/main/kotlin/dev/improve/xmux/window/frame/WindowFrame.kt
+@@ -56,6 +56,8 @@ public class WindowChrome(
+   public val leadingSlot: @Composable () -> Unit = {},
+   /** Drawn at the right end, before the loading spinner. */
+   public val trailingSlot: @Composable () -> Unit = {},
++  /** Optional app-owned header. Keep its height at [headerHeightDp] for panel hit testing. */
++  public val header: (@Composable (TerminalWindowState, WindowChrome) -> Unit)? = null,
+ ) {
+   public companion object {
+     public val Default: WindowChrome = WindowChrome()
+@@ -78,7 +80,8 @@ public fun WindowFrame(
+       .background(Color(chrome.bodyColor))
+       .border(1.dp, Color(0x40FFFFFF), shape),
+   ) {
+-    HeaderBar(state, chrome)
++    val header = chrome.header
++    if (header == null) WindowHeader(state, chrome) else header(state, chrome)
+     Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF3A3A3A)))
+     AndroidView(
+       factory = { ctx -> body(ctx).also(onViewCreated) },
+@@ -88,7 +91,7 @@ public fun WindowFrame(
+ }
+ 
+ @Composable
+-private fun HeaderBar(state: TerminalWindowState, chrome: WindowChrome) {
++public fun WindowHeader(state: TerminalWindowState, chrome: WindowChrome = WindowChrome.Default) {
+   Box(
+     Modifier
+       .fillMaxWidth()

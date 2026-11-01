@@ -1,0 +1,87 @@
+{
+  "status": "passed",
+  "runtime": "Bun 1.4.4",
+  "variants": [
+    {
+      "id": "microphone",
+      "status": "passed",
+      "bytes": 239788,
+      "triangles": 4988,
+      "primitives": 5,
+      "alphaModes": [
+        "OPAQUE",
+        "OPAQUE",
+        "OPAQUE",
+        "OPAQUE",
+        "OPAQUE"
+      ],
+      "dimensionsM": [
+        0.05649999901652336,
+        0.22199999541044235,
+        0.05649999901652336
+      ]
+    },
+    {
+      "id": "news-microphone",
+      "status": "passed",
+      "bytes": 320908,
+      "triangles": 6800,
+      "primitives": 10,
+      "alphaModes": [
+        "OPAQUE",
+        "OPAQUE",
+        "OPAQUE",
+        "OPAQUE",
+        "OPAQUE"
+      ],
+      "dimensionsM": [
+        0.062300000339746475,
+        0.2800000011920929,
+        0.06199999898672104
+      ]
+    },
+    {
+      "id": "megaphone",
+      "status": "passed",
+      "bytes": 4284996,
+      "triangles": 15814,
+      "primitives": 1,
+      "alphaModes": [
+        "OPAQUE"
+      ],
+      "dimensionsM": [
+        0.17257336527109146,
+        0.22667835652828217,
+        0.2800000011920929
+      ]
+    },
+    {
+      "id": "banana",
+      "status": "passed",
+      "bytes": 4236560,
+      "triangles": 5016,
+      "primitives": 1,
+      "alphaModes": [
+        "OPAQUE"
+      ],
+      "dimensionsM": [
+        0.10493867471814156,
+        0.19999999552965164,
+        0.04590143635869026
+      ]
+    }
+  ],
+  "checks": [
+    "GLB structure and embedded buffers/textures",
+    "Triangle and material counts",
+    "Normals, UVs and tangents",
+    "Grip origin and speech anchors",
+    "Dimensions from actual transformed vertices",
+    "Source alpha modes"
+  ],
+  "notVerified": [
+    "Blender GLB re-import/render",
+    "Mesh manifoldness and winding",
+    "Quest runtime, hand fit and frame time"
+  ]
+}
