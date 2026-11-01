@@ -54,8 +54,8 @@ object SettingsSync {
     bool("auto_connect")?.let { s = s.copy(autoConnect = it) }
     enum("window_style", WindowStyle.entries) { it.storageValue }?.let { s = s.copy(windowStyle = it) }
     float("window_opacity")?.let { s = s.copy(windowOpacity = it) }
-    enum("text_mic_prop", VoiceProp.entries) { it.storageValue }?.let { s = s.copy(textMicProp = it) }
-    enum("ai_mic_prop", VoiceProp.entries) { it.storageValue }?.let { s = s.copy(aiMicProp = it) }
+    enum("text_mic_prop", VoiceMic.Text.props) { it.storageValue }?.let { s = s.copy(textMicProp = it) }
+    enum("ai_mic_prop", VoiceMic.Ai.props) { it.storageValue }?.let { s = s.copy(aiMicProp = it) }
     enum("ai_provider", AiProvider.entries) { it.storageValue }?.let { s = s.copy(aiProvider = it) }
     for (provider in AiProvider.entries) enum(provider.modelKey, provider.models) { it.id }?.let { s = s.withAiModel(it) }
     enum("ai_thinking", AiThinking.entries) { it.storageValue }?.let { s = s.copy(aiThinking = it) }
@@ -113,8 +113,10 @@ object SettingsSync {
       item("note", "text" to "With thinking on, your Mac runs the provider's agent (Claude Code, Codex or Gemini CLI, signed in with its own login) in the pane's folder: it reads your project, never changes it, and its keystrokes run in your terminal. A quick answer uses the provider's API key on this Mac instead. The news microphone shows the provider's logo."),
     ), tab = tab.name)
     val look = section("Mic appearance", listOf(
-      item("choice", "key" to key, "options" to VoiceProp.entries.map { option(it.storageValue, it.label, it.detail) }),
-      item("note", "text" to "Changes only the ${mic.label.lowercase()}'s appearance. Each mic keeps its own selection."),
+      item("choice", "key" to key, "options" to mic.props.map { option(it.storageValue, it.label, it.detail) } +
+        listOfNotNull(if (!mic.comingSoon) null else option(VoiceMic.COMING_SOON_VALUE, VoiceMic.COMING_SOON_LABEL,
+          VoiceMic.COMING_SOON_DETAIL, mapOf("disabled" to true)))),
+      item("note", "text" to mic.appearanceNote),
     ), tab = tab.name)
     return listOfNotNull(intro, provider, look)
   }

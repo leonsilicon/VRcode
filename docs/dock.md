@@ -114,13 +114,17 @@ In order:
 - **Keyboard** (a silver tile, with a running dot while the keyboard is open): toggles the same keyboard as the right-hand pie and quick inputs. That is Meta's
   system keyboard when possible: `KeyboardFeature` focuses the focused terminal window's view
   (xmux's `ScreenView`, which takes typed text, backspace and keys through its Android input
-  connection) and asks Android to show the soft input, so Meta's keyboard types straight into the
-  focused pane. With no terminal window, while a voice pane is being edited, or if Android declines
-  (logged as `system keyboard for screen N: focused=… accepted=false`), VRcode's floating keyboard
-  opens just above the dock instead. The option's selected state follows the pie, the floating
-  keyboard's close button, and Meta's keyboard closing itself once the window has reported it
-  showing (`system keyboard closed`). Whether Meta's keyboard appears for a Spatial SDK panel needs
-  a headset check.
+  connection) and explicitly asks Android to show the soft input, so Meta's keyboard can type
+  straight into the focused pane. With no terminal window, while a voice pane is being edited, or if
+  Android declines (logged as `system keyboard for screen N: focused=… accepted=false`), VRcode's
+  floating keyboard opens just above the dock instead. Android accepting the request is not enough:
+  on the Quest 3 (Spatial SDK 0.14) Meta's keyboard turned down every show request for VRcode's
+  panels (`ImeTracker … onFailed at PHASE_IME_ON_SHOW_SOFT_INPUT_TRUE`, with nothing reported to the
+  app). So the window's IME insets must report it showing within a second (`system keyboard
+  showing`); if they do not, the request is withdrawn, the floating keyboard opens, and the rest of
+  the session goes straight to the floating keyboard (`system keyboard did not appear within …`). The
+  option's selected state follows the pie, the floating keyboard's close button, and Meta's keyboard
+  closing itself after it showed (`system keyboard closed`).
 - **Arrange** (an indigo tile of windows, after Mission Control): runs the existing terminal
   arrangement action. Faded while offline or without windows.
 - **Settings** (a gray gear tile, after System Settings): opens the existing panel and brings it

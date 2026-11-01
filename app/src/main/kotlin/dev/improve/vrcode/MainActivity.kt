@@ -60,6 +60,7 @@ import dev.improve.xmux.window.frame.WindowChrome
 import dev.improve.vrcode.dock.DockGesture
 import dev.improve.vrcode.dock.DockRecall
 import dev.improve.vrcode.windows.EdgeResize
+import dev.improve.vrcode.windows.KeyBar
 import dev.improve.vrcode.windows.LeftHandMove
 import dev.improve.vrcode.windows.TerminalWindows
 import dev.improve.vrcode.windows.WindowShadows
@@ -114,7 +115,8 @@ class MainActivity : AppSystemActivity() {
     LeftHandMove(this, xmux, predictedTimeNs = { spatial.getFrameTiming().predictedDisplayTimeNs },
       movable = { w -> w.screen?.let { !terminalWindows.isFullscreen(it) } == true },
       move = { screen, pose -> if (!terminalWindows.isFullscreen(screen)) terminalWindows.move(screen, pose) },
-      onStart = { window -> terminalPointer.cancel(); dockRecall.cancel(); xmux.focus(window) })
+      onStart = { window -> terminalPointer.cancel(); dockRecall.cancel(); xmux.focus(window) },
+      cursorSize = { settings.pointerCursorSize })
   }
   /** Meta's laser past every panel, where the SDK draws none, while no mic is live (FreeLaser.kt). */
   @OptIn(SpatialSDKExperimentalAPI::class)
@@ -134,11 +136,16 @@ class MainActivity : AppSystemActivity() {
   }
   /** Keeps a terminal window focused whenever one is open, so voice and keys always have a target. */
   private val focus by lazy { FocusKeeper(xmux) }
+  /** Esc, Tab, arrows, Enter and more under the focused window (windows/KeyBar.kt). */
+  private val keyBar by lazy { KeyBar(xmux) { handMenu.toggleKeyboard() } }
   /** Voice mode: a fist dictates, opening it types into the focused pane (see voice/VoiceFeature.kt). */
   @OptIn(SpatialSDKExperimentalAPI::class)
   private val voice: VoiceFeature by lazy {
-    VoiceFeature(this, xmux, scope, focus, overlayHitDistance = { origin, direction -> dock.hitDistance(origin, direction) },
-      dockPose = { dock.currentPose() }, terminalInfoHeight = cmuxControls::infoHeight) {
+    VoiceFeature(this, xmux, scope, focus,
+      overlayHitDistance = { origin, direction ->
+        listOfNotNull(dock.hitDistance(origin, direction), keyBar.hitDistance(origin, direction)).minOrNull()
+      },
+      dockPose = { dock.currentPose() }, terminalInfoHeight = cmuxControls::infoHeight, terminalBarHeight = keyBar::occupiedBelow) {
       spatial.getFrameTiming().predictedDisplayTimeNs
     }
   }
@@ -217,8 +224,8 @@ class MainActivity : AppSystemActivity() {
     sceneReady = true
     applySettings(settings)
     Log.i(TAG, "New terminal default: ${settings.defaultTerminalSize.cols}x${settings.defaultTerminalSize.rows}")
-    setupConnection = true
-    openSettings(SettingsPage.Connection)
+    // Nothing opens at launch: the Connection page appears only for a problem the user must fix
+    // (below) or a pairing code, and CmuxFeature opens a terminal if the session has none.
     startDiscovery()
     // Also imports a key provisioned by `quest-link pair` and connects with it, without a tap.
     val address = intent?.getStringExtra("address")
@@ -310,16 +317,20 @@ class MainActivity : AppSystemActivity() {
     showLasers(left = micHand != VoiceFeature.VoiceHand.Left, right = micHand != VoiceFeature.VoiceHand.Right)
     freeLasers.tick(shown = resumed && micHand == null)
     edgeResize.tick(allowed = resumed && !settingsOpen && windowSettingsScreen == null && !cmuxControls.isOpen && !handMenu.busy) { origin, direction ->
-      dock.blocksRay(origin, direction)
+      dock.blocksRay(origin, direction) || keyBar.blocksRay(origin, direction)
     }
     leftHandMove.tick(headPose(), allowed = resumed && !settingsOpen && windowSettingsScreen == null && !cmuxControls.isOpen &&
-      !handMenu.leftBusy && micHand != VoiceFeature.VoiceHand.Left) { origin, direction -> dock.blocksRay(origin, direction) }
+      !handMenu.leftBusy && micHand != VoiceFeature.VoiceHand.Left) { origin, direction ->
+      dock.blocksRay(origin, direction) || keyBar.blocksRay(origin, direction)
+    }
     windowHeaderHover.keys.retainAll(xmux.windows.mapNotNull { it.screen }.toSet())
     focus.tick(headPose())
     cmuxControls.tick(visible = resumed)
+    // After the moves and focus above, so the bar sits under the focused window where it is drawn this frame.
+    keyBar.tick(focus.focused.takeIf { resumed && windowSettingsScreen == null }, headPose())
     val right = systemManager.tryFindSystem<PlayerBodyAttachmentSystem>()?.tryGetLocalPlayerAvatarBody()?.rightHand
     val rightRay = right?.takeIf { it.tryGetComponent<Controller>()?.isActive == true }?.tryGetComponent<Transform>()?.transform
-    val overDock = rightRay?.let { dock.blocksRay(it.t, it.forward()) } == true
+    val overDock = rightRay?.let { dock.blocksRay(it.t, it.forward()) || keyBar.blocksRay(it.t, it.forward()) } == true
     terminalPointer.update(allowInput = resumed && !settingsOpen && windowSettingsScreen == null && !cmuxControls.isOpen,
       drag = settings.pinchDrag)
     if (rightHandPointer.update(visible = resumed && !settingsOpen && !cmuxControls.isOpen && !overDock &&
@@ -703,7 +714,11 @@ class MainActivity : AppSystemActivity() {
       }
     }
     sessionJob = scope.launch {
+      var pairing = false
       s.state.combine(s.topology) { state, topology -> state to topology.screens.size }.collect { (state, screens) ->
+        // The code must be entered in VRcode Mac, so show it once each time pairing starts.
+        if (state is ConnectionState.Pairing && !pairing && !settingsOpen) { setupConnection = true; openSettings(SettingsPage.Connection) }
+        pairing = state is ConnectionState.Pairing
         status = when (state) {
           ConnectionState.Connecting -> ConnectStatus.Connecting(address)
           is ConnectionState.Pairing -> ConnectStatus.Pairing(state.code)
@@ -789,6 +804,7 @@ class MainActivity : AppSystemActivity() {
     leftHandMove.close()
     freeLasers.close()
     dock.close()
+    keyBar.close()
     cmuxControls.releasePanel()
     rightClick.close()
     terminalPointer.close()

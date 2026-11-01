@@ -45,6 +45,8 @@ data class AppSettings(
   }
 
   fun sanitized(): AppSettings = copy(
+    textMicProp = VoiceMic.Text.allowed(textMicProp),
+    aiMicProp = VoiceMic.Ai.allowed(aiMicProp),
     claudeModel = aiModel(AiProvider.Claude),
     chatGptModel = aiModel(AiProvider.ChatGpt),
     geminiModel = aiModel(AiProvider.Gemini),
@@ -88,14 +90,9 @@ class SettingsStore(private val preferences: SharedPreferences) {
     autoConnect = preferences.getBoolean("auto_connect", true),
     windowStyle = WindowStyle.fromStorage(preferences.getString("window_style", null)),
     windowOpacity = preferences.getFloat("window_opacity", AppSettings.DEFAULT_WINDOW_OPACITY),
-    textMicProp =VoiceProp.fromStorage(preferences.getString("text_mic_prop", null)),
-    // The old setting only rendered on the left hand. Keep custom props, while upgrading
-    // its old classic default (also saved by unrelated settings changes) to the AI default.
-    aiMicProp = VoiceProp.fromStorage(
-      preferences.getString("ai_mic_prop", null)
-        ?: preferences.getString("voice_prop", null)?.takeUnless { it == "microphone" },
-      fallback = VoiceProp.NewsMicrophone,
-    ),
+    textMicProp = VoiceProp.fromStorage(preferences.getString("text_mic_prop", null)),
+    // The AI mic only wears the news microphone for now; sanitized() replaces anything else saved.
+    aiMicProp = VoiceProp.fromStorage(preferences.getString("ai_mic_prop", null), fallback = VoiceMic.Ai.defaultProp),
     aiProvider = AiProvider.fromStorage(preferences.getString("ai_provider", null)),
     claudeModel = AiModel.fromStorage(AiProvider.Claude, preferences.getString(AiProvider.Claude.modelKey, null)),
     chatGptModel = AiModel.fromStorage(AiProvider.ChatGpt, preferences.getString(AiProvider.ChatGpt.modelKey, null)),

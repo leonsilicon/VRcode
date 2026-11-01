@@ -1,5 +1,6 @@
 package dev.improve.vrcode.keyboard
 
+import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.view.WindowInsets
@@ -23,8 +24,10 @@ import kotlin.math.roundToInt
  *
  * It is Meta's own system keyboard when possible: the focused terminal window's view is an Android
  * text editor (xmux's `ScreenView` takes typed text, backspace and key events through its input
- * connection), so focusing it and asking Android to show the soft input brings up the Quest's
- * keyboard, typing straight into the focused pane.
+ * connection), so focusing it and asking Android to show the soft input can bring up the Quest's
+ * keyboard, typing straight into the focused pane. Android accepting the request is not enough:
+ * the keyboard has to actually show ([SystemKeyboardCheck]). If it does not, this session uses the
+ * floating keyboard from then on.
  *
  * Otherwise, with no terminal window, while a voice pane is being edited, or if Android declines,
  * it is VRcode's floating keyboard. That appears just above the dock, tilted toward the eyes, and
@@ -36,9 +39,12 @@ class KeyboardFeature(private val xmux: XmuxSpatial, private val voice: VoiceCon
   private var entity: Entity? = null
   private var floating = false
 
-  /** The terminal view Meta's keyboard was opened for, while it is up. */
+  /** The terminal view Meta's keyboard was asked for, until it closes or fails to appear. */
   private var systemView: View? = null
-  private var systemSeen = false
+  private var systemCheck: SystemKeyboardCheck? = null
+
+  /** Meta's keyboard failed to appear once: the rest of this session uses the floating keyboard. */
+  private var systemUnavailable = false
 
   val shown: Boolean get() = floating || systemView != null
 
@@ -60,21 +66,22 @@ class KeyboardFeature(private val xmux: XmuxSpatial, private val voice: VoiceCon
    * the dock (always visible, even collapsed) stays uncovered while typing.
    */
   fun show(head: Pose?) {
-    if (voice.editing == null && showSystem()) return
+    if (voice.editing == null && !systemUnavailable && showSystem()) return
     showFloating(head)
   }
 
-  /** Meta's keyboard for the focused terminal window; false if there is none or Android declines. */
+  /** Asks for Meta's keyboard for the focused terminal window; false if there is none or Android declines. */
   private fun showSystem(): Boolean {
     val window = xmux.focused?.takeIf { it.visible } ?: xmux.windows.firstOrNull { it.visible }
     val view = window?.screenView ?: return false
     val imm = view.context.getSystemService(InputMethodManager::class.java) ?: return false
     val focused = view.requestFocus()
-    val accepted = imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+    // An explicit request (no SHOW_IMPLICIT): the user asked for it, and IMEs may turn implicit ones down.
+    val accepted = imm.showSoftInput(view, 0)
     Log.i(TAG, "system keyboard for screen ${window.screen?.value}: focused=$focused accepted=$accepted")
     if (!accepted) return false
     systemView = view
-    systemSeen = false
+    systemCheck = SystemKeyboardCheck(SystemClock.uptimeMillis())
     return true
   }
 
@@ -93,28 +100,45 @@ class KeyboardFeature(private val xmux: XmuxSpatial, private val voice: VoiceCon
   }
 
   fun hide() {
-    systemView?.let { view ->
-      view.context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(view.windowToken, 0)
-      Log.i(TAG, "system keyboard hidden")
-    }
-    systemView = null
+    if (systemView != null) Log.i(TAG, "system keyboard hidden")
+    dropSystem()
     entity?.setComponent(Visible(false))
     floating = false
   }
 
+  /** Withdraws the request for Meta's keyboard, so it cannot turn up late. */
+  private fun dropSystem() {
+    systemView?.let { view ->
+      view.context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(view.windowToken, 0)
+    }
+    systemView = null
+    systemCheck = null
+  }
+
   /**
-   * Keeps the floating keyboard's target label current, and notices Meta's keyboard being closed
-   * with its own button: once the window has reported the keyboard showing, its going away counts.
+   * Keeps the floating keyboard's target label current, and follows Meta's keyboard after it was
+   * asked for: once it has shown, its going away (its own close button) counts as closed; if it
+   * never shows, the floating keyboard opens in front of [head] instead.
    */
-  fun onSceneTick() {
+  fun onSceneTick(head: Pose?) {
     if (floating) state.target = target()
     val view = systemView ?: return
-    val up = view.rootWindowInsets?.isVisible(WindowInsets.Type.ime()) ?: return
-    if (up) {
-      systemSeen = true
-    } else if (systemSeen) {
-      systemView = null
-      Log.i(TAG, "system keyboard closed")
+    val check = systemCheck ?: return
+    val imeVisible = view.rootWindowInsets?.isVisible(WindowInsets.Type.ime()) == true
+    when (check.update(imeVisible, SystemClock.uptimeMillis())) {
+      SystemKeyboardCheck.State.Waiting, SystemKeyboardCheck.State.Showing -> {}
+      SystemKeyboardCheck.State.Appeared -> Log.i(TAG, "system keyboard showing")
+      SystemKeyboardCheck.State.Closed -> {
+        systemView = null
+        systemCheck = null
+        Log.i(TAG, "system keyboard closed")
+      }
+      SystemKeyboardCheck.State.Failed -> {
+        Log.w(TAG, "system keyboard did not appear within ${SystemKeyboardCheck.TIMEOUT_MS} ms; using the floating keyboard for the rest of this session")
+        systemUnavailable = true
+        dropSystem()
+        showFloating(head)
+      }
     }
   }
 

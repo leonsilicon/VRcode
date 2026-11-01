@@ -3,12 +3,16 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.4",
+  "workspaces": [
+    "scripts"
+  ],
   "scripts": {
     "test": "bun run check:scripts && bun test scripts/tests",
     "check:scripts": "bun scripts/check-scripts.ts",
+    "dev": "bun scripts/_dev.ts",
     "quest-link": "bun scripts/quest-link.ts",
     "mac:run": "bun scripts/run-mac-service.ts",
-    "mac:install": "bun scripts/run-mac-service.ts --install --bluetooth",
+    "mac:install": "bun scripts/_tauri.ts",
     "mac:uninstall": "bun scripts/run-mac-service.ts --uninstall",
     "check:relay:android": "bun scripts/check-relay-android.ts",
     "cmux:sync": "bun scripts/sync-cmux-catalog.ts",
@@ -17,5 +21,12 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.2.0"
+  },
+  "devDependencies": {
+    "@gltf-transform/core": "4.5.1",
+    "@gltf-transform/functions": "4.5.1",
+    "mikktspace": "1.1.1",
+    "mprocs": "0.9.6",
+    "vrcode-scripts": "workspace:*"
   }
 }

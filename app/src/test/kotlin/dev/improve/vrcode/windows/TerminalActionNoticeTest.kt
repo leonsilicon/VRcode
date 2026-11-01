@@ -41,6 +41,16 @@ class TerminalActionNoticeTest {
     assertEquals(listOf(launch), notices.entries.toList())
   }
 
+  @Test fun aFailureWithNoWindowStaysShownUntilItExpires() {
+    // Add terminal while the Mac is disconnected: no window to show it above, but it must not vanish.
+    val launch = notices.start(null, "New terminal", "Opening…")
+    notices.finish(launch, "VRcode isn't connected to your Mac.", failed = true, now = 100)
+    notices.prune(listOf("A"), now = 10_099)
+    assertEquals(listOf(launch), notices.entries.toList())
+    notices.prune(listOf("A"), now = 10_100)
+    assertEquals(emptyList<TerminalActionNotice<String>>(), notices.entries.toList())
+  }
+
   @Test fun successDisappearsImmediatelyWithoutHidingRunningActionsOrFailures() {
     val running = notices.start("A", "Wait", "Waiting…")
     val done = notices.start("B", "Copy", "Copying…")

@@ -163,6 +163,8 @@ class VoiceController(
   private val aiModel: () -> AiModel = { AiModel.ClaudeSonnet },
   /** Whether the AI mic thinks first (the Mac runs the provider's agent), chosen in Settings. */
   private val aiThinking: () -> AiThinking = { AiThinking.Off },
+  /** Whether the Quest's microphone is muted for every app (`AudioManager.isMicrophoneMute`). */
+  private val micMuted: () -> Boolean = { false },
   private val micAllowed: () -> Boolean,
 ) {
   val notes = mutableStateListOf<VoiceNote>()
@@ -204,7 +206,7 @@ class VoiceController(
   @Volatile private var loudChunks = 0
   @Volatile private var peakLevel = 0f
   private val mic =
-    MicCapture { pcm, rms ->
+    MicCapture(onSilenced = ::onMicSilenced) { pcm, rms ->
       link.send(Kind.AUDIO, streamingId, pcm)
       if (rms >= SPEECH_LEVEL) loudChunks++
       if (rms > peakLevel) peakLevel = rms
@@ -213,6 +215,22 @@ class VoiceController(
 
   /** Listening, and nothing said yet in this dictation: ending it now would lose nothing. */
   val quiet: Boolean get() = listening?.let(::heardNothing) == true
+
+  /** Whether the system is feeding the running capture silence; reset when a dictation starts. */
+  private var micSilenced = false
+
+  /**
+   * The system started or stopped silencing the microphone mid-dictation: the live pane says so at
+   * once (a pane with a notice shows before any word), and listening goes on in case the user
+   * unmutes. A fist that opens while silenced leaves what was heard staged, not typed: part of it
+   * may be missing.
+   */
+  private fun onMicSilenced(silenced: Boolean) {
+    micSilenced = silenced
+    val note = listening ?: return
+    note.notice = MicNotice.whileListening(note.notice, silenced)
+    Log.i(TAG, "voice: microphone ${if (silenced) "silenced by the system" else "no longer silenced"} (pane ${note.id})")
+  }
 
   /**
    * Starts dictating into the pane picked for editing (which keeps its own mode), else into a new
@@ -228,18 +246,17 @@ class VoiceController(
     editing = null
     selected = note
     note.notice = null
-    val problem =
-      when {
-        !micAllowed() -> "Microphone permission is off for vrcode"
-        !link.connected -> "Mac speech service not connected (${link.address ?: "no address"})"
-        else -> null
-      }
-    if (problem != null) return fail(note, problem)
+    val problem = MicNotice.atStart(micAllowed(), micMuted(), link.connected, link.address)
+    if (problem != null) {
+      Log.i(TAG, "voice: pane ${note.id} can't listen: $problem")
+      return fail(note, problem)
+    }
     val utterance = ++nextUtterance
     note.utterance = utterance
     streamingId = utterance
     loudChunks = 0
     peakLevel = 0f
+    micSilenced = false
     link.send(Kind.AUDIO_START, utterance, audioFormat(note.mode))
     mic.start()?.let {
       link.send(Kind.AUDIO_CANCEL, utterance)
@@ -248,7 +265,8 @@ class VoiceController(
     if (note.mode == VoiceNote.Mode.Ai) note.recorded += utterance
     note.phase = VoiceNote.Phase.Listening
     listening = note
-    Log.i(TAG, "voice: listening into pane ${note.id} (utterance $utterance)")
+    note.notice = MicNotice.whileListening(note.notice, micSilenced) // silenced from the start
+    Log.i(TAG, "voice: listening into pane ${note.id} (utterance $utterance${if (micSilenced) ", silenced by the system" else ""})")
   }
 
   /**
@@ -277,6 +295,18 @@ class VoiceController(
     val utterance = note.utterance
     // The Mac answers within a second; never leave a pane stuck if it does not.
     main.postDelayed({ if (note.phase == VoiceNote.Phase.Finalizing && note.utterance == utterance) finish(note) }, FINALIZE_TIMEOUT_MS)
+  }
+
+  /**
+   * The fist holding [note]'s mic opened (after [stopListening]). A pane with nothing to paste that
+   * only says why the mic could not listen (no Mac service, no permission, a Mac failure) goes with
+   * the mic, instead of outliving it for [NOTICE_MS]. Panes still finishing, being answered, or
+   * holding text are left alone.
+   */
+  fun release(note: VoiceNote) {
+    if (note !in notes || note == listening || note.phase != VoiceNote.Phase.Ready || note.output.isNotEmpty()) return
+    Log.i(TAG, "voice: pane ${note.id} only held a notice (${note.notice}); dismissed with the mic")
+    remove(note)
   }
 
   /**
@@ -313,7 +343,7 @@ class VoiceController(
     note.liveFinal = ""
     note.liveVolatile = ""
     note.aiKeys = null
-    note.notice = null
+    note.notice = MicNotice.whileListening(null, micSilenced) // still silenced: Clear keeps saying so
     note.utterance = utterance
     note.recorded.clear()
     if (note.mode == VoiceNote.Mode.Ai) note.recorded += utterance

@@ -25,19 +25,19 @@ bun scripts/run-mac-service.ts --bluetooth
 For everyday use, install the app so it starts at login and relaunches after a crash:
 
 ```sh
-bun run mac:install          # xmux bridge 7272 + speech 7273 + relay 7274, one signed app
+vpx _tauri          # xmux bridge 7272 + speech 7273 + relay 7274, one signed app
 ```
 
 The app bundles the xmux bridge, so no separate xmux LaunchAgent is needed (remove an old one with
-`launchctl bootout gui/$(id -u)/dev.improve.xmux.bridge`). `mac:install` copies the packaged app out
+`launchctl bootout gui/$(id -u)/dev.improve.xmux.bridge`). `vpx _tauri` copies the packaged app out
 of `mac/.build`, so later rebuilds and tests never replace the running binary. Re-run it after
-rebuilding; `bun run mac:uninstall` removes it. The log is `~/Library/Logs/vrcode-mac.log`. See
+rebuilding; `vpx _tauri --uninstall` removes it. The log is `~/Library/Logs/vrcode-mac.log`. See
 [the Mac app](mac-app.md).
 
 To add the relay alongside an already-running speech
 service, use `bun scripts/run-mac-service.ts --link-only --bluetooth` instead. Without `--link-only`,
 the service also starts speech on loopback port 7273. The relay listens on port 7274 and advertises
-`_vrcode._tcp` using Bonjour. `bun run mac:install` turns Bluetooth on; when running the script by
+`_vrcode._tcp` using Bonjour. `vpx _tauri` turns Bluetooth on; when running the script by
 hand, omit `--bluetooth` for network-only use.
 Allow the Mac's Bluetooth / local-network prompt when presented. The app lives in the menu bar; its
 window (permissions, headset pairing, API key, log) opens from there and when a headset waits to
@@ -90,7 +90,7 @@ but a key provisioned later by `quest-link pair` still switches the app to the r
   Quest to Wi-Fi** in Automatic with no Wi-Fi, or **Your Mac's connection key has changed** when a
   Mac answers but rejects the key. Losing the Mac also unmounts the terminal windows, so the app
   opens the Connection page once per outage and closes it when the terminals return.
-- **Always-on Mac.** With `mac:install`, a reboot, logout or crash does not leave the Quest waiting
+- **Always-on Mac.** With `vpx _tauri`, a reboot, logout or crash does not leave the Quest waiting
   for a service that someone has to restart. The relay exits if its listener fails (for example a
   port conflict), and the app restarts it, as it does a crashed bridge; launchd relaunches the app
   itself after a crash.

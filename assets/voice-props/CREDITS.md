@@ -9,6 +9,13 @@ embedded at 1k. Credits are retained for provenance even though CC0 does not req
 |---|---|---|---|
 | `megaphone.glb` | [Megaphone 01](https://polyhaven.com/a/Megaphone_01) | Ethan Simon-Law | 28 cm length, grip origin, rotation, speech anchor, explicit triangles |
 | `banana.glb` | [Bananas](https://polyhaven.com/a/bananas) | Alexander Shulha | One individual banana, 20 cm length, upright orientation, grip and speech anchor |
+| `walkie-talkie.glb` | ["Walkie talkie"](https://poly.pizza/m/aYdn7ZZaYqa) on Poly Pizza, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) | Poly by Google | 20 cm height, grip origin, turned to face the wearer, speech anchor, tangents, texture resized to 1k |
+
+The walkie-talkie is not CC0: [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) allows
+commercial use and modification but requires attribution. `walkie-talkie.glb` carries it in its
+`asset.copyright` field, and an app or store listing that ships it should credit "Walkie talkie by
+Poly by Google, CC BY 3.0". The unmodified download is kept as `source/walkie-talkie-poly.glb`.
+Its Poly Pizza page and license were checked on 2026-11-01.
 | `news-microphone-<provider>.glb` | Original vrcode asset; provider symbols below | vrcode / Anthropic, OpenAI, Google | 28 cm reporter microphone, foam texture, black flag with the Claude, OpenAI or Gemini symbol, grip and speech anchor |
 
 `../microphone/microphone.glb` is the existing original procedural vrcode microphone and is

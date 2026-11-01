@@ -250,7 +250,7 @@
     renderPairing(status.pairing);
     $("login").textContent = status.launch_agent
       ? "Starts at login and restarts if it crashes (LaunchAgent dev.improve.vrcode.mac)."
-      : "To start at login, add VRcode Mac under System Settings → General → Login Items (from a VRcode checkout: bun run mac:install).";
+      : "To start at login, add VRcode Mac under System Settings → General → Login Items (from a VRcode checkout: vpx _tauri).";
     setDot($("perm-screen-recording"), status.permissions.screen_recording);
     setDot($("perm-accessibility"), status.permissions.accessibility);
     renderApiKeys(status.api_keys ?? {});
@@ -521,6 +521,7 @@
           const button = el("button", "option");
           button.type = "button";
           button.setAttribute("role", "radio");
+          button.disabled = option.disabled === true; // shown, never chosen (e.g. "Coming soon")
           if (option.colors) {
             const swatch = el("span", "swatch");
             swatch.style.background = option.colors.background;

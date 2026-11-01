@@ -53,7 +53,11 @@ class CmuxLink(scope: CoroutineScope, private val onConnected: () -> Unit, priva
   /** Each invocation is sent once. A timeout/disconnect never silently repeats a mutation. */
   suspend fun call(operation: String, params: JSONObject = JSONObject(), mutation: Boolean = false,
     key: String = UUID.randomUUID().toString()): JSONObject {
-    check(connected) { "Connect to an updated VRcode Mac service to use terminal actions." }
+    check(connected) {
+      // A service answered without `cmux: true` (an old one, or a direct legacy connection), or none answered.
+      if (transport.connected) "Your Mac's VRcode service didn't offer terminal control. Update the VRcode Mac app and reconnect."
+      else "VRcode isn't connected to your Mac. Check Connection in Settings."
+    }
     val id = UUID.randomUUID().toString()
     val response = CompletableDeferred<JSONObject>()
     pending[id] = response

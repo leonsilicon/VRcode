@@ -31,7 +31,7 @@ android {
 val prepareVoicePropAssets by tasks.registering(Sync::class) {
   from(rootProject.file("assets/microphone")) { include("microphone.glb") }
   // One news microphone per AI provider's logo (see scripts/brand-news-mic.ts).
-  from(rootProject.file("assets/voice-props")) { include("news-microphone-*.glb", "megaphone.glb", "banana.glb") }
+  from(rootProject.file("assets/voice-props")) { include("news-microphone-*.glb", "walkie-talkie.glb", "megaphone.glb", "banana.glb") }
   into(layout.buildDirectory.dir("generated/voice-prop-assets/voice-props"))
 }
 android.sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/voice-prop-assets"))

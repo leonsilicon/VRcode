@@ -34,21 +34,37 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meta.spatial.core.Entity
+import com.meta.spatial.core.Pose
+import com.meta.spatial.core.Query
+import com.meta.spatial.core.Quaternion
+import com.meta.spatial.core.Vector3
+import com.meta.spatial.toolkit.AvatarAttachment
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.Visible
+import dev.improve.vrcode.dock.DockPlacement
 import dev.improve.vrcode.voice.ThinkingPlacement
 import dev.improve.xmux.spatial.Placement
 import dev.improve.xmux.spatial.ScreenWindow
+import dev.improve.xmux.spatial.WindowLayout
 import dev.improve.xmux.spatial.XmuxSpatial
+import kotlin.math.cos
+import kotlin.math.sin
 
-/** Pooled, nonmodal info boxes in the targeted terminal's plane, following its pose and size. */
+/**
+ * Pooled, nonmodal info boxes in the targeted terminal's plane, following its pose and size. An
+ * action with no window to target (none is shown, or VRcode isn't connected to the Mac) shows in one
+ * box ahead of the user instead, placed where they were heading when it appeared, so its failure is
+ * never silent. Creation moves its notice from there to the new window once that mounts.
+ */
 internal class TerminalInfoPanels(private val xmux: XmuxSpatial) {
   val notices = TerminalActionNotices<ScreenWindow>()
-  private class Slot(val entity: Entity) {
+  private class Slot(val entity: Entity, val ahead: Boolean) {
     var window by mutableStateOf<ScreenWindow?>(null)
     var shown = false
   }
   private val slots = mutableListOf<Slot>()
+  /** The box for notices without a window; mounted the first time one appears. */
+  private var ahead: Slot? = null
   private val heightM get() = HEIGHT_PX * xmux.config.windowWidthM / xmux.spec.widthPx
 
   fun start(window: ScreenWindow?, title: String, message: String) = notices.start(window, title, message).also {
@@ -79,26 +95,44 @@ internal class TerminalInfoPanels(private val xmux: XmuxSpatial) {
       val show = pose != null
       if (slot.shown != show) { slot.entity.setComponent(Visible(show)); slot.shown = show }
     }
+    tickAhead(visible)
   }
+
+  private fun tickAhead(visible: Boolean) {
+    val show = visible && notices.entries.any { it.target == null }
+    val slot = ahead ?: (if (show) newSlot(ahead = true).also { ahead = it } else return)
+    if (slot.shown == show) return
+    // Placed once per showing, so it stays put (and readable) while the user looks around.
+    if (show) headPose()?.let { slot.entity.setComponent(Transform(aheadPose(it))) }
+    slot.entity.setComponent(Visible(show))
+    slot.shown = show
+    Log.i(TAG, if (show) "info box ahead of the user (no target window)" else "info box ahead of the user hidden")
+  }
+
+  private fun headPose(): Pose? = Query.where { has(AvatarAttachment.id) }
+    .filter { isLocal() and by(AvatarAttachment.typeData).isEqualTo("head") }.eval()
+    .firstOrNull()?.tryGetComponent<Transform>()?.transform?.takeIf(WindowLayout::isUsableHeadPose)
 
   fun clear() { notices.entries.clear() }
 
   fun close() {
     clear()
-    slots.forEach { it.entity.destroy() }
+    (slots + listOfNotNull(ahead)).forEach { it.entity.destroy() }
     slots.clear()
+    ahead = null
   }
 
-  private fun newSlot(): Slot {
+  private fun newSlot(ahead: Boolean = false): Slot {
     lateinit var slot: Slot
     val entity = xmux.mountPanel(WIDTH_PX, HEIGHT_PX, Placement.InFrontOfHead) {
-      slot.window?.let { window ->
+      if (slot.ahead) TerminalInfoPanel(notices.entries.filter { it.target == null }) { notices.entries.remove(it) }
+      else slot.window?.let { window ->
         TerminalInfoPanel(notices.entries.filter { it.target == window }) { notices.entries.remove(it) }
       }
     }
     entity.setComponent(Visible(false))
     // Leave ISDK's components installed; the window's pose takes precedence over grabbing.
-    return Slot(entity).also { slot = it; slots.add(it) }
+    return Slot(entity, ahead).also { slot = it; if (!ahead) slots.add(it) }
   }
 
   private companion object {
@@ -106,6 +140,21 @@ internal class TerminalInfoPanels(private val xmux: XmuxSpatial) {
     const val WIDTH_PX = 560
     const val HEIGHT_PX = 200
   }
+}
+
+/** How far ahead of the eyes, and how far below them, a notice without a window sits. */
+internal const val AHEAD_DISTANCE_M = 1.0f
+internal const val AHEAD_DROP_M = 0.1f
+
+/**
+ * Level with the user's heading, facing them: palm menu actions are picked while looking down at the
+ * hand, so the head's tilt must not put the box on the floor. Nearer than new windows open, so a
+ * terminal that mounts behind it never hides it.
+ */
+internal fun aheadPose(head: Pose): Pose {
+  val yaw = Math.toRadians(DockPlacement.yawDegrees(head).toDouble())
+  val offset = Vector3(sin(yaw).toFloat() * AHEAD_DISTANCE_M, -AHEAD_DROP_M, cos(yaw).toFloat() * AHEAD_DISTANCE_M)
+  return Pose(head.t + offset, Quaternion.lookRotation(Vector3(offset.x, 0f, offset.z)))
 }
 
 @Composable

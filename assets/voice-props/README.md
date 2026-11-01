@@ -1,7 +1,8 @@
 # Voice props
 
 Voice input can wear a different prop while keeping the same fist-to-mouth interaction.
-This starter set contains four looks, including two original microphones and two Poly Haven models.
+This starter set contains five looks: two original microphones, two Poly Haven models and a
+Poly Pizza walkie-talkie.
 
 | Claude | ChatGPT | Gemini |
 |:---:|:---:|:---:|
@@ -11,6 +12,7 @@ This starter set contains four looks, including two original microphones and two
 |---|---|---:|---:|---:|
 | The Classic | [Microphone](../microphone/microphone.glb) | 4,988 | 5 | 234 KiB |
 | News microphone | [Claude](news-microphone-claude.glb) · [ChatGPT](news-microphone-openai.glb) · [Gemini](news-microphone-gemini.glb) | 6,216 | 5 | 290 / 278 / 293 KiB |
+| Walkie-talkie | [Walkie-talkie](walkie-talkie.glb) | 794 | 1 | 246 KiB |
 | The Announcer | [Megaphone](megaphone.glb) | 15,814 | 1 | 4.09 MiB |
 | Banana Phone | [Banana](banana.glb) | 5,016 | 1 | 4.04 MiB |
 
@@ -26,8 +28,8 @@ The imported props use 1k textures, embedded in each GLB. Grip offsets and speec
 anchors are prepared as starting points. The Quest app bundles all four looks, the news microphone
 as its three provider variants, and exposes them under
 **Settings → Customization → Text mic / AI mic → Mic appearance**. The right-hand
-Text mic defaults to the Classic; the left-hand AI mic defaults to the news microphone.
-Each choice saves independently and switches the model on that hand. Quest hand fit, mouth clearance and frame time still need
+Text mic offers the Classic (its default), the walkie-talkie, the megaphone and the banana; the left-hand AI mic
+always wears the news microphone, beside a non-selectable "Coming soon" card. Quest hand fit, mouth clearance and frame time still need
 wearer/device verification.
 
 Open [voice-props.blend](voice-props.blend) to inspect all four. The display scene spaces them
@@ -72,6 +74,10 @@ The editable [voice-props.blend](voice-props.blend) is the source for the prepar
 Make edits and export each asset hierarchy through Blender's glTF export UI. Keep grip roots at
 the origin with unit scale, normalize dimensions, triangulate meshes, and export normals, UVs,
 tangents and embedded textures.
+
+The megaphone faces its bell +Z, away from the wearer, with its mouthpiece and speech anchor at
+−Z. `megaphone.glb` was turned 180° about the grip's vertical axis after export, and the megaphone
+in voice-props.blend still faces the other way: turn it the same way before exporting it again.
 
 ### News microphone logos
 
@@ -129,6 +135,30 @@ thumbnails `voice_prop_news_microphone_<provider>.png`. The earlier lineup uses 
 review scene with the red NEWS flag. The existing
 `*-roundtrip.png` files record earlier re-import checks for the other three props.
 
-More directions to explore: a walkie-talkie, telephone receiver, seashell, toy ray gun, ice cream
+### Walkie-talkie
+
+`walkie-talkie.glb` is prepared without an asset editor, from the untouched Poly Pizza download
+[source/walkie-talkie-poly.glb](source/walkie-talkie-poly.glb) ("Walkie talkie" by Poly by Google,
+[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)):
+
+```sh
+bun scripts/prepare-walkie-talkie.ts
+bun scripts/validate-assets.ts > assets/voice-props/validation.json
+```
+
+The script (Bun with [glTF Transform](https://gltf-transform.dev/) and MikkTSpace) scales the radio
+to 20 cm from base to antenna tip (a 9 × 5.6 × 4.5 cm body), puts the grip root on the body's axis at
+45% of its height so the hand holds the lower half, and turns it 180° about that axis so its speaker
+front faces −Z, toward the wearer, like the megaphone's mouthpiece. The speech anchor sits on the
+middle speaker slot. It adds MikkTSpace tangents, resizes the texture to 1k with macOS `sips`,
+writes the attribution into the GLB's `asset.copyright` and updates the catalog entry. The output
+is reproducible from the source. It is not in voice-props.blend.
+`previews/walkie-talkie.png` (also the Settings thumbnail `voice_prop_walkie_talkie.png`) is a
+headless Three.js render of its speaker front, framed tighter than the news microphone so the
+small black radio reads on the dark Settings cards: 512 px, transparent, a 32° camera at
+(−0.193, 0.159, −0.312) aimed at (0, 0.06, 0), and the same three lights turned to the front at
+1.4× intensity.
+
+More directions to explore: a telephone receiver, seashell, toy ray gun, ice cream
 cone, rubber duck or tiny gramophone. Source each model, verify its license, then add the same
 grip/anchor metadata. No extra model is downloaded by the app from these libraries automatically.

@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  *   middle and end joints and the middle of its palm bone;
  * - +Y runs through that hollow from the little finger to the index finger, out of the
  *   thumb-and-index opening (a microphone's grille end);
- * - +Z points back toward the wrist (a megaphone's mouthpiece), perpendicular to +Y;
+ * - +Z points back toward the wrist, perpendicular to +Y;
  * - +X completes a right-handed frame.
  *
  * The props' GLBs share this convention (grip node at the origin, +Y toward the speech end).

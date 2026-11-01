@@ -34,7 +34,8 @@ leases; it refreshes state without replaying the action. Stream controls can sto
 stream while leaving the control connection open.
 
 The Mac service starts control before speech permissions or model downloads. Use
-`bun run mac:run --control-only --cmux-session main` for terminal controls without speech. The
+`bun run mac:run --control-only --cmux-session main` for terminal controls without the on-device
+recognizer (speech still works with an ElevenLabs key). The
 session name must match the xmux bridge. Existing paired LAN, USB, Wi-Fi ADB, and Bluetooth
 connections carry control on the service tunnel; no extra port or pairing is needed.
 

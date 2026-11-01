@@ -69,6 +69,19 @@ class MicPanePlacementTest {
     assertTrue((moved - last).length() < 0.005f)
   }
 
+  @Test fun aFistShowsThePaneOnlyOnceAWordIsTranscribed() {
+    assertFalse(MicPanePlacement.shown(holding = true, text = "", notice = null))
+    assertFalse(MicPanePlacement.shown(holding = true, text = "  ", notice = null))
+    assertTrue(MicPanePlacement.shown(holding = true, text = "run", notice = null))
+    // The fist opened: a typed (or finishing) pane hides; one that could not be typed stays with its reason.
+    assertFalse(MicPanePlacement.shown(holding = false, text = "run the tests", notice = null))
+    assertTrue(MicPanePlacement.shown(holding = false, text = "run the tests", notice = "No terminal to type into"))
+  }
+
+  @Test fun aNoticeShowsWithoutAnyWords() {
+    assertTrue(MicPanePlacement.shown(holding = true, text = "", notice = "Mac speech service not connected"))
+  }
+
   @Test fun followSnapsAfterATrackingJumpAndAfterReset() {
     val follow = PaneFollow()
     follow.update(Vector3(0f, 1.3f, 0.4f), 0f)

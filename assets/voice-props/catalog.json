@@ -72,15 +72,40 @@
       "handFit": "headset calibration pending"
     },
     {
+      "id": "walkie-talkie",
+      "label": "Walkie-talkie",
+      "file": "walkie-talkie.glb",
+      "gripNode": "PROP_Grip_walkie_talkie",
+      "speechAnchorNode": "PROP_SpeechAnchor_walkie_talkie",
+      "speechAnchorM": [
+        0,
+        0.017604,
+        -0.02268
+      ],
+      "dimensionsM": [
+        0.056471,
+        0.2,
+        0.04536
+      ],
+      "triangles": 794,
+      "materials": 1,
+      "bytes": 251680,
+      "license": "CC-BY-3.0",
+      "author": "Poly by Google",
+      "source": "https://poly.pizza/m/aYdn7ZZaYqa",
+      "indicator": "shared app UI; no built-in emissive indicator",
+      "handFit": "initial grip placement; headset calibration pending"
+    },
+    {
       "id": "megaphone",
       "label": "The Announcer",
       "file": "megaphone.glb",
       "gripNode": "PROP_Grip_megaphone",
       "speechAnchorNode": "PROP_SpeechAnchor_megaphone",
       "speechAnchorM": [
-        -2.8726963030578645e-9,
+        2.8726963030578645e-9,
         0.10046793520450592,
-        0.06571963429450989
+        -0.06571963429450989
       ],
       "dimensionsM": [
         0.17257336527109146,

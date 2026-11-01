@@ -28,11 +28,11 @@ Built and verified on 2026-11-01:
 cargo install tauri-cli --version '^2' --locked   # once
 bun run mac:run [service args]           # build, sign, package, open once
 bun run mac:run --package-only           # build, sign, package (mac/.build/VRcode Mac.app)
-bun run mac:install [service args]       # start at login; relaunch after a crash
-bun run mac:uninstall                    # stop and remove the LaunchAgent and installed copy
+vpx _tauri [service args]                 # start at login; relaunch after a crash
+vpx _tauri --uninstall                   # stop and remove the LaunchAgent and installed copy
 ```
 
-`mac:run` and `mac:install` package the app the same way (`scripts/run-mac-service.ts`):
+`mac:run` and `vpx _tauri` package the app the same way (`scripts/run-mac-service.ts`):
 
 1. `swift build -c release` in `mac/`, copied to `mac-app/src-tauri/binaries/vrcode-mac-<triple>`.
 2. `bun install --frozen-lockfile`, then `bun build --target=bun mac/agent/vrcode-agent.ts` into
@@ -45,14 +45,14 @@ bun run mac:uninstall                    # stop and remove the LaunchAgent and i
    Keychain access list follow the signature, so with ad hoc signing every rebuild asks again.
 5. The bundle is copied to `mac/.build/VRcode Mac.app` and the signature is verified.
 
-`mac:install` copies the app to `~/Library/Application Support/dev.improve.vrcode/VRcode Mac.app`
+`vpx _tauri` copies the app to `~/Library/Application Support/dev.improve.vrcode/VRcode Mac.app`
 and writes the LaunchAgent `dev.improve.vrcode.mac`:
 
 - It has `RunAtLoad`, and `KeepAlive` with `SuccessfulExit = false`. launchd relaunches the app
   after a crash, but **Quit VRcode Mac** in the menu bar stays quit.
 - To start it again: `launchctl kickstart gui/$(id -u)/dev.improve.vrcode.mac`.
 - Its log is `~/Library/Logs/vrcode-mac.log`, which holds the app's and both helpers' output.
-- Re-run `mac:install` after rebuilding.
+- Re-run `vpx _tauri` after rebuilding.
 - While the agent is loaded, `mac:run` refuses to open a second copy, because it would compete for
   the same ports.
 
@@ -60,8 +60,10 @@ The app is Developer ID signed but not notarized. Copies built on this Mac run a
 downloaded on another Mac needs notarization (set `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID`,
 or the App Store Connect API key variables, and Tauri notarizes during the build).
 
-For UI work, `cargo tauri dev` in `mac-app/src-tauri` runs a debug build; build the two helpers into
-`binaries/` first (`bun run mac:run --package-only` does).
+For development, `vpx _dev` runs a debug build under `cargo tauri dev`, with the Quest app beside it
+in mprocs. It stages the helpers into `binaries/` and restarts on Rust, UI and Swift changes; see
+[the development session](../scripts/README.md#development-session). It doesn't sign the app or put
+it in a bundle, so Bluetooth is off.
 
 ## Arguments
 
@@ -148,6 +150,7 @@ as the headset's settings panel, and changes them from the Mac:
 | Headset pairing | the served session and address; waiting headsets; enter the six-digit code the headset shows and Approve, or Reject; paired headsets with Unpair. It uses the bundled `xmux-bridge status --json`, `pair CODE`, `pair --reject` and `unpair ID`. When a headset starts waiting, the window opens on this section with the code field focused |
 | Permissions | Screen & System Audio Recording and Accessibility (granted or not, **Allow…** asks macOS and opens the list), plus shortcuts to the Bluetooth and Local Network lists |
 | AI provider keys | saves or removes the Keychain items `dev.improve.vrcode` / `anthropic-api-key`, `openai-api-key` and `gemini-api-key` that `AiService.swift` reads (Claude, ChatGPT, Gemini; the provider is picked on the Quest). Only the AI mic's Quick answer uses them: in agent mode (the default) the bundled `vrcode-agent` runner starts Claude Code, Codex or Gemini CLI over the Agent Client Protocol, and they use their own logins (`claude`, `codex login`, `gemini`), so sign in to the provider's CLI on this Mac ([protocol](vrcode-protocol.md)). In both modes a Gemini or OpenAI key also lets a model hear what was said to the AI mic in place of the on-device transcript (`AiHearing.swift`); Claude's API takes no audio |
+| Speech-to-text | saves or removes the Keychain item `dev.improve.vrcode` / `elevenlabs-api-key`. With it, both mics' live transcript streams from ElevenLabs Scribe v2 Realtime (`ElevenLabsTranscription.swift`) instead of the on-device recognizer, which stays the fallback when ElevenLabs can't be reached. The service also reads `ELEVENLABS_API_KEY` or `~/.config/vrcode/elevenlabs-api-key`, which this row doesn't show ([protocol](vrcode-protocol.md)) |
 | Log | both helpers' output and the app's own notes; the bridge's "run `xmux pair`" hint reads "approve it in VRcode Mac under Headset pairing" here |
 
 The Quest stays the source of truth for its settings; the Mac shows them and requests changes.

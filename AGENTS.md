@@ -15,16 +15,21 @@
 - Always reinstall the app on the connected Quest after changing anything that ships in it
   (`app/`, `settings-ui/`, `connection/`, native code, bundled assets, or the xmux dependency).
   A passing build or unit test is not enough: the headset keeps running the old APK.
-- Find the headset with `adb devices -l` (`model:Quest_3`; over Wi-Fi its serial is `ip:5555`),
-  then run `ANDROID_SERIAL=<serial> ./gradlew :app:installDebug` and relaunch
-  `dev.improve.vrcode` (Argent `restart-app`, or `adb shell am start -n
-  dev.improve.vrcode/.MainActivity`).
-- Confirm the new build is running before reporting: `adb shell dumpsys package dev.improve.vrcode
-  | grep lastUpdateTime`, plus `adb logcat --pid=$(adb shell pidof dev.improve.vrcode)` for crashes
-  and the feature's own log lines. If no headset is connected, say that the change is not yet
-  installed.
+- Install with `vpx _quest` (`scripts/_quest.ts`). It finds the headset in `adb devices -l`
+  (`model:Quest_3`, its USB serial when it has one; `--serial ip:5555` for Wi-Fi), runs
+  `:app:installDebug`, relaunches `dev.improve.vrcode` and fails unless the package's
+  `lastUpdateTime` changed and the app is running without a crash.
+- Before reporting, also check the feature's own log lines: `adb logcat --pid=$(adb shell pidof
+  dev.improve.vrcode)`. If no headset is connected, say that the change is not yet installed.
 - Several agents share this tree and headset. Reinstalling restarts the app, so mention it in your
   report, and install from a tree that builds.
+
+# Mac app
+
+- Install VRcode Mac (the Tauri app with the Swift service and the xmux bridge) with `vpx _tauri`
+  (`scripts/_tauri.ts`): it builds, reinstalls the LaunchAgent with `--bluetooth` and checks that the
+  new build is listening. This restarts the service the headset uses, so mention it in your report.
+  `vpx _tauri --uninstall` removes it.
 
 Browser automation follows the inherited user instructions: headless `agent-browser`, a managed
 browser, an isolated named session, and no focus stealing or personal browser attachment.

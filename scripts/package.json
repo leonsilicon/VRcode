@@ -1,0 +1,11 @@
+{
+  "name": "vrcode-scripts",
+  "private": true,
+  "type": "module",
+  "description": "The repository's commands, run with vpx: _tauri (install VRcode Mac), _quest (install the Quest app), _dev (the dev launcher).",
+  "bin": {
+    "_dev": "./_dev.ts",
+    "_quest": "./_quest.ts",
+    "_tauri": "./_tauri.ts"
+  }
+}

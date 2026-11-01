@@ -156,12 +156,16 @@ Available app options:
 - Customization has a fixed subtab bar with Pointer, Text mic, AI mic and Quick inputs tabs. Each tab scrolls its own
   controls, and changing tabs starts at the top. The selected tab survives navigation to another
   settings page during the session.
-- Customization → Text mic / AI mic → Mic appearance: independently preview and choose Classic microphone,
-  News microphone, Megaphone, or Banana Phone, in that order. The right-hand Text mic defaults to
-  Classic microphone and transcribes words as spoken; the left-hand AI mic defaults to News
-  microphone, and sends the AI's keystrokes for the focused pane (Enter included when the AI
-  decides the command or prompt should run). The News microphone's cube shows the
-  chosen AI provider's logo on whichever mic wears it.
+- Customization → Text mic → Mic appearance: preview and choose Classic microphone, Walkie-talkie,
+  Megaphone or Banana Phone, in that order. The right-hand Text mic defaults to Classic microphone and
+  transcribes words as spoken. A saved News microphone choice (no longer offered here) falls back
+  to Classic microphone.
+- Customization → AI mic → Mic appearance: the left-hand AI mic always wears the News microphone,
+  whose cube shows the chosen AI provider's logo. It is not configurable yet: a greyed-out
+  **Coming soon** card sits beside it and cannot be selected, and any other saved `ai_mic_prop`
+  loads as `news-microphone`. VRcode Mac shows the same card as a disabled option (`disabled: true`
+  in the settings schema). The AI mic sends the AI's keystrokes for the focused pane (Enter
+  included when the AI decides the command or prompt should run).
 - Customization → AI mic → AI provider: Claude (Anthropic, the default), ChatGPT (OpenAI) or
   Gemini (Google). The Mac sends left-fist requests to that provider, using the API key added in
   VRcode Mac's "AI provider keys" section (Keychain service `dev.improve.vrcode`, accounts
@@ -178,10 +182,12 @@ Available app options:
   provider's coding agent on the Mac (Claude Code, Codex or Gemini CLI, signed in with its own
   login, not the API key) over the Agent Client Protocol: it finds files and runs commands itself
   and works in the target terminal, full auto (no approval prompts), while its thinking and each
-  step stream onto a panel just above or below that window, with Stop. When it finishes, the panel
-  shows what it did for 6 s. Follow-up requests to the same terminal continue its session. Quick
-  answer makes one API call with the key below, shows no panel and only types. Goes out as
-  `agent` in each `AI_REQUEST`; see [the protocol](vrcode-protocol.md).
+  step stream onto a panel just above or below that window, with Stop. The panel is as wide as
+  the window, its text scaled up to match (a window narrower than the panel's own width gets it
+  at that width instead). When it finishes, the panel shows what it did for 6 s. Follow-up
+  requests to the same terminal continue its session. Quick answer makes one API call with the
+  key below, shows no panel and only types. Goes out as `agent` in each `AI_REQUEST`; see
+  [the protocol](vrcode-protocol.md).
 - Customization → AI mic → Model: the chosen provider's models, fastest first. Claude: Haiku 5.5,
   Sonnet 5.5 (the default), Opus 5.5, Fable 5.1. ChatGPT: GPT-6 Luna, GPT-6.1 Terra, GPT-6.1 Sol
   (the default), GPT-6 Astra. Gemini: 3.5 Flash-Lite, 3.8 Flash (the default), 4 Argon. Each
@@ -222,8 +228,10 @@ Available app options:
 
 Preferences are app-private `SharedPreferences`, saved on every change and on pause. Hardware
 keyboard input and voice insertion gestures do not reach terminals while Settings is open.
-The first launch opens the Connection page; once the initial connection has screens, that setup
-panel closes. Subsequent settings openings show Workspace.
+Settings does not open at launch. The Connection page opens on its own only when the connection
+needs the user (a failed round of routes, or a pairing code to enter in VRcode Mac), and closes once
+the connection has screens. If the cmux session has no screens (terminal windows) when the app
+first connects, it opens a terminal in front of the user. Settings opened from the menu or dock shows Workspace.
 
 The menu only exposes implemented app features. Future audio routing, Mac display, hand-role and
 Mac service settings from PLAN.md still need their respective implementations.

@@ -40,6 +40,14 @@ internal object MicPanePlacement {
     return Vector3(eye.x + bearing.x * MIN_REACH_M, y, eye.z + bearing.z * MIN_REACH_M)
   }
 
+  /**
+   * Whether the current pane shows. While its fist is [holding] the mic, only once the recognizer
+   * has transcribed a word into it ([text], finalized or still a guess), so a fist alone shows just
+   * the mic; a pane being added to already has words. A [notice] (the mic could not listen, or the
+   * text could not be typed) shows at once and after the fist opens, so a failure is never silent.
+   */
+  fun shown(holding: Boolean, text: String, notice: String?): Boolean = notice != null || (holding && text.isNotBlank())
+
   /** The pane at [centre], facing eyes at [eye]. */
   fun pose(centre: Vector3, eye: Vector3): Pose = Pose(centre, Quaternion.lookRotation(centre - eye))
 

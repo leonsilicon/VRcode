@@ -37,7 +37,9 @@ import kotlin.math.roundToInt
  * (`SpatialConfig.windowClickButtons` leaves the left buttons out), edge resizing is the right
  * hand's ([EdgeResize]), and the corner handles of the window it points at are off unless the right
  * hand points at that window too. A panel in front of the window (the keyboard, the dock, a voice
- * pane) keeps the press. [EdgeGrip] rides out the pinch's dip and flicker. Main thread only.
+ * pane) keeps the press. [EdgeGrip] rides out the pinch's dip and flicker. A grab-hand cursor
+ * ([LeftHandCursor]) marks where the ray meets a window it would move, open while pointing and
+ * closed while moving, so the left ray reads as the one that moves windows. Main thread only.
  */
 @OptIn(SpatialSDKExperimentalAPI::class)
 internal class LeftHandMove(
@@ -48,6 +50,8 @@ internal class LeftHandMove(
   private val movable: (ScreenWindow) -> Boolean,
   private val move: (ScreenId, Pose) -> Unit,
   private val onStart: (ScreenWindow) -> Unit,
+  /** The grab cursor's size, as Settings' pointer cursor size (1 is its usual size). */
+  private val cursorSize: () -> Float = { 1f },
 ) : AutoCloseable {
   private class Hand(val origin: Vector3, val direction: Vector3, val pressed: Boolean)
   private class Grab(val window: ScreenWindow, val motion: TitleBarRayDrag)
@@ -62,6 +66,8 @@ internal class LeftHandMove(
   private var sdkHit: SdkHit? = null
   /** Windows whose corner handles this class turned off. */
   private val cornersOff = HashSet<ScreenWindow>()
+  /** The open hand on a window the left pinch would move, the closed one on the window it moves. */
+  private val cursor = LeftHandCursor(activity)
 
   private val observer: (PointerEvent) -> Unit = { event ->
     val hit = event.hitInfo
@@ -94,6 +100,7 @@ internal class LeftHandMove(
       else if (hand != null && hand.pressed) follow(current, hand, head!!)
     }
     var pointed = grab?.window
+    var hover: ScreenWindow? = null
     if (grab == null) {
       if (hand == null) {
         grip.lost()
@@ -101,11 +108,25 @@ internal class LeftHandMove(
       } else {
         val target = target(hand, inFront, blocked)
         pointed = target
+        hover = target
         val grabbed = grip.press(now, hand.pressed, target) { near(it, hand, blocked) }
         if (grabbed != null && head != null) start(grabbed, hand, head)
       }
     }
     corners(off = pointed?.takeIf { it != rightWindow() })
+    showCursor(hover, hand)
+  }
+
+  /** The closed hand at the grabbed point while moving a window, else the open hand where [hand] points at [hover]. */
+  private fun showCursor(hover: ScreenWindow?, hand: Hand?) {
+    val size = cursorSize()
+    grab?.let { return cursor.show(it.window, it.motion.anchor, grabbing = true, size) }
+    val window = hover ?: return cursor.hide()
+    val pose = window.pose() ?: return cursor.hide()
+    val scale = window.panelScale()
+    val pixel = hand?.let { titleBarRayPixel(pose, scale.centre, scale.metresPerPixelX, scale.metresPerPixelY, it.origin, it.direction) }
+      ?: return cursor.hide()
+    cursor.show(window, pixel, grabbing = false, size)
   }
 
   /** Ends any move and turns every corner handle back on. */
@@ -114,6 +135,7 @@ internal class LeftHandMove(
     grip.lost()
     press.reset()
     corners(off = null, force = true)
+    cursor.hide()
   }
 
   override fun close() {
@@ -121,6 +143,7 @@ internal class LeftHandMove(
     isdk?.unregisterObserver(observer)
     isdk = null
     aim.close()
+    cursor.close()
   }
 
   private fun canMove(window: ScreenWindow) = window.visible && window.screen != null && movable(window)

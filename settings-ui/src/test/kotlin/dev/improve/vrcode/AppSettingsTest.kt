@@ -22,7 +22,7 @@ class AppSettingsTest {
   }
 
   @Test fun sanitizingPreservesValidUserChoices() {
-    val chosen = AppSettings(passthrough = false, windowDistanceM = 2.1f, autoConnect = false, windowStyle = WindowStyle.Windows, textMicProp = VoiceProp.Banana, aiMicProp = VoiceProp.Megaphone, defaultWindowMode = WindowMode.Follow,
+    val chosen = AppSettings(passthrough = false, windowDistanceM = 2.1f, autoConnect = false, windowStyle = WindowStyle.Windows, textMicProp = VoiceProp.Banana, defaultWindowMode = WindowMode.Follow,
       pointerCursor = PointerCursorStyle.Crosshair, pointerCursorSize = 1.5f, pinchDrag = PinchDrag.Select)
     assertEquals(chosen, chosen.sanitized())
   }
@@ -50,6 +50,18 @@ class AppSettingsTest {
     for (prop in VoiceProp.entries) assertEquals(prop, VoiceProp.fromStorage(prop.storageValue))
     assertEquals(VoiceProp.NewsMicrophone, VoiceProp.fromStorage(null, VoiceMic.Ai.defaultProp))
     assertEquals(VoiceProp.NewsMicrophone, VoiceProp.fromStorage("removed-prop", VoiceMic.Ai.defaultProp))
+  }
+
+  @Test fun eachMicOnlyKeepsLooksItOffers() {
+    assertEquals(listOf(VoiceProp.Microphone, VoiceProp.WalkieTalkie, VoiceProp.Megaphone, VoiceProp.Banana), VoiceMic.Text.props)
+    assertEquals("voice-props/walkie-talkie.glb", VoiceProp.WalkieTalkie.assetPath(AiProvider.Claude))
+    assertEquals(listOf(VoiceProp.NewsMicrophone), VoiceMic.Ai.props)
+    assertFalse(VoiceMic.Text.comingSoon)
+    assertTrue(VoiceMic.Ai.comingSoon)
+    for (mic in VoiceMic.entries) assertTrue(mic.defaultProp in mic.props)
+    // A text mic saved as the news microphone falls back to the classic; the AI mic is always the news microphone.
+    assertEquals(VoiceProp.Microphone, AppSettings(textMicProp = VoiceProp.NewsMicrophone).sanitized().textMicProp)
+    for (prop in VoiceProp.entries) assertEquals(VoiceProp.NewsMicrophone, AppSettings(aiMicProp = prop).sanitized().aiMicProp)
   }
 
   @Test fun theAiProviderDefaultsToClaudeAndPicksTheNewsMicLogo() {

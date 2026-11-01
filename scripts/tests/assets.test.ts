@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { parseGLB, validateAssets, validateVariant } from "../validate-assets";
 import { brandGLB, brandNewsMic, providers } from "../brand-news-mic";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { prepareWalkieTalkie, walkieTalkie } from "../prepare-walkie-talkie";
+import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -63,14 +64,49 @@ test("news mic branding writes one valid GLB per AI provider and is safe to reru
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("the walkie-talkie is prepared reproducibly from its source download", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "vrcode-walkie-talkie-"));
+  try {
+    await mkdir(join(directory, "source"));
+    for (const name of [walkieTalkie.source, "catalog.json"]) {
+      await copyFile(new URL(`../../assets/voice-props/${name}`, import.meta.url), join(directory, name));
+    }
+    const read = async (name: string) => Buffer.from(await Bun.file(join(directory, name)).arrayBuffer());
+    const entry = await prepareWalkieTalkie(directory);
+    const first = await read(walkieTalkie.file);
+    expect((await prepareWalkieTalkie(directory)).bytes).toBe(first.length);
+    expect((await read(walkieTalkie.file)).equals(first)).toBe(true);
+    const ids = (JSON.parse((await read("catalog.json")).toString()).variants as { id: string }[]).map((item) => item.id);
+    expect(ids.filter((id) => id === walkieTalkie.id)).toHaveLength(1);
+    expect(ids.indexOf(walkieTalkie.id)).toBe(ids.indexOf("news-microphone") + 1);
+    expect((await validateVariant(entry, directory)).status).toBe("passed");
+    // The checked-in prop is this output (the texture resize is the macOS sips tool, so allow its byte count to differ).
+    const delivered = (await Bun.file(new URL("../../assets/voice-props/catalog.json", import.meta.url)).json()).variants
+      .find((item: { id: string }) => item.id === walkieTalkie.id);
+    expect({ ...delivered, bytes: 0 }).toEqual({ ...entry, bytes: 0 });
+    const { data } = parseGLB(first);
+    expect(data.nodes.find((node) => node.name === walkieTalkie.gripNode)?.children).toHaveLength(2);
+    expect((data.asset as { copyright?: string }).copyright).toContain("CC BY 3.0");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("every delivered GLB meets the asset catalog contract", async () => {
   const report = await validateAssets();
-  expect(report.variants.map((variant) => variant.id)).toEqual(["microphone", "news-microphone", "megaphone", "banana"]);
+  expect(report.variants.map((variant) => variant.id)).toEqual(["microphone", "news-microphone", "walkie-talkie", "megaphone", "banana"]);
   expect(report.variants.every((variant) => variant.status === "passed")).toBe(true);
   const logos = report.variants.find((variant) => variant.id === "news-microphone")!.logos!;
   expect(logos.map((logo) => [logo.id, logo.file, logo.status])).toEqual(
     providers.map((provider) => [provider.id, `news-microphone-${provider.id}.glb`, "passed"]),
   );
+});
+
+test("the megaphone's bell faces +Z, away from the wearer, and its mouthpiece -Z", async () => {
+  const { data } = parseGLB(Buffer.from(await Bun.file(new URL("../../assets/voice-props/megaphone.glb", import.meta.url)).arrayBuffer()));
+  const position = data.accessors[data.meshes[0].primitives[0].attributes.POSITION] as { min: number[]; max: number[] };
+  // The bell's rim is 21 cm in front of the grip; the mouthpiece end is 7 cm behind it.
+  expect(position.max[2]).toBeGreaterThan(0.2);
+  expect(position.min[2]).toBeGreaterThan(-0.1);
+  expect(data.nodes.find((node) => node.name === "PROP_SpeechAnchor_megaphone")!.translation![2]).toBeLessThan(0);
 });
 
 test("GLB parser rejects truncation and incorrect chunk lengths", async () => {

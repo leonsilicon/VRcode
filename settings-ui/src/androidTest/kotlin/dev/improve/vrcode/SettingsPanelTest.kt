@@ -31,16 +31,20 @@ class SettingsPanelTest {
       preferences.edit().clear().putString("voice_prop", legacy).commit()
       val settings = store.load()
       assertEquals(VoiceProp.Microphone, settings.textMicProp)
-      assertEquals(if (legacy == "banana") VoiceProp.Banana else VoiceProp.NewsMicrophone, settings.aiMicProp)
+      assertEquals(VoiceProp.NewsMicrophone, settings.aiMicProp) // the AI mic only wears the news microphone
     }
     preferences.edit().clear().putString("voice_prop", "banana")
       .putString("text_mic_prop", "removed-prop").putString("ai_mic_prop", "removed-prop").commit()
     assertEquals(VoiceProp.Microphone, store.load().textMicProp)
     assertEquals(VoiceProp.NewsMicrophone, store.load().aiMicProp)
+    // The news microphone left the text mic's picker, and the AI mic's other looks are coming later.
+    preferences.edit().clear().putString("text_mic_prop", "news-microphone").putString("ai_mic_prop", "banana").commit()
+    assertEquals(VoiceProp.Microphone, store.load().textMicProp)
+    assertEquals(VoiceProp.NewsMicrophone, store.load().aiMicProp)
     store.save(AppSettings(textMicProp = VoiceProp.Megaphone, aiMicProp = VoiceProp.Microphone))
     assertFalse(preferences.contains("voice_prop"))
     assertEquals(VoiceProp.Megaphone, store.load().textMicProp)
-    assertEquals(VoiceProp.Microphone, store.load().aiMicProp)
+    assertEquals(VoiceProp.NewsMicrophone, store.load().aiMicProp)
     preferences.edit().clear().commit()
   }
 
@@ -108,13 +112,25 @@ class SettingsPanelTest {
     for (mic in VoiceMic.entries) {
       val tab = if (mic == VoiceMic.Text) "TextMic" else "AiMic"
       compose.onNodeWithTag("settings-customization-tab-$tab").performClick()
-      for (prop in VoiceProp.entries) {
+      for (prop in mic.props) {
         compose.onNodeWithTag("settings-voice-prop-${prop.storageValue}")
           .performScrollTo().assertIsDisplayed().performClick().assertIsSelected()
         compose.runOnIdle { assertEquals(prop, mic.prop(SettingsStore(preferences).load())) }
-        for (other in VoiceProp.entries.filter { it != prop }) {
+        for (other in mic.props.filter { it != prop }) {
           compose.onNodeWithTag("settings-voice-prop-${other.storageValue}").assertIsNotSelected()
         }
+      }
+      for (missing in VoiceProp.entries - mic.props.toSet()) {
+        compose.onNodeWithTag("settings-voice-prop-${missing.storageValue}").assertDoesNotExist()
+      }
+      val comingSoon = compose.onNodeWithTag("settings-voice-prop-${VoiceMic.COMING_SOON_VALUE}")
+      if (mic.comingSoon) {
+        // Shown beside the news microphone, but tapping it changes nothing.
+        comingSoon.performScrollTo().assertIsDisplayed().assertIsNotEnabled().assertIsNotSelected().performClick()
+        compose.onNodeWithTag("settings-voice-prop-${mic.defaultProp.storageValue}").assertIsSelected()
+        compose.runOnIdle { assertEquals(mic.defaultProp, mic.prop(SettingsStore(preferences).load())) }
+      } else {
+        comingSoon.assertDoesNotExist()
       }
     }
     // Choose different props and verify independence across tabs, pages and recreation.
@@ -144,7 +160,7 @@ class SettingsPanelTest {
       }
     }
     compose.onNodeWithTag("settings-ai-provider-gemini").performScrollTo().performClick()
-    compose.onNodeWithText("Your Mac sends what you say to Gemini", substring = true).assertExists()
+    compose.onNodeWithText("Your Mac runs ${AiProvider.Gemini.agentCli} with", substring = true).assertExists()
     // Each provider offers only its own models and keeps its choice when switching away and back.
     compose.onNodeWithTag("settings-ai-model-gemini-3.8-flash").performScrollTo().assertIsSelected()
     compose.onNodeWithTag("settings-ai-model-claude-sonnet-5-5").assertDoesNotExist()
@@ -157,7 +173,7 @@ class SettingsPanelTest {
     compose.onNodeWithTag("settings-ai-model-claude-sonnet-5-5").performScrollTo().assertIsSelected() // the Claude default
     compose.onNodeWithTag("settings-ai-model-claude-opus-5-5").performScrollTo().performClick().assertIsSelected()
     compose.onNodeWithTag("settings-ai-model-claude-sonnet-5-5").assertIsNotSelected()
-    compose.onNodeWithText("Your Mac sends what you say to Claude (Claude Opus 5.5)", substring = true).assertExists()
+    compose.onNodeWithText("Your Mac runs ${AiProvider.Claude.agentCli} with Claude Opus 5.5", substring = true).assertExists()
     compose.runOnIdle {
       val saved = SettingsStore(preferences).load()
       assertEquals(AiModel.ClaudeOpus, saved.aiModel())

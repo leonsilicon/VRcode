@@ -47,7 +47,7 @@ export async function main(args = Bun.argv.slice(2)) {
   }
   const serviceArgs = args.filter((arg) => arg !== "--install" && arg !== "--package-only");
   if (!args.includes("--install") && !args.includes("--package-only") && await agentLoaded(domain)) {
-    throw new Error(`the installed VRcode Mac (${LABEL}) is running and holds the service ports. Run \`bun run mac:install\` to update it, or \`bun run mac:uninstall\` first.`);
+    throw new Error(`the installed VRcode Mac (${LABEL}) is running and holds the service ports. Run \`vpx _tauri\` to update it, or \`vpx _tauri --uninstall\` first.`);
   }
   const app = await packageApp();
   if (args.includes("--install")) await install(domain, app, serviceArgs);

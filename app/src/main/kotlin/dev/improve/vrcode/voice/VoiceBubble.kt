@@ -159,7 +159,8 @@ fun VoiceBubble(
           withStyle(SpanStyle(color = Dim)) { append(note.liveVolatile.trim()) }
         }
         if (committed.isEmpty() && note.liveVolatile.isBlank()) {
-          withStyle(SpanStyle(color = Dim)) { append(note.notice ?: if (listening) "Say something…" else "") }
+          // A live pane only shows once a word is transcribed, so an empty one is only ever a notice.
+          withStyle(SpanStyle(color = Dim)) { append(note.notice ?: "") }
         }
       },
       style = TextStyle(fontSize = 15.sp, lineHeight = 20.sp),

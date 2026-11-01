@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
@@ -59,7 +60,8 @@ import kotlinx.coroutines.CoroutineScope
  * the text is typed there as soon as the Mac finalizes it (dictation) or the AI answers. The AI
  * decides whether to press Enter (its keystrokes include it); a dictation is followed by Enter only
  * when the text mic's Enter-after toggle is on (remembered; off by default).
- * The live voice pane floats just above the mic in the fist while it is closed; the other hand
+ * The live voice pane floats just above the mic in the fist while it is closed, from the first
+ * transcribed word on (until then the fist shows only the mic); the other hand
  * presses its buttons: on a dictation the Enter-after toggle in the corner nearest that hand, and
  * Cancel and Clear at the far end. It hides when the fist opens,
  * unless the text could not be typed (no terminal, the AI failed): then it stays, staged, for a
@@ -77,13 +79,22 @@ class VoiceFeature(
   private val dockPose: () -> Pose? = { null },
   /** Space already occupied by action info above a terminal; keep thinking clear of it. */
   private val terminalInfoHeight: (ScreenWindow) -> Float = { 0f },
+  /** Space already occupied under a terminal (its key bar); thinking shown below clears it. */
+  private val terminalBarHeight: (ScreenWindow) -> Float = { 0f },
   predictedTimeNs: () -> Long,
 ) {
   private val hands = HandInput(activity, predictedTimeNs)
   private val rightFist = RightFistInput(activity, predictedTimeNs)
   private val link: SpeechLink = SpeechLink(scope) { voice.onSpeechEvent(it) }
   val voice: VoiceController =
-    VoiceController(link, aiContext = ::paneContext, deliver = ::deliver, aiModel = { aiModel }, aiThinking = { aiThinking }) {
+    VoiceController(
+      link,
+      aiContext = ::paneContext,
+      deliver = ::deliver,
+      aiModel = { aiModel },
+      aiThinking = { aiThinking },
+      micMuted = { activity.getSystemService(AudioManager::class.java)?.isMicrophoneMute == true },
+    ) {
       activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     }
 
@@ -253,7 +264,7 @@ class VoiceFeature(
     // Resolve the prop first: the pane and badge use its visibility in this same frame.
     placeProp()
     syncPanes()
-    if (sceneReady) thinkingPanels.tick(voice.notes, { targets[it]?.window }, aiThinking != AiThinking.Below, now, terminalInfoHeight)
+    if (sceneReady) thinkingPanels.tick(voice.notes, { targets[it]?.window }, aiThinking != AiThinking.Below, now, terminalInfoHeight, terminalBarHeight)
     placeMarker()
     if (allowGestures && hands.leftPinched) onLeftPinch()
   }
@@ -270,6 +281,7 @@ class VoiceFeature(
     voiceHand = null
     voice.listening?.let { note -> focusedTarget()?.let { targets[note] = it } }
     voice.stopListening()
+    activeNote?.let(voice::release) // a pane that could only show an error hides with the mic
   }
 
   private fun focusedTarget(): Target? {
@@ -414,8 +426,10 @@ class VoiceFeature(
 
   /**
    * Only the current pane is visible, floating just above the mic in the fist (see [paneAnchor]):
-   * while its fist is closed, and afterwards only if it could not be typed (it then carries a
-   * notice). Finishing and the AI's thinking show on the target window's header instead.
+   * while its fist is closed once a word has been transcribed (the mic itself shows from the fist
+   * on, see [placeProp]), and afterwards only if it could not be typed (it then carries a notice);
+   * see [MicPanePlacement.shown]. Finishing and the AI's thinking show on the target window's
+   * header instead.
    */
   private fun syncPanes() {
     if (!sceneReady) return
@@ -437,7 +451,7 @@ class VoiceFeature(
     val head = headPose()
     for (slot in slots) {
       val note = slot.note ?: continue
-      val live = voiceHand != null || voice.listening == note || note.notice != null
+      val live = MicPanePlacement.shown(voiceHand != null || voice.listening == note, note.text, note.notice)
       if (note != activeNote || !live || head == null) {
         slot.show(false)
         continue

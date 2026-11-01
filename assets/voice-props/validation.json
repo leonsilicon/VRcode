@@ -96,6 +96,21 @@
       ]
     },
     {
+      "id": "walkie-talkie",
+      "status": "passed",
+      "bytes": 251680,
+      "triangles": 794,
+      "primitives": 1,
+      "alphaModes": [
+        "OPAQUE"
+      ],
+      "dimensionsM": [
+        0.05647105723619461,
+        0.19999999552965164,
+        0.04535989835858345
+      ]
+    },
+    {
       "id": "megaphone",
       "status": "passed",
       "bytes": 4284996,

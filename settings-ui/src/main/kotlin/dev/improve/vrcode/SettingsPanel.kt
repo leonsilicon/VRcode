@@ -24,6 +24,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
@@ -244,17 +247,23 @@ private fun MicrophoneControls(mic: VoiceMic, settings: AppSettings, onChange: (
   }
   Text("Mic appearance", style = MaterialTheme.typography.titleLarge)
   Column(Modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-    for (row in VoiceProp.entries.chunked(2)) {
-      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+    // null is the "Coming soon" placeholder, which follows the real looks and cannot be chosen.
+    val cards: List<VoiceProp?> = if (mic.comingSoon) mic.props + null else mic.props
+    for (row in cards.chunked(2)) {
+      Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         for (prop in row) {
-          VoicePropOption(prop, settings.aiProvider, mic.prop(settings) == prop, Modifier.weight(1f)) {
-            onChange(mic.withProp(settings, prop))
+          val card = Modifier.weight(1f).fillMaxHeight()
+          if (prop == null) {
+            ComingSoonVoicePropOption(card)
+          } else {
+            VoicePropOption(prop, settings.aiProvider, mic.prop(settings) == prop, card) { onChange(mic.withProp(settings, prop)) }
           }
         }
+        if (row.size == 1) Spacer(Modifier.weight(1f)) // an odd last card keeps half width
       }
     }
   }
-  Text("Changes only the ${mic.label.lowercase()}'s appearance. Each mic keeps its own selection.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+  Text(mic.appearanceNote, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable
@@ -344,6 +353,33 @@ private fun VoicePropOption(prop: VoiceProp, provider: AiProvider, selected: Boo
         Text(prop.label, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleMedium)
       }
       Text(prop.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+  }
+}
+
+/** A greyed-out card where future looks will go: visible, but not selectable. */
+@Composable
+private fun ComingSoonVoicePropOption(modifier: Modifier) {
+  Surface(
+    modifier,
+    shape = RoundedCornerShape(16.dp),
+    color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.5f),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+  ) {
+    Column(
+      Modifier.testTag("settings-voice-prop-${VoiceMic.COMING_SOON_VALUE}")
+        .semantics { role = Role.RadioButton; selected = false; disabled() }.padding(14.dp),
+      verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+      Box(Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
+        Text("?", style = MaterialTheme.typography.displayMedium, color = MaterialTheme.colorScheme.outline)
+      }
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        RadioButton(false, onClick = null, enabled = false)
+        Text(VoiceMic.COMING_SOON_LABEL, Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant)
+      }
+      Text(VoiceMic.COMING_SOON_DETAIL, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
   }
 }

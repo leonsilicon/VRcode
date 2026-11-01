@@ -28,6 +28,7 @@ import dev.improve.vrcode.hands.neckPoint
 import dev.improve.vrcode.hands.viewToScene
 import dev.improve.vrcode.keyboard.KeyboardFeature
 import dev.improve.vrcode.voice.VoiceFeature
+import dev.improve.vrcode.windows.xmuxKey
 import dev.improve.xmux.client.Key
 import dev.improve.xmux.client.Modifier
 import dev.improve.xmux.spatial.Placement
@@ -117,8 +118,7 @@ class HandMenusFeature(
   private fun quickAngles(ring: QuickInputRing): List<Float> = ring.placed.map { (slot, _) -> slot.degrees }
 
   private fun sendQuickInput(input: QuickInput) {
-    val key = input.key ?: return keyboard.show(headPose())
-    focusedKey(Key(key, if (input.ctrl) setOf(Modifier.Ctrl) else emptySet()))
+    focusedKey(input.xmuxKey() ?: return keyboard.show(headPose()))
   }
 
   private val right =
@@ -160,7 +160,6 @@ class HandMenusFeature(
   }
 
   fun onSceneTick(enabled: Boolean) {
-    keyboard.onSceneTick()
     val ring = quickInputs()
     if (ring != shownQuickInputs) {
       shownQuickInputs = ring
@@ -175,6 +174,7 @@ class HandMenusFeature(
       left.setItems(items, pieEvenAngles(items.size))
     }
     val head = headPose()
+    keyboard.onSceneTick(head)
     // Dictation owns the hands while it listens (either hand's fist).
     val blocked =
       when {

@@ -12,6 +12,7 @@ enum class VoiceProp(
 ) {
   Microphone("microphone", "Classic microphone", "A silver grille and cyan ring.", R.drawable.voice_prop_microphone),
   NewsMicrophone("news-microphone", "News microphone", "Your AI provider's logo on the cube.", R.drawable.voice_prop_news_microphone_claude),
+  WalkieTalkie("walkie-talkie", "Walkie-talkie", "Breaker, breaker. Come in.", R.drawable.voice_prop_walkie_talkie),
   Megaphone("megaphone", "Megaphone", "Make an announcement.", R.drawable.voice_prop_megaphone),
   Banana("banana", "Banana Phone", "Your daily serving of dictation.", R.drawable.voice_prop_banana);
 

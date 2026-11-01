@@ -12,7 +12,10 @@ resizing its grid, clipboard actions and operations launched from Terminal actio
 and live streams stay visible until they finish; successful actions clear their notice immediately.
 Errors stay for ten seconds, with Dismiss to close them sooner. The box follows the terminal's position, rotation and size,
 hides with the terminal, and keeps its captured target when focus changes. Creation moves its
-message from the source window to the new terminal once mounted. Concurrent actions retain their
+message from the source window to the new terminal once mounted. An action with no window to
+target (none is shown, or VRcode isn't connected to the Mac) uses one box placed 1 m ahead of the
+user at the moment it appears, level with their heading; logcat tag `VrcodeTerminalInfo` logs
+`info box ahead of the user (no target window)`. Concurrent actions retain their
 own messages. AI mic thinking stacks above an existing info box (or stays below if configured).
 Failures never open Terminal actions automatically; that panel opens only when requested.
 

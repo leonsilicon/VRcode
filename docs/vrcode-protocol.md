@@ -30,12 +30,12 @@ connection.
 | Kind | Name | Direction | Body |
 |---|---|---|---|
 | 1 | `HELLO` | headset -> Mac | `{"client":"vrcode","protocol":1}` |
-| 2 | `WELCOME` | Mac -> headset | `{"service":"vrcode-mac","protocol":1,"locale":"en_US","ready":true}`; `ready` is false while speech assets download |
+| 2 | `WELCOME` | Mac -> headset | `{"service":"vrcode-mac","protocol":1,"locale":"en_US","ready":true}`; `ready` is false while the on-device speech assets download and there is no ElevenLabs key |
 | 3 | `AUDIO_START` | headset -> Mac | `{"sampleRate":16000,"channels":1,"encoding":"pcm_s16le","locale":"en-US","ai":true}`; `locale` is optional; `ai` true (an AI-mic dictation) has the Mac keep the utterance's audio for an `AI_REQUEST` to hear (below), even while its speech model downloads |
 | 4 | `AUDIO` | headset -> Mac | raw PCM in the format `AUDIO_START` named |
 | 5 | `AUDIO_END` | headset -> Mac | empty; the Mac finalizes and sends a `TRANSCRIPT` with `done` |
 | 6 | `AUDIO_CANCEL` | headset -> Mac | empty; the Mac drops the utterance (and its kept audio) and sends nothing more for it |
-| 7 | `TRANSCRIPT` | Mac -> headset | `{"final":"...","volatile":"...","done":false}`: `final` is all finalized text so far, `volatile` the current guess after it |
+| 7 | `TRANSCRIPT` | Mac -> headset | `{"final":"...","volatile":"...","done":false}`: `final` is all finalized text so far, `volatile` the current guess after it; from ElevenLabs Scribe with a key, else the on-device recognizer (Speech-to-text, below) |
 | 8 | `ERROR` | Mac -> headset | `{"message":"..."}` |
 | 9 | `CMUX_REQUEST` | headset -> Mac | One public `cmux.protocol/2` request envelope, including its own string request ID and mutation idempotency key |
 | 10 | `CMUX_EVENT` | Mac -> headset | The cmux response, stream item, or stream end envelope unchanged; `connection_end` reports a lost local cmux socket |
@@ -88,8 +88,23 @@ stay on the Mac: VRcode Mac stores them in the Keychain and never sends them to 
 
 AI requests run beside the audio path, so a slow answer never delays audio frames.
 
+**Speech-to-text.** With an ElevenLabs key in VRcode Mac (Keychain `dev.improve.vrcode` /
+`elevenlabs-api-key`, else `ELEVENLABS_API_KEY`, else `~/.config/vrcode/elevenlabs-api-key`, read
+per utterance), each utterance is one ElevenLabs Scribe v2 Realtime session
+(`ElevenLabsTranscription.swift`: `scribe_v2_realtime`, manual commit, `language_code` from
+`--locale`, `no_verbatim`, developer names as `keyterms`). The Mac forwards the audio in 0.1–1 s
+chunks; Scribe's partial transcript becomes `volatile` and its committed text `final`, and
+`AUDIO_END` commits and answers with `done` (after at most 6 s, from the partial text if no commit
+came back). Without a key the on-device recognizer (`SpeechAnalyzer`) is used. If ElevenLabs fails
+for an utterance (no session within 5 s, a rejected key, quota, a server error), the on-device
+recognizer takes over when its model is ready: it hears the audio so far and the rest, and its
+`TRANSCRIPT`s replace Scribe's. Otherwise the headset gets an `ERROR` for the utterance. The audio
+leaves the Mac only for ElevenLabs. `VRCODE_ELEVENLABS_API_BASE` points it at another server
+(`scripts/tests/elevenlabs-speech.test.ts` uses a fake).
+
 **Hearing.** The on-device recognizer spells developer names by sound ("claw code" for Claude
-Code), so its `TRANSCRIPT` is only the live preview on an AI pane. The Mac keeps each AI-mic
+Code; ElevenLabs' keyterms help, but it doesn't see the screen), so its `TRANSCRIPT` is only the
+live preview on an AI pane. The Mac keeps each AI-mic
 dictation's audio (`AUDIO_START` `ai`: up to about 3 minutes each, the last 12 per connection), and
 an `AI_REQUEST` naming them in `utterances` is answered from what a model hears in the joined
 recording with the target pane's screen in view (`AiHearing.swift`), not from `transcript`. That
@@ -148,7 +163,7 @@ through the Mac service) use `scripts/lib/fake-acp-agent.ts` this way. Requests 
 
 `WELCOME` adds `cmux: true` when background control is available. Speech readiness is independent:
 control starts before microphone authorization or speech model preparation. `--control-only` runs
-the Mac service without loading speech. The Quest opens its own control connection through service
+the Mac service without loading the on-device recognizer (with an ElevenLabs key, speech still works). The Quest opens its own control connection through service
 2 of the existing pinned, authenticated relay; direct non-loopback service connections cannot use
 cmux control, including when legacy audio is bound with `--any-interface`.
 

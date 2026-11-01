@@ -48,6 +48,7 @@ import android.util.Log
 import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Vector3
+import com.meta.spatial.toolkit.Scale
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.Visible
 import dev.improve.vrcode.voice.VoiceNote.Phase
@@ -65,7 +66,10 @@ private val Done = Color(0xFF22A45D)
 private val Problem = Color(0xFFFF6B6B)
 private val StopFace = Color(0xFF3A3D45)
 
-/** Where a thinking panel sits: centred just above or below its window, in its plane, facing the same way. */
+/**
+ * Where a thinking panel sits: centred just above or below its window, in its plane, facing the same
+ * way, and as wide as the window.
+ */
 internal object ThinkingPlacement {
   /** Space between the window's edge and the panel. */
   const val GAP_M = 0.015f
@@ -82,6 +86,14 @@ internal object ThinkingPlacement {
     val up = windowHeightM / 2f + GAP_M + panelHeightM / 2f + offsetM
     return Pose(window.t + window.q.times(Vector3(0f, if (above) up else -up, -FORWARD_M)), window.q)
   }
+
+  /**
+   * The uniform scale that stretches a panel [panelWidthM] wide (at the shared text scale) across a
+   * window [windowWidthM] wide, so its text grows with the window. A window narrower than the panel
+   * keeps it at 1: the panel then overhangs it rather than shrinking its text below that size.
+   */
+  fun scale(windowWidthM: Float, panelWidthM: Float): Float =
+    (windowWidthM / panelWidthM).takeIf { it.isFinite() }?.coerceAtLeast(1f) ?: 1f
 }
 
 /** Shown on the thinking panel when its Stop was pressed. */
@@ -90,8 +102,9 @@ internal const val AI_STOPPED = "Stopped; nothing was typed"
 /**
  * The AI mic's thinking panels. While the Mac's agent works out the keystrokes for a terminal
  * window (an AI pane in [Phase.Thinking] asked with thinking on), a panel just above or below that
- * window streams its thinking and each tool call, with Stop. Once it answers, the panel shows what
- * it typed and why for a few seconds, or why nothing was typed, then hides. One panel per window
+ * window, stretched to its width, streams its thinking and each tool call, with Stop. Once it
+ * answers, the panel shows what it typed and why for a few seconds, or why nothing was typed, then
+ * hides. One panel per window
  * (the newest run); panels are pooled, as each mount registers a new panel. Main thread only.
  */
 internal class ThinkingPanels(private val xmux: XmuxSpatial, private val onStop: (VoiceNote) -> Unit) {
@@ -104,6 +117,14 @@ internal class ThinkingPanels(private val xmux: XmuxSpatial, private val onStop:
     var run by mutableStateOf<Run?>(null)
     var shown = false
       private set
+    private var scale = 1f
+
+    fun scale(value: Float) {
+      if (scale == value) return
+      entity.setComponent(Scale(Vector3(value, value, value)))
+      scale = value
+      Log.i(TAG, "thinking panel scaled to %.2fx to span its window".format(value))
+    }
 
     fun show(value: Boolean) {
       if (shown == value) return
@@ -114,15 +135,15 @@ internal class ThinkingPanels(private val xmux: XmuxSpatial, private val onStop:
 
   private val runs = mutableListOf<Run>()
   private val slots = mutableListOf<Slot>()
-  private val panelHeightM: Float get() = HEIGHT_PX * xmux.config.windowWidthM / xmux.spec.widthPx
+  private val metresPerPx: Float get() = xmux.config.windowWidthM / xmux.spec.widthPx
 
   /**
    * Picks up new agent runs among [notes] (their window from [windowOf], the window focused when the
    * fist opened), ends finished ones after a while, and places each shown panel [above] or below
-   * its window. Call every frame.
+   * its window, as wide as it. Call every frame.
    */
   fun tick(notes: List<VoiceNote>, windowOf: (VoiceNote) -> ScreenWindow?, above: Boolean, now: Long,
-    occupiedAbove: (ScreenWindow) -> Float = { 0f }) {
+    occupiedAbove: (ScreenWindow) -> Float = { 0f }, occupiedBelow: (ScreenWindow) -> Float = { 0f }) {
     for (note in notes) {
       if (note.mode != VoiceNote.Mode.Ai || !note.agent || note.phase != Phase.Thinking || runs.any { it.note == note }) continue
       val window = windowOf(note) ?: continue
@@ -147,8 +168,10 @@ internal class ThinkingPanels(private val xmux: XmuxSpatial, private val onStop:
         slot.show(false)
         continue
       }
-      slot.entity.setComponent(Transform(ThinkingPlacement.pose(pose, run.window.heightM, panelHeightM, above,
-        if (above) occupiedAbove(run.window) else 0f)))
+      val scale = ThinkingPlacement.scale(run.window.widthM, WIDTH_PX * metresPerPx)
+      slot.scale(scale)
+      slot.entity.setComponent(Transform(ThinkingPlacement.pose(pose, run.window.heightM, HEIGHT_PX * metresPerPx * scale, above,
+        if (above) occupiedAbove(run.window) else occupiedBelow(run.window))))
       slot.show(true)
     }
   }
@@ -181,8 +204,9 @@ internal class ThinkingPanels(private val xmux: XmuxSpatial, private val onStop:
 
   companion object {
     private const val TAG = "vrcode"
-    const val WIDTH_PX = 560
-    const val HEIGHT_PX = 200
+    /** Laid out wide and short, as [ThinkingPlacement.scale] enlarges it, text and all, to its window's width. */
+    const val WIDTH_PX = 640
+    const val HEIGHT_PX = 170
     const val ANSWER_MS = 6_000L
     const val PROBLEM_MS = 10_000L
     const val STOPPED_MS = 2_500L

@@ -1,0 +1,13 @@
+# VRcode's development stack, started by `vpx _dev` (scripts/_dev.ts). In mprocs, r restarts the
+# selected process: on `mac` that rebuilds the helpers, on `quest` it reinstalls the app.
+procs:
+  mac:
+    cmd: ["bun", "scripts/dev/mac.ts"]
+    cwd: "<CONFIG_DIR>/../.."
+    autostart: true
+    stop: SIGINT
+  quest:
+    cmd: ["bun", "scripts/dev/quest.ts"]
+    cwd: "<CONFIG_DIR>/../.."
+    autostart: true
+    stop: SIGINT

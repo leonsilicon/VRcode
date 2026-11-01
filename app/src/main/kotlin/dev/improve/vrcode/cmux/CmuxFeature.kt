@@ -39,7 +39,9 @@ class CmuxFeature(
   private val defaultTerminalSize: () -> TerminalSize,
 ) {
   private val catalog = CmuxCatalog(activity)
-  private val link = CmuxLink(scope, { refresh() }, ::stream)
+  private val link = CmuxLink(scope, ::controlConnected, ::stream)
+  /** The first cmux session read of this app run has happened (see [controlConnected]). */
+  private var startupChecked = false
   private val terminalCreation = TerminalCreation(
     { operation, params, mutation -> link.call(operation, params, mutation) },
     { error -> android.util.Log.w("vrcode", "could not read the source terminal's directory; using the default", error) },
@@ -66,6 +68,31 @@ class CmuxFeature(
   fun connect(host: String, port: Int) {
     disconnect()
     link.connect(host, port)
+  }
+
+  /**
+   * Refreshes the Actions panel's snapshot and, on the first connection of this app run, opens a
+   * terminal when the cmux session has no screens, so launching VRcode always shows one. Later
+   * reconnects never add one: the user may have closed them all.
+   */
+  private fun controlConnected() {
+    refresh()
+    if (startupChecked) return
+    val current = generation
+    scope.launch {
+      // Screens are the windows the headset shows. Not terminals: cmux also lists terminals in no tab.
+      val screens = try {
+        link.call("session.snapshot").getJSONObject("result").optJSONArray("screens")?.length() ?: 0
+      } catch (cancelled: CancellationException) { throw cancelled }
+      catch (error: Exception) {
+        android.util.Log.w("vrcode", "startup: could not read the cmux session; checking again on the next connection", error)
+        return@launch
+      }
+      if (current != generation || startupChecked) return@launch
+      startupChecked = true
+      android.util.Log.i("vrcode", "startup: the cmux session has $screens screens${if (screens == 0) "; opening a terminal" else ""}")
+      if (screens == 0) newTerminal()
+    }
   }
 
   /** Whether the Mac service's cmux control connection is up. */

@@ -75,7 +75,8 @@ class SettingsSyncTest {
       val key = item["key"] as? String ?: continue
       when (item["type"]) {
         "choice" -> for (option in item["options"] as List<*>) {
-          val value = (option as Map<*, *>)["value"]
+          if ((option as Map<*, *>)["disabled"] == true) continue // shown on the Mac but never chosen
+          val value = option["value"]
           assertEquals("$key=$value", value, SettingsSync.values(SettingsSync.apply(base, mapOf(key to value)))[key])
         }
         "toggle" -> assertEquals(false, SettingsSync.values(SettingsSync.apply(base, mapOf(key to false)))[key])
@@ -89,6 +90,22 @@ class SettingsSyncTest {
       claudeModel = AiModel.ClaudeFable, geminiModel = AiModel.GeminiFlashLite,
       defaultTerminalSize = TerminalSize(100, 48), pointerCursorSize = 1.5f, windowOpacity = 0.55f, pinchDrag = PinchDrag.Select)
     assertEquals(custom, SettingsSync.apply(AppSettings(), SettingsSync.values(custom)))
+  }
+
+  @Test fun theTextMicSkipsTheNewsMicAndTheAiMicOnlyWearsIt() {
+    fun options(key: String) = (items().first { it["key"] == key }["options"] as List<*>).map { it as Map<*, *> }
+    assertEquals(listOf("microphone", "walkie-talkie", "megaphone", "banana"), options("text_mic_prop").map { it["value"] })
+    assertTrue(options("text_mic_prop").none { it["disabled"] == true })
+    val ai = options("ai_mic_prop")
+    assertEquals(listOf("news-microphone", VoiceMic.COMING_SOON_VALUE), ai.map { it["value"] })
+    assertEquals(listOf(null, true), ai.map { it["disabled"] })
+    assertEquals(VoiceMic.COMING_SOON_LABEL, ai[1]["label"])
+    // Values the mic does not offer are ignored, so a stale or crafted request cannot slip one in.
+    val base = AppSettings(textMicProp = VoiceProp.Banana)
+    val updated = SettingsSync.apply(base, mapOf("text_mic_prop" to "news-microphone", "ai_mic_prop" to "megaphone"))
+    assertEquals(VoiceProp.Banana, updated.textMicProp)
+    assertEquals(VoiceProp.NewsMicrophone, updated.aiMicProp)
+    assertEquals(VoiceProp.NewsMicrophone, SettingsSync.apply(base, mapOf("ai_mic_prop" to VoiceMic.COMING_SOON_VALUE)).aiMicProp)
   }
 
   @Test fun badValuesFromTheMacAreIgnoredOrClamped() {

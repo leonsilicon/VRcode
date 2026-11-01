@@ -42,6 +42,16 @@ class ThinkingPanelTest {
     assertEquals(tilted.q, pose.q)
   }
 
+  @Test fun stretchesToTheWindowsWidth() {
+    assertEquals(2f, ThinkingPlacement.scale(windowWidthM = 1.04f, panelWidthM = 0.52f), 1e-4f)
+    assertEquals(1.04f, 0.52f * ThinkingPlacement.scale(1.04f, 0.52f), 1e-4f)
+  }
+
+  @Test fun neverShrinksItsTextBelowTheSharedSizeOnANarrowWindow() {
+    assertEquals(1f, ThinkingPlacement.scale(windowWidthM = 0.3f, panelWidthM = 0.52f), 1e-4f)
+    assertEquals(1f, ThinkingPlacement.scale(windowWidthM = 1f, panelWidthM = 0f), 1e-4f)
+  }
+
   @Test fun traceJoinsThinkingChunksAndKeepsStepsInOrder() {
     val note = VoiceNote(1, VoiceNote.Mode.Ai)
     note.addProgress("status", "Claude Code in ~/vrcode")
