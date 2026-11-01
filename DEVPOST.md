@@ -1,73 +1,56 @@
-# VRcode
-
-## Elevator pitch
-
-Turn your room into a coding workspace. Live Mac terminals, hand gestures, and voice-controlled AI on Meta Quest.
-
 ## Inspiration
 
-Coding with AI increasingly means describing what you want, watching an agent work, and moving between several terminal sessions. All of that still competes for space on a laptop screen.
+Seeing the crazy vibe coding agent harness local max model setups everyone else had, I felt like I was falling behind as a developer/vibe coder/AI cheerleader.
 
-We wanted a workspace where each task could have its own place around you, and where speaking to an agent felt as immediate as reaching for a tool. A headset gives us room to spread out. Hand tracking and voice give us ways to work with that space.
-
-VRcode brings those ideas together: your Mac runs the tools, and your Quest becomes the workspace.
+So, I built VRcode to outLARP them, because with VRcode, you can now LARP as the elite AI-native extra productive vibe coder that brings his AI agents along with them in their field of view on-the-go; the ultimate vibe coder setup that every vibe coder dreams of having.
 
 ## What it does
 
-VRcode is a mixed reality coding workspace for Meta Quest. It connects to real terminal sessions on your Mac and displays them as floating windows over passthrough. You can arrange terminals around you, move them closer, resize their grids, and return to a saved layout.
+VRcode makes it possible to surround yourself with hundreds (in theory) of terminal windows, each running their own agent, whether it's Claude Code, Codex, or whatever new one just launched a week ago.
 
-The core interaction is two hands, two microphones:
+The Meta Quest uses ElevenLabs's Speech-to-Text API so you can actually control your agents by talking to them (because the built in speech-to-text on the Quest, unsurprisingly, sucks).
 
-- **Right fist: dictate.** Close your hand to speak, see a live transcript above a virtual microphone, then open your hand to type the text into the focused terminal.
-- **Left fist: ask AI.** Speak an instruction with the terminal's visible contents and cursor as context. The selected AI returns text and key presses to that terminal, including Enter when appropriate. In thinking mode, a coding agent can inspect the project in the terminal's working directory before answering, with progress shown in the headset.
+Without ElevenLabs, you'd have to rely on a virtual keyboard to type out commands/prompts--and that's not LARPing; that's an aura loss.
 
-Palm menus provide quick access to new terminals, Codex, Claude Code, and common keys such as Enter, Escape, and Ctrl-C. A floating dock recalls windows, opens the keyboard, arranges the workspace, and exposes settings. Terminal actions cover panes, tabs, screens, and workspaces through the Mac's background terminal service.
+The best part about VRcode? It all runs on your computer, so your Quest says smooth and buttery for you to continue wearing even as you walk down the streets of Downtown, LARPing with the dream vibe coder setup every developer wishes they had.
 
-The app supports Claude, OpenAI, and Gemini for the AI mic. A Mac menu-bar companion manages the services, headset pairing, provider keys, and mirrored Quest settings. The Mac–Quest connection uses an authenticated TLS relay, with Wi-Fi, Bluetooth, and USB/ADB transport options.
+(You can even wear it to sleep, though results may vary)
+
+And because it runs on your computer, if you ever need a break from the headache from ~~wearing a giant computer on your head~~ the difficult, elite task of managing a swarm of AI agents around you, you can just open up your MacBook to continue where you left off, since it runs using cmux as the source of truth.
+
+Your agents stay running, even if you're not.
+
+Also, developers don't type anymore. LARP as a vibe coder from the future by coding with just gestures and your voice:
+
+- **Close your right fist and put it up to your mouth like you're holding a mic.** A mic will appear in your hand so you can use your mighty voice to command the AI to do what you want it to do. Not loud enough? Change it to a megaphone in the settings.
+- **Close your left fist and put it up to your mouth like you're reporting the news.** This is the "AI Mic" that lets you talk to an AI to control the terminal itself for spawning AIs. Meta-Mega-LARP.
+- **Quick palm gestures for quick actions.** Because it looks so much cooler when you LARP like you're physically pulling a terminal out of thin air. Because you are.
+- **A floating dock** beneath you for you to admire the 67 terminal windows and AI agents you've got running all at once because, again, you are the ultimate LARP elite 10x 100x vibe coder that everyone else dreams of becoming.
+
+WARNING: VRcode is not responsible for any delays in deploying, launching, shipping, actually getting users, or making revenue because of how easy it becomes to LARP as a elite 10x vibe coder that has hundreds of terminals but not a single customer. Getting actual users is left as an exercise to the reader.
 
 ## How we built it
 
-The Quest app is native **Kotlin**, built with **Meta Spatial SDK**, **Jetpack Compose**, and **OpenXR**. Compose provides the panels and settings; the spatial runtime places them in the room. A small **C++/JNI** bridge reads hand tracking and per-finger pinch signals for gestures beyond a standard pointer click.
+I built VRcode, with VRcode (well, once it worked). I literally walked to get a Chipotle while wearing my VR asking the Claude terminal by my side to optimize the code.
 
-We built on **cmux** and **xmux**. cmux owns the terminal processes, panes, tabs, and session state on the Mac. xmux carries that state to the headset and renders the terminal windows. VRcode adds the spatial workflow: gestures, voice, AI input, window management, and settings. Saved window placements live alongside the session in cmux.
+Otherwise, I vibe coded it, larping as an expert Meta Quest developer using all these complex and technical technologies (I've only ever built one Quest app in my life):
 
-The Mac service is written in **Swift**. It transcribes headset audio locally with Apple's **SpeechAnalyzer** and **SpeechTranscriber**, forwards terminal operations, and handles AI requests. Quick answers use provider APIs; thinking mode uses **Claude Code**, **Codex**, or **Gemini CLI** to inspect context and return structured terminal input.
-
-The companion app uses **Tauri 2**, **Rust**, and **HTML/CSS/JavaScript**. Provider API keys stay in the Mac's Keychain. **Bun and TypeScript** handle repository tooling, and **Blender** supplies editable sources for the virtual microphone props.
+The Quest app is native **Kotlin** with **Meta Spatial SDK**, **Jetpack Compose**, and **OpenXR**, plus a **C++/JNI** bridge for hand tracking and per-finger pinches (the fist clench is load-bearing). Terminals stream from the Mac through **cmux** and **xmux**. A **Swift** service transcribes your voice locally with Apple's **SpeechAnalyzer** and sends your vibes to **Claude**, **OpenAI**, or **Gemini**. In "thinking mode," **Claude Code**, **Codex**, or **Gemini CLI** actually inspects your codebase, so at least something in the room understands it. A **Tauri 2** / **Rust** menu-bar companion handles pairing and API keys, and **Blender** gave us very aesthetic virtual microphones for the screenshots.
 
 ## Challenges we ran into
 
-- **Making gestures deliberate.** Pinch signals flicker, hands briefly lose tracking, and a fist can resemble part of a menu gesture. We added release gates, tracking grace periods, dwell feedback, and cancellation rules so those transitions do not accidentally launch actions.
-- **Keeping terminal focus consistent.** Pointing, keyboard input, dictation, and delayed AI responses all need a clear target. Voice captures its destination when the fist opens, so an answer arriving later goes to the intended pane.
-- **Making resizing useful for code.** A larger terminal needs more rows and columns. We connected spatial edge resizing to cmux's terminal grid sizing, while keeping corner scaling available for readability.
-- **Keeping both devices in sync.** Terminal state, saved placements, reconnects, and settings cross the Mac–Quest boundary. We gave each kind of state a clear owner and built synchronization around it.
+- **Too many terminals.** We ran out of room in an actual room. Once you become elite enough, you probably need a better way of managing terminals than just ad-hoc dragging them around.
 
 ## Accomplishments that we're proud of
 
-We brought live terminal sessions, spatial window management, hand input, speech recognition, and coding-agent context into one native Quest application.
-
-The two-microphone interaction gives dictation and AI assistance distinct physical gestures. Palm shortcuts make existing coding tools accessible from the headset, while the dock gives users a way to recover a window that has moved out of view.
-
-We also built a Mac companion that supervises the bridge and service, manages pairing and keys, and mirrors headset settings, bringing the setup into one place.
+- Ran more simultaneous AI coding agents than we have products.
+- Built a tool that makes doing nothing look like orchestrating everything.
+- On average, built a new feature every fifteen minutes. (Though we still haven't launched.)
 
 ## What we learned
 
-Spatial interaction needs clear feedback at every stage: a gesture being recognized, an action being selected, and an operation completing. Small interruptions in tracking become much more noticeable when your hand is the input device.
+Real productivity was the agents we spawned along the way.
 
-We also learned how much terminal context matters for voice. Literal dictation is useful, but an instruction becomes more useful when the AI can see the current terminal and inspect the relevant project. Returning structured text and key presses lets that assistance work with existing terminal tools.
+Also, a headset is the only monitor big enough to hold every "quick side project."
 
-## What's next for VRcode
-
-- Add native Mac display streaming and pointer input so desktop apps can sit beside the terminals.
-- Bring Mac system audio into the headset.
-- Add persistent spatial anchors so saved windows stay tied to the room across recentering.
-- Continue testing gesture comfort, discoverability, and reliability with people wearing the headset.
-- Refine installation and connection setup toward the longer-term goal of working from the headset with the MacBook closed.
-
-## Built with
-
-Meta Quest, Meta Spatial SDK, Kotlin, Jetpack Compose, OpenXR, C++, JNI, cmux, xmux, Swift, SpeechAnalyzer, SpeechTranscriber, Tauri 2, Rust, HTML, CSS, JavaScript, TypeScript, Bun, Blender, Claude, OpenAI, Gemini, Claude Code, Codex, Gemini CLI.
-
-## Source code
-
-[VRcode on GitHub](https://github.com/leonsilicon/VRcode)
+This is the future of vibe coding. Download and use VRcode now to become an early LARP elite 10x vibe coder before you **really** fall behind.
