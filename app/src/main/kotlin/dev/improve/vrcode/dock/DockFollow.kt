@@ -7,14 +7,17 @@ import kotlin.math.exp
 
 /**
  * Lazy follow, so the dock's bar does not feel welded to the face. It stays put while the gaze
- * turns less than [yawDeadZoneDeg] sideways or [pitchDeadZoneDeg] up or down, or the head moves less
- * than [moveDeadZoneM], from where it last settled. Beyond that it eases toward [DockPlacement.pose]
- * with an exponential time constant of [timeConstantS] until it catches up, then rests again. It
- * appears in place without animating, and snaps after a recenter or teleport.
+ * turns less than [yawDeadZoneDeg] sideways, nods less than [pitchDownDeadZoneDeg] down or
+ * [pitchUpDeadZoneDeg] up, or the head moves less than [moveDeadZoneM], from where it last settled.
+ * Looking up drops the bar further down the view, and the bar already sits near the bottom edge,
+ * so that dead zone is small. Beyond these it eases toward [DockPlacement.pose] with an exponential
+ * time constant of [timeConstantS] until it catches up, then rests again. It appears in place
+ * without animating, and snaps after a recenter or teleport.
  */
 internal class DockFollow(
   private val yawDeadZoneDeg: Float = 14f,
-  private val pitchDeadZoneDeg: Float = 10f,
+  private val pitchDownDeadZoneDeg: Float = 10f,
+  private val pitchUpDeadZoneDeg: Float = 4f,
   private val moveDeadZoneM: Float = 0.10f,
   private val timeConstantS: Float = 0.45f,
 ) {
@@ -40,7 +43,8 @@ internal class DockFollow(
       val yawError = wrap(targetYaw - yawDeg)
       val pitchError = targetPitch - pitchDeg
       val moveError = (head.t - current).length()
-      if (abs(yawError) > yawDeadZoneDeg || abs(pitchError) > pitchDeadZoneDeg || moveError > moveDeadZoneM) settling = true
+      val pitchOutside = pitchError > pitchUpDeadZoneDeg || -pitchError > pitchDownDeadZoneDeg
+      if (abs(yawError) > yawDeadZoneDeg || pitchOutside || moveError > moveDeadZoneM) settling = true
       if (settling) {
         val step = 1f - exp(-dtS.coerceIn(0f, MAX_STEP_S) / timeConstantS)
         yawDeg = wrap(yawDeg + yawError * step)

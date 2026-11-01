@@ -86,6 +86,7 @@ class CmuxLink(scope: CoroutineScope, private val onConnected: () -> Unit, priva
   private fun disconnected(reason: String) {
     connected = false
     failPending(reason)
+    onStream(JSONObject().put("type", "connection_end").put("message", reason))
   }
 
   private fun failPending(reason: String) {

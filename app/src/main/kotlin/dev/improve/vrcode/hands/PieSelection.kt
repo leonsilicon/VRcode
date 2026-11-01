@@ -4,14 +4,20 @@ import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Vector3
 
 /**
- * Picks a palm menu item from the hand's movement in scene space. The menu's frame is captured
- * when it opens, upright and facing the head, so wrist rotation and head movement afterwards do
- * not move the selection axes. Spatial's scene is left-handed (+X right, +Y up, +Z forward).
+ * Picks a palm menu item from the hand's movement relative to the user's body. The menu's frame is
+ * captured when it opens, upright and facing the head, so wrist rotation and head turns afterwards
+ * do not move the selection axes. Its centre then travels with the body ([neckPoint], see
+ * [follow]): walking, stepping aside or bobbing while pinched carries the menu along instead of
+ * reading as hand movement. Turning the whole body still swings the hand across the menu, as
+ * swinging the arm would. Spatial's scene is left-handed (+X right, +Y up, +Z forward).
  */
 class PieSelection(val menu: RadialMenu) {
-  /** Where the menu opened (the pinch point), or null while closed. */
+  /** Where the menu is: the pinch point it opened at, carried along with the body. Null while closed. */
   var center: Vector3? = null
     private set
+
+  /** [center] relative to [neckPoint], fixed from [open] to [close]. */
+  private var fromNeck: Vector3? = null
 
   /** Toward the head-facing menu's right and up. */
   var right = Vector3(1f, 0f, 0f)
@@ -49,11 +55,21 @@ class PieSelection(val menu: RadialMenu) {
     // Left-handed: up x forward points right (forward x up would point left).
     right = up.cross(forward).normalize()
     center = at
+    fromNeck = at - neckPoint(head)
     highlighted = null
     reached = null
     distanceM = 0f
     rightM = 0f
     upM = 0f
+  }
+
+  /**
+   * Moves [center] with the body to where it is in [head]'s frame; call once a frame while open,
+   * before [update]. Only the head's translation beyond turning about the neck moves it.
+   */
+  fun follow(head: Pose) {
+    val offset = fromNeck ?: return
+    center = neckPoint(head) + offset
   }
 
   /** Feeds the pinch point's scene position while the menu is open. */
@@ -74,6 +90,7 @@ class PieSelection(val menu: RadialMenu) {
 
   fun close() {
     center = null
+    fromNeck = null
     highlighted = null
     reached = null
     distanceM = 0f
@@ -81,6 +98,19 @@ class PieSelection(val menu: RadialMenu) {
     upM = 0f
   }
 }
+
+/**
+ * A point that moves with the user's body but not with head turns: the pivot of the classic VR
+ * neck model, below and behind the eyes in [head]'s frame (LibOVR's default neck-to-eye offsets,
+ * 7.5 cm up and 8.05 cm forward). Nodding or turning the head swings the eyes about this point
+ * without moving it, while walking carries it along with the torso and the arms. A pinch point
+ * and this point come from the same head pose, so their difference does not depend on the head's
+ * tracked position at all: lag in it cannot leak into a selection while walking.
+ */
+fun neckPoint(head: Pose): Vector3 = head.t + head.q * EYES_TO_NECK
+
+/** From the eyes to the neck pivot in the head's frame (+Y up, +Z forward); a fresh copy each time. */
+val EYES_TO_NECK: Vector3 get() = Vector3(0f, -0.075f, -0.0805f)
 
 /**
  * A point in OpenXR VIEW space (right-handed, -Z forward) as a Spatial scene position, given the

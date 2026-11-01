@@ -49,9 +49,11 @@ import kotlinx.coroutines.CoroutineScope
 /**
  * Voice mode end to end, for any activity that hosts xmux. Two fists, two modes:
  * - right fist: plain dictation, typed exactly as said;
- * - left fist: speak to the AI, which turns what was said into keystrokes for the focused pane (a
- *   shell command, a prompt for a coding agent, or keys for a menu or running program) using
- *   everything on that pane's screen and its cursor.
+ * - left fist: speak to the AI. In agent mode (the default) the provider's coding agent works on
+ *   the Mac, looking through files, running commands and acting in the focused pane itself while
+ *   its steps show on a thinking panel; Quick answer turns what was said into keystrokes for the
+ *   focused pane (a shell command, a prompt for a coding agent, or keys for a menu or running
+ *   program) using everything on that pane's screen and its cursor.
  * Like dictation on a Mac, voice goes to the focused pane ([focus] keeps one focused whenever a
  * terminal window is open): when the fist opens, the pane focused at that moment is the target, and
  * the text is typed there as soon as the Mac finalizes it (dictation) or the AI answers. The AI
@@ -73,6 +75,8 @@ class VoiceFeature(
   private val overlayHitDistance: (Vector3, Vector3) -> Float? = { _, _ -> null },
   /** The dock's current (eased) pose, so the voice pane moves with it; null uses its target pose. */
   private val dockPose: () -> Pose? = { null },
+  /** Space already occupied by action info above a terminal; keep thinking clear of it. */
+  private val terminalInfoHeight: (ScreenWindow) -> Float = { 0f },
   predictedTimeNs: () -> Long,
 ) {
   private val hands = HandInput(activity, predictedTimeNs)
@@ -249,7 +253,7 @@ class VoiceFeature(
     // Resolve the prop first: the pane and badge use its visibility in this same frame.
     placeProp()
     syncPanes()
-    if (sceneReady) thinkingPanels.tick(voice.notes, { targets[it]?.window }, aiThinking != AiThinking.Below, now)
+    if (sceneReady) thinkingPanels.tick(voice.notes, { targets[it]?.window }, aiThinking != AiThinking.Below, now, terminalInfoHeight)
     placeMarker()
     if (allowGestures && hands.leftPinched) onLeftPinch()
   }

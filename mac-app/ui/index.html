@@ -84,9 +84,16 @@
 
   <section>
     <h2>AI provider keys</h2>
-    <p class="note">For voice-to-command (left fist); the provider is chosen in the Quest's settings. Keys are stored in the login Keychain under <code>dev.improve.vrcode</code>.</p>
+    <p class="note">For voice-to-command (left fist); the provider is chosen in the Quest's settings. A Gemini or OpenAI key also lets the AI hear what you say instead of reading the Mac's speech-to-text (Claude can't take audio). Keys are stored in the login Keychain under <code>dev.improve.vrcode</code>.</p>
     <div id="api-keys"></div>
     <p class="message" id="api-key-message"></p>
+  </section>
+
+  <section>
+    <h2>Speech-to-text</h2>
+    <p class="note">With an ElevenLabs key, both mics' live transcript comes from ElevenLabs Scribe v2 Realtime, which spells developer names (Claude Code, cmux, Bun) the way you write them. Your speech is sent to ElevenLabs while you dictate. Without a key, or when ElevenLabs can't be reached, the Mac's on-device recognizer is used. Stored in the login Keychain under <code>dev.improve.vrcode</code>.</p>
+    <div id="speech-keys"></div>
+    <p class="message" id="speech-key-message"></p>
   </section>
 
   <section>
@@ -349,6 +356,8 @@
   }
 
   for (const provider of providers) $("api-keys").append(keyRow(provider, "api-key-message"));
+  // Not an AI provider (the Quest never picks it), so it has its own section.
+  $("speech-keys").append(keyRow({ id: "elevenlabs", name: "ElevenLabs", account: "elevenlabs-api-key", placeholder: "sk_…" }, "speech-key-message"));
 
   function renderApiKeys(saved) {
     apiKeysSaved = saved;

@@ -26,6 +26,7 @@ data class AppSettings(
   val defaultTerminalSize: TerminalSize = TerminalSize(),
   val pointerCursor: PointerCursorStyle = PointerCursorStyle.Arrow,
   val pointerCursorSize: Float = DEFAULT_POINTER_SIZE,
+  val pinchDrag: PinchDrag = PinchDrag.Scroll,
   /** The left index-pinch ring: what each of its eight directions sends. */
   val quickInputs: QuickInputRing = QuickInputRing.Default,
 ) {
@@ -110,6 +111,7 @@ class SettingsStore(private val preferences: SharedPreferences) {
     ),
     pointerCursor = PointerCursorStyle.fromStorage(preferences.getString("pointer_cursor", null)),
     pointerCursorSize = preferences.getFloat("pointer_cursor_size", AppSettings.DEFAULT_POINTER_SIZE),
+    pinchDrag = PinchDrag.fromStorage(preferences.getString("pinch_drag", null)),
     quickInputs = QuickInputRing.fromStorage(preferences.getString("quick_inputs", null)),
   ).sanitized()
 
@@ -137,6 +139,7 @@ class SettingsStore(private val preferences: SharedPreferences) {
       .putInt("default_terminal_rows", s.defaultTerminalSize.rows)
       .putString("pointer_cursor", s.pointerCursor.storageValue)
       .putFloat("pointer_cursor_size", s.pointerCursorSize)
+      .putString("pinch_drag", s.pinchDrag.storageValue)
       .putString("quick_inputs", s.quickInputs.storageValue)
       .apply()
   }

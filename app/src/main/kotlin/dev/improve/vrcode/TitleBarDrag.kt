@@ -10,41 +10,67 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
+import kotlin.math.max
 import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Pointer coordinates are relative to the moving panel. Keep the original grab point under the
- * pointer by applying its current displacement to the live pose, rather than accumulating deltas
- * between events (which would count the panel's own movement as pointer movement).
- *
- * With a [head] position, the drag instead sweeps the window around the user: the grab point
- * ([anchor], measured from the panel's [centre]) keeps its distance from the head and moves to
- * where the pointer crosses that sphere, and the window turns upright about it to face the head,
- * the way `WindowLayout` places windows. A window dragged sideways, up or down therefore never
- * ends up edge-on or drifts nearer or further away. Sliding across a head-facing plane instead
- * would change the distance with every step whenever the grab point is off-centre.
+ * One drag, sampled from its holding hand once per scene frame. Lateral motion and push/pull use
+ * the same ray and sphere solve. Neither a moving panel's pose nor its delayed Compose pointer
+ * coordinates feed back into the next placement: transforming old panel hits by a newer pose
+ * makes a stationary hand shake the window, and a separate depth writer fights that correction.
+ * The panel's scale and grabbed point stay fixed for the duration of the physical press.
  */
-internal fun titleBarDragPose(
+internal class TitleBarRayDrag(
   pose: Pose,
-  anchor: Offset,
-  position: Offset,
-  centre: Offset,
-  metresPerPixelX: Float,
-  metresPerPixelY: Float,
-  head: Vector3?,
-): Pose {
-  fun local(point: Offset, origin: Offset) = panelOffset(point, origin, metresPerPixelX, metresPerPixelY)
-  val translated = Pose(pose.t + pose.q.times(local(position, anchor)), pose.q)
-  if (head == null) return translated
-  val grab = local(anchor, centre)
-  val radius = (pose.t + pose.q.times(grab) - head).length()
-  // Where the pointer ray crosses the panel now, seen from the head.
-  val towardPointer = pose.t + pose.q.times(local(position, centre)) - head
-  if (towardPointer.length() < MIN_DISTANCE_M) return translated
-  val target = head + towardPointer.normalize() * radius
-  val facing = facingWithGrabAt(target - head, grab) ?: return translated
-  return Pose(target - facing.times(grab), facing)
+  val anchor: Offset,
+  private val centre: Offset,
+  private val metresPerPixelX: Float,
+  private val metresPerPixelY: Float,
+  head: Vector3,
+  handOrigin: Vector3,
+) {
+  var radius = (titleBarGrabPoint(pose, anchor, centre, metresPerPixelX, metresPerPixelY) - head).length()
+    private set
+  private val depth = DragDepth(radius, handOrigin - head)
+  private val reach = panelOffset(anchor, centre, metresPerPixelX, metresPerPixelY).length()
+
+  fun move(head: Vector3, rayOrigin: Vector3, rayDirection: Vector3): Pose? {
+    val length = rayDirection.length()
+    // A missing tracking sample must not poison the integrated reach for the rest of the pinch.
+    if (!head.finite() || !rayOrigin.finite() || !(length > 0f && length.isFinite())) return null
+    val handFromHead = rayOrigin - head
+    val nearest = max(MIN_DISTANCE_M, max(reach + EDGE_CLEARANCE_M, handFromHead.length() + HAND_CLEARANCE_M))
+    val wanted = depth.radius(handFromHead, rayDirection, nearest, MAX_DISTANCE_M)
+    val moved = titleBarDepthPose(anchor, centre, metresPerPixelX, metresPerPixelY,
+      head, rayOrigin, rayDirection, wanted) ?: return null
+    radius = wanted
+    return moved
+  }
+
+  private companion object {
+    /** Distances from the head, widened to include an already nearer or further starting window. */
+    const val MIN_DISTANCE_M = 0.45f
+    const val MAX_DISTANCE_M = 4f
+    /** Keep the hand inside the grab sphere and leave room to face a wide panel toward the head. */
+    const val HAND_CLEARANCE_M = 0.05f
+    const val EDGE_CLEARANCE_M = 0.15f
+  }
+}
+
+/** A fresh hand ray's crossing of the panel, in pixels; used once to grab without a stale-event jump. */
+internal fun titleBarRayPixel(
+  pose: Pose, centre: Offset, metresPerPixelX: Float, metresPerPixelY: Float,
+  rayOrigin: Vector3, rayDirection: Vector3,
+): Offset? {
+  val normal = pose.q.times(Vector3(0f, 0f, 1f))
+  val facing = normal.dot(rayDirection)
+  if (!facing.isFinite() || abs(facing) < 1e-6f) return null
+  val distance = normal.dot(pose.t - rayOrigin) / facing
+  if (!(distance > 0f && distance.isFinite())) return null
+  val local = pose.q.inverse().times(rayOrigin + rayDirection * distance - pose.t)
+  val point = Offset(centre.x + local.x / metresPerPixelX, centre.y - local.y / metresPerPixelY)
+  return point.takeIf { it.x.isFinite() && it.y.isFinite() }
 }
 
 /** The grabbed panel point ([anchor], panel pixels) in world space. */
@@ -54,8 +80,8 @@ internal fun titleBarGrabPoint(pose: Pose, anchor: Offset, centre: Offset, metre
 /**
  * A title-bar drag's push or pull: the window placed so that its grab point ([anchor]) lies on the
  * dragging hand's ray ([rayOrigin] along [rayDirection]) at [radius] from the [head], upright and
- * facing the head like [titleBarDragPose] leaves it. The grab point is where the ray leaves the
- * sphere of that radius, so the hand must be inside it: a window comes no closer than the hand.
+ * facing the head. The grab point is where the ray leaves the sphere of that radius, so the hand
+ * must be inside it: a window comes no closer than the hand.
  * Null when no such placement exists (the ray misses the sphere, or no upright facing does).
  */
 internal fun titleBarDepthPose(
@@ -68,8 +94,9 @@ internal fun titleBarDepthPose(
   rayDirection: Vector3,
   radius: Float,
 ): Pose? {
-  if (!(rayDirection.length() > 0f)) return null
-  val direction = rayDirection.normalize()
+  val length = rayDirection.length()
+  if (!head.finite() || !rayOrigin.finite() || !(length > 0f && length.isFinite() && radius > 0f && radius.isFinite())) return null
+  val direction = rayDirection * (1f / length)
   val fromHead = rayOrigin - head
   val along = fromHead.dot(direction)
   val discriminant = along * along - (fromHead.dot(fromHead) - radius * radius)
@@ -126,6 +153,8 @@ private fun panelOffset(point: Offset, origin: Offset, metresPerPixelX: Float, m
   0f,
 )
 
+private fun Vector3.finite() = x.isFinite() && y.isFinite() && z.isFinite()
+
 /**
  * The upright rotation whose panel faces the head (its centre straight ahead along local +Z, the
  * visible face being local -Z) while the panel point [grab] lies at [fromHead]. In that rotation's
@@ -149,4 +178,3 @@ private fun facingWithGrabAt(fromHead: Vector3, grab: Vector3): Quaternion? {
 
 /** About 84 degrees: closer to straight up or down, the facing's yaw is unstable. */
 private const val MIN_COS_PITCH = 0.1f
-private const val MIN_DISTANCE_M = 0.01f

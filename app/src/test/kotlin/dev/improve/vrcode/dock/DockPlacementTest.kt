@@ -71,15 +71,15 @@ class DockPlacementTest {
     }
   }
 
-  @Test fun theBarCatchesOnlyRaysThroughItAndTheBodySitsAboveIt() {
+  @Test fun theBarCatchesOnlyRaysThroughItAndTheSheetHoldsTheRow() {
     val viewer = head(0f)
     val bar = DockPlacement.pose(viewer)
     val beside = bar.t + bar.q * Vector3(DockPlacement.BAR_HIT_WIDTH_M, 0f, 0f)
     assertNull(DockPlacement.hitDistance(bar, viewer.t, beside - viewer.t, DockPlacement.BAR_HIT_WIDTH_M, DockPlacement.BAR_HIT_HEIGHT_M))
     assertNotNull(DockPlacement.hitDistance(bar, viewer.t, bar.t - viewer.t, DockPlacement.BAR_HIT_WIDTH_M, DockPlacement.BAR_HIT_HEIGHT_M))
-    val body = DockPlacement.bodyPose(bar)
+    val sheet = DockPlacement.sheetPose(bar)
     val row = bar.t + bar.q * Vector3(0f, DockPlacement.ROW_Y_M, 0f)
-    assertNotNull(DockPlacement.hitDistance(body, viewer.t, row - viewer.t, DockPlacement.BODY_WIDTH_M, DockPlacement.BODY_TOP_M - DockPlacement.BODY_BOTTOM_M))
+    assertNotNull(DockPlacement.hitDistance(sheet, viewer.t, row - viewer.t, DockPlacement.BODY_WIDTH_M, DockPlacement.sheetHeight(1f)))
   }
 
   @Test fun handDistanceMeasuresToTheRectangle() {
@@ -88,6 +88,27 @@ class DockPlacementTest {
     assertEquals(0.05f, DockPlacement.distanceTo(panel, panel.t - panel.forward() * 0.05f, W, H), 0.0001f)
     val beside = panel.t + panel.q * Vector3(W / 2f + 0.08f, 0f, 0f)
     assertEquals(0.08f, DockPlacement.distanceTo(panel, beside, W, H), 0.0001f)
+  }
+
+  @Test fun handleAndSheetRayTargetsFollowTheSwipeInTheTiltedPlane() {
+    val viewer = head(15f, yaw = -55f)
+    val base = DockPlacement.pose(viewer)
+    for (lift in listOf(0.2f, 0.6f, 1f)) {
+      val handle = DockPlacement.handlePose(base, lift)
+      assertNotNull(DockPlacement.hitDistance(handle, viewer.t, handle.t - viewer.t, DockPlacement.BAR_HIT_WIDTH_M, DockPlacement.BAR_HIT_HEIGHT_M))
+      // Just below the handle is the sheet it tops.
+      val sheet = DockPlacement.sheetPose(base, lift)
+      val belowHandle = base.t + base.q * Vector3(0f, DockPlacement.handleY(lift) - 0.015f, 0f)
+      assertNotNull(DockPlacement.hitDistance(sheet, viewer.t, belowHandle - viewer.t, DockPlacement.BODY_WIDTH_M, DockPlacement.sheetHeight(lift)))
+      val local = base.inverse().let { it.q * handle.t + it.t }
+      assertEquals(DockPlacement.TRAVEL_M * lift, local.y, 1e-5f)
+      assertEquals(-DockPlacement.BAR_FORWARD_M, local.z, 1e-5f)
+      // Above the handle's panel there is no sheet: the bar is its top edge.
+      val above = base.t + base.q * Vector3(0f, DockPlacement.handleY(lift) + DockPlacement.BAR_HIT_HEIGHT_M / 2f + 0.005f, 0f)
+      assertNull(DockPlacement.hitDistance(sheet, viewer.t, above - viewer.t, DockPlacement.BODY_WIDTH_M, DockPlacement.sheetHeight(lift)))
+    }
+    val handle = DockPlacement.handlePose(base, 1f)
+    assertNull(DockPlacement.hitDistance(handle, viewer.t, base.t - viewer.t, DockPlacement.BAR_HIT_WIDTH_M, DockPlacement.BAR_HIT_HEIGHT_M))
   }
 
   private companion object {

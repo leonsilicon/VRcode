@@ -5,6 +5,7 @@ import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
 import com.meta.spatial.core.Vector3
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.cos
@@ -17,30 +18,55 @@ class TitleBarDragTest {
   private val mpp = 0.001f
   private val head = Vector3(0f, 1.6f, 0f)
 
-  @Test fun draggingRightAndDownMovesTheWindowWithoutChangingItsDepthOrRotation() {
+  @Test fun theCurrentRayIsCapturedInPanelPixels() {
     val pose = Pose(Vector3(1f, 2f, 3f), Quaternion(0f, 0f, 0f))
-    val moved = titleBarDragPose(pose, Offset(100f, 20f), Offset(180f, 40f), centre, 0.001f, 0.002f, head = null)
-    assertPosition(moved, 1.08f, 1.96f, 3f)
-    assertEquals(pose.q, moved.q)
+    val point = Offset(180f, 40f)
+    val target = titleBarGrabPoint(pose, point, centre, 0.001f, 0.002f)
+    val hit = titleBarRayPixel(pose, centre, 0.001f, 0.002f, head, target - head)!!
+    assertEquals(point.x, hit.x, 0.001f)
+    assertEquals(point.y, hit.y, 0.001f)
   }
 
-  @Test fun draggingAnAngledWindowUsesItsLocalAxesAndResizedScale() {
+  @Test fun capturingAnAngledWindowUsesItsLocalAxesAndResizedScale() {
     val pose = Pose(Vector3(1f, 2f, 3f), Quaternion(0f, 90f, 0f))
-    val moved = titleBarDragPose(pose, Offset(100f, 20f), Offset(200f, 10f), centre, 0.002f, 0.004f, head = null)
-    assertPosition(moved, 1f, 2.04f, 2.8f)
-    assertEquals(pose.q, moved.q)
+    val point = Offset(200f, 10f)
+    val target = titleBarGrabPoint(pose, point, centre, 0.002f, 0.004f)
+    val hit = titleBarRayPixel(pose, centre, 0.002f, 0.004f, head, target - head)!!
+    assertEquals(point.x, hit.x, 0.001f)
+    assertEquals(point.y, hit.y, 0.001f)
   }
 
-  @Test fun panelMotionDoesNotPullTheGrabPointBackOrAccumulateMovement() {
-    val anchor = Offset(100f, 20f)
-    val first = titleBarDragPose(Pose(Vector3(0f, 1f, 2f), Quaternion(0f, 0f, 0f)),
-      anchor, Offset(150f, 20f), centre, 0.001f, 0.001f, head = null)
-    // Once the native panel catches up, a stationary ray is back over the original grab point.
-    val stationary = titleBarDragPose(first, anchor, anchor, centre, 0.001f, 0.001f, head = null)
-    assertPosition(stationary, 0.05f, 1f, 2f)
-    // A further 30 px of pointer motion moves another 3 cm, independent of the first event.
-    val next = titleBarDragPose(stationary, anchor, Offset(130f, 20f), centre, 0.001f, 0.001f, head = null)
-    assertPosition(next, 0.08f, 1f, 2f)
+  @Test fun capturingTheCurrentRayDoesNotJumpToAnOldHeaderAnchor() {
+    val start = facingWindow(1.2f)
+    val hand = Vector3(0.25f, 1.3f, 0.2f)
+    // The header's delayed/phantom gesture began elsewhere. The live ray is here now.
+    val direction = grabPoint(start, Offset(600f, 25f)) - hand
+    val anchor = titleBarRayPixel(start, centre, mpp, mpp, hand, direction)!!
+    val motion = TitleBarRayDrag(start, anchor, centre, mpp, mpp, head, hand)
+    assertPose(start, motion.move(head, hand, direction)!!)
+  }
+
+  @Test fun delayedPanelHitsDoNotShakeAWindowUnderAStationaryHand() {
+    val anchor = Offset(200f, 20f)
+    val hand = Vector3(0.25f, 1.3f, 0.2f)
+    val start = facingWindow(1.2f)
+    val direction = rotate(grabPoint(start, anchor) - hand, Vector3(0f, 1f, 0f), 5f)
+    val panelFrames = ArrayDeque<Pose>().apply { repeat(3) { addLast(start) } }
+    val motion = TitleBarRayDrag(start, anchor, centre, mpp, mpp, head, hand)
+    val gate = TitleBarDragGate()
+    val screen = dev.improve.xmux.client.ScreenId(1)
+    gate.update(listOf(TitleBarDragGate.HandState(left = false, pressed = true, header = screen)))
+    val settled = motion.move(head, hand, direction)!!
+    repeat(60) {
+      // Compose input is delivered after the compositor sampled the panel's pose.
+      val sampled = panelFrames.removeFirst()
+      assertEquals(anchor, gate.drag(screen, anchor, hitPixel(sampled, hand, direction)))
+      // Pointer events authorize ownership; the same frame's hand ray places the window.
+      val pose = motion.move(head, hand, direction)!!
+      panelFrames.addLast(pose)
+      assertOnRay(grabPoint(pose, anchor), hand, direction)
+      assertPose(settled, pose)
+    }
   }
 
   @Test fun draggingSidewaysTurnsTheWindowToFaceTheUserAtTheSameDistance() {
@@ -62,15 +88,10 @@ class TitleBarDragTest {
     assertEquals(1.2f, (ray.pose.t - head).length(), 0.0005f)
   }
 
-  @Test fun theGrabPointSettlesOnAHandRayAwayFromTheHead() {
+  @Test fun theGrabPointFollowsAnOffHeadHandRayInOneFrame() {
     val anchor = Offset(300f, 30f)
     val hand = Vector3(0.25f, 1.3f, 0.2f)
-    var ray = sweep(facingWindow(1.2f), anchor, origin = hand, axis = Vector3(0f, 1f, 0f), degrees = -50)
-    // The hand stops; the panel catches up to the stationary ray over the following frames.
-    repeat(20) {
-      ray = Ray(titleBarDragPose(ray.pose, anchor, hitPixel(ray.pose, hand, ray.direction), centre, mpp, mpp, head),
-        ray.direction)
-    }
+    val ray = sweep(facingWindow(1.2f), anchor, origin = hand, axis = Vector3(0f, 1f, 0f), degrees = -50)
     assertFacesHead(ray.pose)
     assertOnRay(grabPoint(ray.pose, anchor), hand, ray.direction)
     assertEquals(1.2f, (ray.pose.t - head).length(), 0.0005f)
@@ -79,7 +100,8 @@ class TitleBarDragTest {
   @Test fun aStationaryPointerLeavesAFacingWindowInPlace() {
     val pose = facingWindow(1.2f)
     val anchor = Offset(150f, 25f)
-    val held = titleBarDragPose(pose, anchor, anchor, centre, mpp, mpp, head)
+    val motion = TitleBarRayDrag(pose, anchor, centre, mpp, mpp, head, head)
+    val held = motion.move(head, head, grabPoint(pose, anchor) - head)!!
     assertPose(pose, held)
   }
 
@@ -89,7 +111,8 @@ class TitleBarDragTest {
     val anchor = Offset(100f, 20f)
     val pose = Pose(head + Vector3(0f, 0f, 2.1f), Quaternion(0f, 40f, 0f))
     val grabbed = grabPoint(pose, anchor, wide)
-    val turned = titleBarDragPose(pose, anchor, anchor, wide, mpp, mpp, head)
+    val motion = TitleBarRayDrag(pose, anchor, wide, mpp, mpp, head, head)
+    val turned = motion.move(head, head, grabbed - head)!!
     assertFacesHead(turned)
     assertVector(grabbed, grabPoint(turned, anchor, wide))
   }
@@ -151,17 +174,67 @@ class TitleBarDragTest {
     assertTrue(depth.radius(Vector3(0f, 0f, 0.3f), forward, 0.45f, 4f) < 5f)
   }
 
+  @Test fun lateralMotionDoesNotResetAPushOrPull() {
+    val anchor = Offset(300f, 25f)
+    val start = facingWindow(1.2f)
+    val hand = Vector3(0.2f, 1.3f, 0.3f)
+    val direction = (grabPoint(start, anchor) - hand).normalize()
+    val motion = TitleBarRayDrag(start, anchor, centre, mpp, mpp, head, hand)
+    val pushedHand = hand + direction * 0.15f
+    motion.move(head, pushedHand, direction)!!
+    val pushedRadius = motion.radius
+    assertTrue(pushedRadius > 1.5f)
+    val turnedRay = rotate(direction, Vector3(0f, 1f, 0f), 40f)
+    val swept = motion.move(head, pushedHand, turnedRay)!!
+    assertEquals(pushedRadius, motion.radius, 0.00001f)
+    assertOnRay(grabPoint(swept, anchor), pushedHand, turnedRay)
+    assertEquals(pushedRadius, (grabPoint(swept, anchor) - head).length(), 0.0005f)
+    repeat(60) { assertPose(swept, motion.move(head, pushedHand, turnedRay)!!) }
+  }
+
+  @Test fun movingTheHeadAndHandTogetherDoesNotCountAsReaching() {
+    val anchor = Offset(300f, 25f)
+    val start = facingWindow(1.2f)
+    val hand = Vector3(0.2f, 1.3f, 0.3f)
+    val direction = grabPoint(start, anchor) - hand
+    val motion = TitleBarRayDrag(start, anchor, centre, mpp, mpp, head, hand)
+    val step = Vector3(0.5f, 0.1f, 0.2f)
+    val moved = motion.move(head + step, hand + step, direction)!!
+    assertPose(Pose(start.t + step, start.q), moved)
+  }
+
+  @Test fun invalidRaysDoNotProduceAPose() {
+    val pose = facingWindow(1.2f)
+    assertNull(titleBarRayPixel(pose, centre, mpp, mpp, head, Vector3(1f, 0f, 0f)))
+    assertNull(titleBarRayPixel(pose, centre, mpp, mpp, head, Vector3(0f, 0f, -1f)))
+    assertNull(titleBarDepthPose(Offset(500f, 20f), centre, mpp, mpp, head, head, Vector3(0f), 1.2f))
+    assertNull(titleBarDepthPose(Offset(500f, 20f), centre, mpp, mpp, head, head, Vector3(Float.NaN), 1.2f))
+  }
+
+  @Test fun anInvalidTrackingSampleDoesNotCorruptTheRestOfTheDrag() {
+    val start = facingWindow(1.2f)
+    val anchor = Offset(300f, 25f)
+    val hand = Vector3(0.2f, 1.3f, 0.3f)
+    val direction = grabPoint(start, anchor) - hand
+    val motion = TitleBarRayDrag(start, anchor, centre, mpp, mpp, head, hand)
+    assertNull(motion.move(head, Vector3(Float.NaN), direction))
+    assertNull(motion.move(head, hand, Vector3(Float.NaN)))
+    assertPose(start, motion.move(head, hand, direction)!!)
+  }
+
   private class Ray(val pose: Pose, val direction: Vector3)
 
   /** Turns a ray from [origin] through the grab point by [degrees], one degree per drag event. */
   private fun sweep(start: Pose, anchor: Offset, origin: Vector3, axis: Vector3, degrees: Int): Ray {
     val initial = grabPoint(start, anchor) - origin
+    val motion = TitleBarRayDrag(start, anchor, centre, mpp, mpp, head, origin)
     var pose = start
     var direction = initial
     val sign = if (degrees < 0) -1 else 1
     for (angle in 1..degrees * sign) {
       direction = rotate(initial, axis, (angle * sign).toFloat())
-      pose = titleBarDragPose(pose, anchor, hitPixel(pose, origin, direction), centre, mpp, mpp, head)
+      pose = motion.move(head, origin, direction)!!
+      assertOnRay(grabPoint(pose, anchor), origin, direction)
     }
     return Ray(pose, direction)
   }
@@ -211,9 +284,4 @@ class TitleBarDragTest {
     assertEquals(expected.z, actual.z, 0.0005f)
   }
 
-  private fun assertPosition(pose: Pose, x: Float, y: Float, z: Float) {
-    assertEquals(x, pose.t.x, 0.00001f)
-    assertEquals(y, pose.t.y, 0.00001f)
-    assertEquals(z, pose.t.z, 0.00001f)
-  }
 }

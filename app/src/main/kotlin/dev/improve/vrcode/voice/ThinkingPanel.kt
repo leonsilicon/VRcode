@@ -78,8 +78,8 @@ internal object ThinkingPlacement {
    * height [windowHeightM] (header included): along the window's own up axis, so a tilted window
    * keeps its panel square to it. A panel's visible face is its local -Z, so forward is -Z.
    */
-  fun pose(window: Pose, windowHeightM: Float, panelHeightM: Float, above: Boolean): Pose {
-    val up = windowHeightM / 2f + GAP_M + panelHeightM / 2f
+  fun pose(window: Pose, windowHeightM: Float, panelHeightM: Float, above: Boolean, offsetM: Float = 0f): Pose {
+    val up = windowHeightM / 2f + GAP_M + panelHeightM / 2f + offsetM
     return Pose(window.t + window.q.times(Vector3(0f, if (above) up else -up, -FORWARD_M)), window.q)
   }
 }
@@ -121,7 +121,8 @@ internal class ThinkingPanels(private val xmux: XmuxSpatial, private val onStop:
    * fist opened), ends finished ones after a while, and places each shown panel [above] or below
    * its window. Call every frame.
    */
-  fun tick(notes: List<VoiceNote>, windowOf: (VoiceNote) -> ScreenWindow?, above: Boolean, now: Long) {
+  fun tick(notes: List<VoiceNote>, windowOf: (VoiceNote) -> ScreenWindow?, above: Boolean, now: Long,
+    occupiedAbove: (ScreenWindow) -> Float = { 0f }) {
     for (note in notes) {
       if (note.mode != VoiceNote.Mode.Ai || !note.agent || note.phase != Phase.Thinking || runs.any { it.note == note }) continue
       val window = windowOf(note) ?: continue
@@ -146,7 +147,8 @@ internal class ThinkingPanels(private val xmux: XmuxSpatial, private val onStop:
         slot.show(false)
         continue
       }
-      slot.entity.setComponent(Transform(ThinkingPlacement.pose(pose, run.window.heightM, panelHeightM, above)))
+      slot.entity.setComponent(Transform(ThinkingPlacement.pose(pose, run.window.heightM, panelHeightM, above,
+        if (above) occupiedAbove(run.window) else 0f)))
       slot.show(true)
     }
   }
@@ -190,8 +192,8 @@ internal class ThinkingPanels(private val xmux: XmuxSpatial, private val onStop:
 /**
  * One thinking panel: a header with the run's state and where the agent runs, then its thinking
  * (dim italic) and tool calls (monospace) as they stream, newest at the bottom; Stop while it
- * thinks. Answered, it shows the summary and the keystrokes typed (key presses as chips); failed
- * or stopped, why.
+ * thinks. Done, it shows the agent's summary of what it did (and any keystrokes typed for it);
+ * failed or stopped, why.
  */
 @Composable
 fun ThinkingPanel(note: VoiceNote, onStop: (VoiceNote) -> Unit) {
@@ -218,6 +220,7 @@ fun ThinkingPanel(note: VoiceNote, onStop: (VoiceNote) -> Unit) {
       BasicText(
         when {
           thinking -> "Thinking…"
+          answered && note.aiKeys.isNullOrEmpty() -> "Done" // the agent worked in the terminal itself
           answered -> "Typed"
           problem == AI_STOPPED -> "Stopped"
           else -> "Nothing typed"
@@ -254,7 +257,7 @@ fun ThinkingPanel(note: VoiceNote, onStop: (VoiceNote) -> Unit) {
           if (note.aiSummary.isNotBlank()) {
             BasicText(note.aiSummary, style = TextStyle(color = Color.White, fontSize = 15.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
           }
-          note.aiKeys?.let { keys ->
+          note.aiKeys?.takeIf { it.isNotEmpty() }?.let { keys ->
             BasicText(
               keystrokeText(keys),
               style = TextStyle(color = StepText, fontSize = 14.sp, fontFamily = FontFamily.Monospace),

@@ -33,6 +33,7 @@ class TerminalSelectionInputTest {
   private lateinit var input: TerminalSelectionInput<String>
   private val copies = mutableListOf<String>()
   private val clicks = mutableListOf<Pair<String, TerminalTextSelection.Cell>>()
+  private val scrolls = mutableListOf<Triple<String, TerminalTextSelection.Cell, Int>>()
   private var target = "first terminal"
   private var tabClicks = 0
   private val grid = CellGrid(16, 3).apply {
@@ -48,7 +49,8 @@ class TerminalSelectionInputTest {
     setCursorVisible(false)
   }
 
-  private fun mount(tabs: Boolean = false) {
+  /** Selection unless [drag] says otherwise; the app itself defaults to scrolling. */
+  private fun mount(tabs: Boolean = false, drag: PinchDrag = PinchDrag.Select) {
     compose.setContent {
       CompositionLocalProvider(LocalDensity provides Density(1f)) {
         Box(Modifier.requiredSize(560.dp, 180.dp).testTag("selection-preview")) {
@@ -65,7 +67,9 @@ class TerminalSelectionInputTest {
                 targetAt = { if (it == 1) target else "other terminal" },
                 onFocus = { view.focusedPane = it },
                 onClick = { terminal, cell -> clicks += terminal to cell },
-                onCopy = { copies += it })
+                onCopy = { copies += it },
+                onScroll = { terminal, cell, rows -> scrolls += Triple(terminal, cell, rows) })
+              input.drag = drag
             }
           })
         }
@@ -197,6 +201,49 @@ class TerminalSelectionInputTest {
       assertEquals(1, tabClicks)
       assertEquals(1, clicks.size)
       assertTrue(copies.isEmpty())
+      input.close()
+    }
+  }
+
+  @Test fun pinchDragScrollsFromTheStartingCellAndKeepsCountingPastThePane() {
+    mount(drag = PinchDrag.Scroll)
+    val before = capture()
+    compose.runOnIdle {
+      event(MotionEvent.ACTION_DOWN, point(0, 6))
+      // Down two rows: the text follows the hand, so the terminal scrolls up two.
+      event(MotionEvent.ACTION_MOVE, point(2, 6))
+      event(MotionEvent.ACTION_MOVE, point(1, 7))
+      // The grid has three rows; the drag keeps counting below it.
+      event(MotionEvent.ACTION_MOVE, point(5, 7))
+      event(MotionEvent.ACTION_UP, point(5, 7))
+      val start = TerminalTextSelection.Cell(0, 6)
+      assertEquals(listOf(Triple("first terminal", start, -2), Triple("first terminal", start, 1),
+        Triple("first terminal", start, -4)), scrolls)
+      assertTrue("a scroll is not a click", clicks.isEmpty())
+      assertTrue("nothing is selected or copied", copies.isEmpty())
+    }
+    assertTrue("no highlight is drawn", before.sameAs(capture()))
+    compose.runOnIdle { input.close() }
+  }
+
+  @Test fun scrollModeStillClicksInPlaceAndASidewaysDriftDoesNeither() {
+    mount(drag = PinchDrag.Scroll)
+    compose.runOnIdle {
+      event(MotionEvent.ACTION_DOWN, point(1, 2))
+      event(MotionEvent.ACTION_UP, point(1, 2))
+      assertEquals(listOf("first terminal" to TerminalTextSelection.Cell(1, 2)), clicks)
+      event(MotionEvent.ACTION_DOWN, point(0, 1))
+      event(MotionEvent.ACTION_MOVE, point(0, 5))
+      event(MotionEvent.ACTION_UP, point(0, 5))
+      assertEquals(1, clicks.size)
+      assertTrue(scrolls.isEmpty())
+      // A cancelled scroll sends nothing more and never clicks.
+      event(MotionEvent.ACTION_DOWN, point(0, 1))
+      input.cancel()
+      event(MotionEvent.ACTION_MOVE, point(2, 1))
+      event(MotionEvent.ACTION_UP, point(2, 1))
+      assertEquals(1, clicks.size)
+      assertTrue(scrolls.isEmpty())
       input.close()
     }
   }

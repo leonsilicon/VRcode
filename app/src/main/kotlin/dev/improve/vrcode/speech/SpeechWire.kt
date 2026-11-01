@@ -18,8 +18,9 @@ object Kind {
   const val CMUX_REQUEST = 9
   const val CMUX_EVENT = 10
   /**
-   * Headset -> Mac: {transcript, screen, title, cursor, provider, model, agent, terminal}; the Mac
-   * answers with AI_RESULT or ERROR (same id), after AI_PROGRESS frames when [agent] is true.
+   * Headset -> Mac: {transcript, utterances, screen, title, cursor, provider, model, agent, terminal};
+   * the Mac answers with AI_RESULT or ERROR (same id), after AI_PROGRESS frames. `utterances` names
+   * AI-mic dictations (AUDIO_START `ai`) whose recordings a model hears in place of `transcript`.
    */
   const val AI_REQUEST = 11
   /** Mac -> headset: {keys, text, summary?, provider, model}; keys are the steps to send the pane ({"text"} or {"key"}), in order. */
@@ -30,7 +31,10 @@ object Kind {
   const val SETTINGS_SET = 14
   /** Mac -> headset: {action}, e.g. "arrange_windows". */
   const val SETTINGS_ACTION = 15
-  /** Mac -> headset, while an agent AI_REQUEST runs: {kind: "status" | "thinking" | "step", text}. */
+  /**
+   * Mac -> headset, while an AI_REQUEST runs: {kind, text}. "heard" (what a model heard in the
+   * request's recordings, which the pane then shows), and for an agent "status", "thinking" or "step".
+   */
   const val AI_PROGRESS = 16
   /** Headset -> Mac: stop the agent running for this AI_REQUEST id. No reply. */
   const val AI_CANCEL = 17

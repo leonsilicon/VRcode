@@ -89,6 +89,7 @@ class TerminalGridSizing(
    * handles do, keeping its grids. `--ez where true` only logs the window's size and where its
    * edges are (every call logs that first). `--es screen <cmux id>` picks the window; otherwise
    * the focused one.
+   * `--ez newTerminal true` opens a fresh terminal based on that window, for creation checks.
    */
   private val debugReceiver =
     object : BroadcastReceiver() {
@@ -103,6 +104,11 @@ class TerminalGridSizing(
         }
         Log.i(TAG, "debug window ${where(window)}")
         if (intent.getBooleanExtra("where", false)) return
+        if (intent.getBooleanExtra("newTerminal", false)) {
+          xmux.focus(window)
+          cmux.newTerminal()
+          return
+        }
         if (intent.hasExtra("scale")) {
           val scale = intent.getFloatExtra("scale", 1f)
           Log.i(TAG, "debug scale screen ${window.screen?.value}: ${window.scale} -> $scale")

@@ -54,13 +54,12 @@ internal class TitleBarDragGate(private val log: (String) -> Unit = {}) {
 
   /**
    * A header drag event: the gesture grabbed [screen] at [anchor] and its pointer is at [position]
-   * (panel pixels). Returns the grab point to move the window by, or null to leave it in place.
+   * (panel pixels). Returns its initial grab point, or null when no physical press owns the drag.
+   * Gesture restarts (or the other pointer on the same header) cannot replace a held press.
    */
   fun drag(screen: ScreenId, anchor: Offset, position: Offset): Offset? {
     holds[screen]?.let { hold ->
-      if (hold.anchor == anchor) return hold.grab
-      // The header started another gesture: the earlier one is over.
-      holds.remove(screen)
+      return hold.grab
     }
     val left = SIDES.firstOrNull { presses[it]?.header == screen }
     if (left == null) {
@@ -78,10 +77,11 @@ internal class TitleBarDragGate(private val log: (String) -> Unit = {}) {
     return grab
   }
 
-  /** Ends every drag (a disconnect); the hands' presses stay as they are. */
+  /** Ends every drag (a disconnect or modal UI); held hands must release before starting again. */
   fun cancel() {
     holds.clear()
     refused.clear()
+    for (left in presses.keys.toList()) presses[left] = Press(null)
   }
 
   private companion object {

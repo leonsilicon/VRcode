@@ -2,6 +2,7 @@ package dev.improve.vrcode.voice
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -15,6 +16,7 @@ import dev.improve.vrcode.speech.MicCapture
 import dev.improve.vrcode.speech.SpeechEvent
 import dev.improve.vrcode.speech.SpeechLink
 import dev.improve.vrcode.speech.joinText
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -54,6 +56,14 @@ class VoiceNote(val id: Int, val mode: Mode = Mode.Passthrough) {
   /** The utterance currently streaming into this pane. */
   internal var utterance = 0
 
+  /**
+   * [Mode.Ai] panes: the utterances whose audio holds what was said here, in order. The Mac keeps
+   * their recordings (AUDIO_START `ai`) and the AI request names them, so a model hears what was
+   * said (Claude Code, not the on-device recognizer's "claw code"). Typing into the pane clears
+   * it, since the recordings no longer hold everything in it: then the AI gets the text.
+   */
+  internal val recorded = mutableListOf<Int>()
+
   /** [Mode.Ai] panes: the AI's keystrokes for the transcript (text and keys such as Enter), once it answered. */
   var aiKeys by mutableStateOf<List<Keystroke>?>(null)
     internal set
@@ -61,9 +71,13 @@ class VoiceNote(val id: Int, val mode: Mode = Mode.Passthrough) {
   /** The AI request in flight for this pane. */
   internal var aiRequest = 0
 
+  /** When the Mac last said something about [aiRequest] (`SystemClock.uptimeMillis`). */
+  internal var aiActiveAt = 0L
+
   /**
    * [Mode.Ai] panes asked with thinking on ([AiThinking.agent]): the Mac runs the provider's agent,
-   * and [trace], [aiStatus] and then [aiSummary] show what it does on the thinking panel.
+   * which works in the target terminal itself, and [trace], [aiStatus] and then [aiSummary] show
+   * what it does on the thinking panel.
    */
   var agent by mutableStateOf(false)
     internal set
@@ -75,7 +89,7 @@ class VoiceNote(val id: Int, val mode: Mode = Mode.Passthrough) {
   var aiStatus by mutableStateOf("")
     internal set
 
-  /** What the agent's keystrokes do, in one sentence, once it answered. */
+  /** What the agent did, in a sentence, once it finished. */
   var aiSummary by mutableStateOf("")
     internal set
 
@@ -92,6 +106,13 @@ class VoiceNote(val id: Int, val mode: Mode = Mode.Passthrough) {
       else -> return
     }
     while (trace.size > MAX_TRACE) trace.removeAt(0)
+  }
+
+  /** The Mac's model heard [heard] in the [recorded] audio: the pane shows that instead of the live transcript. */
+  internal fun hear(heard: String) {
+    committed = heard
+    liveFinal = ""
+    liveVolatile = ""
   }
 
   internal fun clearAgent() {
@@ -219,11 +240,12 @@ class VoiceController(
     streamingId = utterance
     loudChunks = 0
     peakLevel = 0f
-    link.send(Kind.AUDIO_START, utterance, audioFormat())
+    link.send(Kind.AUDIO_START, utterance, audioFormat(note.mode))
     mic.start()?.let {
       link.send(Kind.AUDIO_CANCEL, utterance)
       return fail(note, it)
     }
+    if (note.mode == VoiceNote.Mode.Ai) note.recorded += utterance
     note.phase = VoiceNote.Phase.Listening
     listening = note
     Log.i(TAG, "voice: listening into pane ${note.id} (utterance $utterance)")
@@ -243,6 +265,7 @@ class VoiceController(
     val peak = "%.3f".format(peakLevel)
     if (heardNothing(note)) {
       link.send(Kind.AUDIO_CANCEL, note.utterance)
+      note.recorded.remove(note.utterance)
       note.utterance = -1 // late transcripts are ignored
       Log.i(TAG, "voice: pane ${note.id} heard nothing (peak level $peak); ended at once")
       finish(note)
@@ -266,6 +289,7 @@ class VoiceController(
     mic.stop()
     level = 0f
     link.send(Kind.AUDIO_CANCEL, note.utterance)
+    note.recorded.remove(note.utterance)
     note.utterance = -1 // late transcripts are ignored
     note.liveFinal = ""
     note.liveVolatile = ""
@@ -291,7 +315,9 @@ class VoiceController(
     note.aiKeys = null
     note.notice = null
     note.utterance = utterance
-    link.send(Kind.AUDIO_START, utterance, audioFormat())
+    note.recorded.clear()
+    if (note.mode == VoiceNote.Mode.Ai) note.recorded += utterance
+    link.send(Kind.AUDIO_START, utterance, audioFormat(note.mode))
     streamingId = utterance
     Log.i(TAG, "voice: pane ${note.id} cleared while listening (utterance $utterance)")
   }
@@ -304,13 +330,21 @@ class VoiceController(
       }
       is SpeechEvent.AiProgress -> {
         val note = notes.firstOrNull { it.aiRequest == event.id && it.phase == VoiceNote.Phase.Thinking } ?: return
-        note.addProgress(event.kind, event.text)
+        if (event.kind == "heard") note.hear(event.text) else note.addProgress(event.kind, event.text)
+        note.aiActiveAt = SystemClock.uptimeMillis()
       }
       is SpeechEvent.AiResult -> {
         val note = notes.firstOrNull { it.aiRequest == event.id && it.phase == VoiceNote.Phase.Thinking } ?: return
         note.aiKeys = event.keys
         note.aiSummary = event.summary
         note.phase = VoiceNote.Phase.Ready
+        if (event.acted && event.keys.isEmpty()) {
+          // The agent already worked in the terminal: nothing is left to type. Its thinking panel
+          // keeps showing the summary for a while; the voice pane goes.
+          Log.i(TAG, "voice: agent finished for pane ${note.id}: ${event.summary.take(120)}")
+          remove(note)
+          return
+        }
         val pressed = event.keys.filterIsInstance<Keystroke.Press>().map { it.chord }
         Log.i(TAG, "voice: AI answered for pane ${note.id} (${event.keys.size} steps; keys $pressed)")
         insert(note)
@@ -417,6 +451,7 @@ class VoiceController(
     }
     note.commitLive()
     note.committed += text
+    note.recorded.clear() // the typing isn't in the recordings: the AI gets the text
   }
 
   fun backspaceIn(note: VoiceNote) {
@@ -427,6 +462,7 @@ class VoiceController(
     }
     note.commitLive()
     note.committed = note.committed.dropLast(1)
+    note.recorded.clear()
   }
 
   /** Return on the keyboard: done editing; typing goes back to the focused terminal. */
@@ -485,8 +521,10 @@ class VoiceController(
     Log.i(TAG, "voice: pane ${note.id} staged: no terminal to type into")
   }
 
-  private fun audioFormat(): JSONObject =
+  /** AUDIO_START's body; an AI-mic dictation asks the Mac to keep its audio for the AI to hear. */
+  private fun audioFormat(mode: VoiceNote.Mode): JSONObject =
     JSONObject().put("sampleRate", MicCapture.SAMPLE_RATE).put("channels", 1).put("encoding", "pcm_s16le")
+      .apply { if (mode == VoiceNote.Mode.Ai) put("ai", true) }
 
   /** Sends [note]'s transcript and the target pane's screen and cursor to the Mac's AI; the pane shows Thinking. */
   private fun askAi(note: VoiceNote) {
@@ -506,13 +544,24 @@ class VoiceController(
         JSONObject().put("transcript", note.text).put("screen", context?.screen ?: "").put("title", context?.title ?: "")
           .apply { context?.cursor?.let { put("cursor", JSONObject().put("row", it.row).put("col", it.col).put("visible", it.visible)) } }
           .apply { context?.terminal?.let { put("terminal", it) } }
+          .apply { if (note.recorded.isNotEmpty()) put("utterances", JSONArray(note.recorded)) }
           .put("provider", model.provider.storageValue).put("model", model.id).put("agent", agent),
       )
     if (!sent) return aiFailed(note, "Mac service not connected; the AI didn't answer")
     Log.i(TAG, "voice: asking ${model.id}${if (agent) " (agent)" else ""} for pane ${note.id} (${context?.title ?: "no pane focused"})")
-    // The Mac stops an agent after 120 s and says so; this only covers a Mac that never answers.
-    main.postDelayed({ if (note.phase == VoiceNote.Phase.Thinking && note.aiRequest == id) aiFailed(note, "The AI took too long") },
-      if (agent) AGENT_TIMEOUT_MS else AI_TIMEOUT_MS)
+    note.aiActiveAt = SystemClock.uptimeMillis()
+    // The Mac limits an agent's run itself and says so; this only covers a Mac that went quiet. An
+    // agent can work for minutes, so it counts from the agent's last progress.
+    watchAi(note, id, if (agent) AGENT_IDLE_MS else AI_TIMEOUT_MS)
+  }
+
+  /** Fails [note]'s request [id] once nothing has come from the Mac for [limitMs]. */
+  private fun watchAi(note: VoiceNote, id: Int, limitMs: Long) {
+    main.postDelayed({
+      if (note.phase != VoiceNote.Phase.Thinking || note.aiRequest != id) return@postDelayed
+      val quietMs = SystemClock.uptimeMillis() - note.aiActiveAt
+      if (quietMs >= limitMs) aiFailed(note, "The AI went quiet and was given up on") else watchAi(note, id, limitMs - quietMs)
+    }, limitMs)
   }
 
   /** Tells the Mac to stop the agent still answering [note], if any; its late frames are ignored. */
@@ -533,7 +582,7 @@ class VoiceController(
     const val TAG = "vrcode"
     const val FINALIZE_TIMEOUT_MS = 4000L
     const val AI_TIMEOUT_MS = 30_000L
-    const val AGENT_TIMEOUT_MS = 150_000L
+    const val AGENT_IDLE_MS = 5 * 60_000L
     const val NOTICE_MS = 4000L
     const val MAX_PANES = 8
     const val NO_TARGET = "No terminal to type into — pinch a pane to paste"

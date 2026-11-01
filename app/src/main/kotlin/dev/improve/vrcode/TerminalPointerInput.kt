@@ -10,11 +10,11 @@ import dev.improve.xmux.client.TerminalId
 import dev.improve.xmux.screen.view.ScreenView
 import dev.improve.xmux.spatial.XmuxSpatial
 
-/** Installs local pinch-drag selection on each live terminal screen; headers keep SDK input. */
+/** Installs pinch-drag scrolling or local selection ([PinchDrag]) on each live terminal screen; headers keep SDK input. */
 internal class TerminalPointerInput(private val xmux: XmuxSpatial) {
   private val bindings = mutableMapOf<ScreenView, TerminalSelectionInput<TerminalId>>()
 
-  fun update(allowInput: Boolean) {
+  fun update(allowInput: Boolean, drag: PinchDrag = PinchDrag.Scroll) {
     val live = xmux.windows.mapNotNull { w -> w.screenView?.let { it to w } }.toMap()
     for ((view, binding) in bindings.toMap()) {
       if (view !in live) {
@@ -38,10 +38,15 @@ internal class TerminalPointerInput(private val xmux: XmuxSpatial) {
             val clipboard = view.context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(ClipData.newPlainText("Terminal selection", text))
           },
+          // A wheel at the pinch's first cell: cmux sends it to apps that track the mouse.
+          onScroll = { target, cell, rows ->
+            window.session?.terminal(target)?.mouse(MouseEvent(MouseAction.Scroll, 0, cell.row, cell.col, dy = rows))
+          },
           onStart = { bindings.filterKeys { it !== view }.values.forEach { it.clear() } },
         )
       }
       binding.enabled = allowInput && window.visible
+      binding.drag = drag
       binding.validate()
     }
   }

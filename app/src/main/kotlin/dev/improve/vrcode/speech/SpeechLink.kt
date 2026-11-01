@@ -30,8 +30,12 @@ sealed interface SpeechEvent {
 
   data class Failure(val id: Int, val message: String) : SpeechEvent
 
-  /** The AI's keystrokes for an AI_REQUEST [id]: text and key presses, in order; [summary] says what they do (agent only). */
-  data class AiResult(val id: Int, val keys: List<Keystroke>, val summary: String = "") : SpeechEvent
+  /**
+   * The AI's answer to AI_REQUEST [id]: the keystrokes to type, text and key presses in order. An
+   * agent works in the terminal itself, so its answer is [acted] with no keys and a [summary] of
+   * what it did.
+   */
+  data class AiResult(val id: Int, val keys: List<Keystroke>, val summary: String = "", val acted: Boolean = false) : SpeechEvent
 
   /** What the agent for AI_REQUEST [id] is doing: a [kind] of "status", "thinking" (a chunk) or "step" (a tool call). */
   data class AiProgress(val id: Int, val kind: String, val text: String) : SpeechEvent
@@ -153,7 +157,7 @@ class SpeechLink(
       Kind.TRANSCRIPT ->
         post(SpeechEvent.Transcript(frame.id, json.optString("final"), json.optString("volatile"), json.optBoolean("done")), current)
       Kind.ERROR -> post(SpeechEvent.Failure(frame.id, json.optString("message", "speech service error")), current)
-      Kind.AI_RESULT -> post(SpeechEvent.AiResult(frame.id, Keystroke.fromAiResult(json), json.optString("summary")), current)
+      Kind.AI_RESULT -> post(SpeechEvent.AiResult(frame.id, Keystroke.fromAiResult(json), json.optString("summary"), json.optBoolean("acted")), current)
       Kind.AI_PROGRESS -> post(SpeechEvent.AiProgress(frame.id, json.optString("kind"), json.optString("text")), current)
     }
   }

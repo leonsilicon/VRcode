@@ -32,7 +32,8 @@
     "shortDescription": "Runs the vrcode Mac service for the Quest",
     "copyright": "Copyright © 2026 Improve Labs",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.png"],
-    "externalBin": ["binaries/vrcode-mac", "binaries/xmux-bridge"],
+    "externalBin": ["binaries/vrcode-mac", "binaries/vrcode-bun", "binaries/xmux-bridge"],
+    "resources": { "resources/vrcode-agent.js": "vrcode-agent.js" },
     "macOS": {
       "minimumSystemVersion": "27.0",
       "hardenedRuntime": true

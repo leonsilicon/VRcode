@@ -24,6 +24,7 @@ import dev.improve.vrcode.hands.MenuDwell
 import dev.improve.vrcode.hands.MiddlePinch
 import dev.improve.vrcode.hands.PieSelection
 import dev.improve.vrcode.hands.RadialMenu
+import dev.improve.vrcode.hands.neckPoint
 import dev.improve.vrcode.hands.viewToScene
 import dev.improve.vrcode.keyboard.KeyboardFeature
 import dev.improve.vrcode.voice.VoiceFeature
@@ -40,9 +41,13 @@ import kotlin.math.roundToInt
  * to run it, or move on out to the label to run it at once. Reaching an icon alone runs nothing.
  * Releasing anywhere, the other finger's pinch, a fist or tracking loss cancels.
  *
- * - Left: Add terminal, in a new cmux window ([CmuxFeature.newTerminal]); Codex and Claude Code, in
+ * - Left: Add terminal, in a new cmux window ([CmuxFeature.newTerminal]); Close terminal, which
+ *   closes the focused window's cmux screen like its title bar's × ([CmuxFeature.closeFocusedScreen]);
+ *   Codex and Claude Code, in
  *   the focused terminal when its shell waits at an empty prompt, else in a new cmux window
- *   ([CmuxFeature.runCommand]); and Bring forward, which moves the focused window to straight in front of the user ([bringForward]).
+ *   ([CmuxFeature.runCommand]); Bring forward, which moves the focused window to straight in front of the user ([bringForward]);
+ *   and Clear path, which glides the windows in front of the user out to either side, and once they
+ *   are aside reads Bring back and glides them back ([togglePath]).
  * - Right: Keyboard, then Enter, Esc and Ctrl-C for the focused pane, and pasting or clearing voice
  *   panes.
  * - Left **index** pinch (the runtime's app menu gesture, which used to toggle Settings): quick
@@ -50,6 +55,9 @@ import kotlin.math.roundToInt
  *   compass directions, any of them empty). By default Esc sits top-left, Ctrl-C top-right, Tab
  *   bottom-left and Enter bottom-right. With every direction empty the pinch opens nothing. The
  *   runtime draws its own menu glyph for this pose, so it gets no hint.
+ *
+ * The ring, its selection and the fingertip hint travel with the user's body ([neckPoint]), so
+ * the menus work while walking: only the hand's movement relative to the body picks an item.
  *
  * Only one menu is open at a time, and none opens while voice is listening. While the right palm
  * faces the user the right-click (palm-away middle pinch) stands down; see [busy].
@@ -61,6 +69,10 @@ class HandMenusFeature(
   private val cmux: CmuxFeature,
   /** Moves the focused window to straight in front of the user. */
   private val bringForward: () -> Unit,
+  /** Moves the windows in front of the user aside, or brings back the ones it moved. */
+  private val togglePath: () -> Unit,
+  /** True while windows are moved aside: the left ring then offers Bring back in Clear path's place. */
+  private val pathCleared: () -> Boolean,
   /** The quick inputs ring as Settings has it now; read every frame, so changes apply at once. */
   private val quickInputs: () -> QuickInputRing,
   private val predictedTimeNs: () -> Long,
@@ -70,18 +82,20 @@ class HandMenusFeature(
   private val leftHand = Hand(HandAim(left = true))
   private val rightHand = Hand(HandAim(left = false))
 
-  private val left =
-    HandMenu(
-      leftHand,
-      "palm menu",
-      "New",
-      listOf(
-        PieItem("Add terminal", PieIcon.AddTerminal) { cmux.newTerminal() },
-        PieItem("Codex", PieIcon.Codex) { cmux.runCommand("codex", name = "Codex") },
-        PieItem("Claude Code", PieIcon.Claude) { cmux.runCommand("claude", name = "Claude Code") },
-        PieItem("Bring forward", PieIcon.BringForward) { bringForward() },
-      ),
-    )
+  /** Whether the left ring's last item reads Bring back (windows are aside) rather than Clear path. */
+  private var shownPathCleared = pathCleared()
+
+  private fun leftItems(cleared: Boolean) = listOf(
+    PieItem("Add terminal", PieIcon.AddTerminal) { cmux.newTerminal() },
+    PieItem("Close terminal", PieIcon.CloseTerminal) { cmux.closeFocusedScreen() },
+    PieItem("Codex", PieIcon.Codex) { cmux.runCommand("codex", name = "Codex") },
+    PieItem("Claude Code", PieIcon.Claude) { cmux.runCommand("claude", name = "Claude Code") },
+    PieItem("Bring forward", PieIcon.BringForward) { bringForward() },
+    if (cleared) PieItem("Bring back", PieIcon.BringBack) { togglePath() }
+    else PieItem("Clear path", PieIcon.ClearPath) { togglePath() },
+  )
+
+  private val left = HandMenu(leftHand, "palm menu", "New", leftItems(shownPathCleared))
 
   /** The ring [quickRing] shows; replaced when Settings changes it. */
   private var shownQuickInputs = quickInputs()
@@ -125,6 +139,9 @@ class HandMenusFeature(
   /** The right palm faces the user or its menu is open: palm-away right-click should stand down. */
   val busy: Boolean get() = right.gesture.open || right.gesture.palmFacing
 
+  /** The left palm faces the user or one of its rings is open: the left pinch's window moves stand down. */
+  val leftBusy: Boolean get() = left.gesture.open || quickRing.gesture.open || left.gesture.palmFacing || quickRing.gesture.palmFacing
+
   /** The right hand's joints from this frame (OpenXR VIEW space, XR_EXT_hand_tracking order). */
   val rightJoints: FloatArray? get() = rightHand.frame?.joints
 
@@ -149,6 +166,13 @@ class HandMenusFeature(
       shownQuickInputs = ring
       quickRing.setItems(quickItems(ring), quickAngles(ring))
       Log.i(TAG, "left quick inputs changed: $ring")
+    }
+    // Relabel Clear path / Bring back once the ring has closed, so a confirmation is never cut short.
+    val cleared = pathCleared()
+    if (cleared != shownPathCleared && left.idle) {
+      shownPathCleared = cleared
+      val items = leftItems(cleared)
+      left.setItems(items, pieEvenAngles(items.size))
     }
     val head = headPose()
     // Dictation owns the hands while it listens (either hand's fist).
@@ -222,6 +246,8 @@ class HandMenusFeature(
     angles: List<Float> = pieEvenAngles(items.size),
   ) {
     val gesture = HandMenuGesture(finger)
+    /** Neither open nor showing a chosen item: its items can change without closing anything. */
+    val idle: Boolean get() = !gesture.open && hideAtMs == 0L
     private val side = hand.side
     private val label = "$side $name"
     private var selection = selectionFor(angles)
@@ -244,7 +270,12 @@ class HandMenusFeature(
     private val hintState = PieHintState()
     private var panel: Entity? = null
     private var hintPanel: Entity? = null
-    private var hintPosition: Vector3? = null
+    /** The hint's smoothed position relative to [neckPoint], or null while hidden. */
+    private var hintFromNeck: Vector3? = null
+    /** While the ring shows: its position relative to [neckPoint] and its fixed rotation. */
+    private var panelFromNeck: Vector3? = null
+    private var panelRotation = Quaternion()
+    private var panelPosition: Vector3? = null
     private var lastLogMs = 0L
     /** When the chosen item's confirmation hides the ring, or 0 while none is showing. */
     private var hideAtMs = 0L
@@ -281,6 +312,7 @@ class HandMenusFeature(
       val frame = hand.frame
       val now = SystemClock.uptimeMillis()
       if (hideAtMs != 0L && now >= hideAtMs) close()
+      followBody(head)
       val event = gesture.update(frame, now)
       log(frame)
       logIgnoredPinch(frame, event)
@@ -353,7 +385,9 @@ class HandMenusFeature(
       state.progress = 0f
       // Just behind the pinch point, so the hand stays in front of the ring.
       val position = at + selection.forward * BEHIND_HAND_M
-      panel?.setComponent(Transform(Pose(position, Quaternion.lookRotation(position - head.t))))
+      panelRotation = Quaternion.lookRotation(position - head.t)
+      panelFromNeck = position - neckPoint(head)
+      placePanel(position)
       panel?.setComponent(Visible(true))
       // flags show whether the runtime's PINCHING signal or the strength alone started it.
       val f = hand.frame
@@ -368,6 +402,8 @@ class HandMenusFeature(
       val confirming = hideAtMs != 0L
       hideAtMs = 0L
       if (selection.center == null && !confirming) return
+      panelFromNeck = null
+      panelPosition = null
       selection.close()
       dwell.reset()
       state.highlighted = null
@@ -376,6 +412,24 @@ class HandMenusFeature(
       state.rayRun = null
       state.progress = 0f
       panel?.setComponent(Visible(false))
+    }
+
+    /**
+     * Carries the ring (open or confirming) and its selection along with the body to [head], so
+     * walking keeps the ring at the hand and does not count as moving the hand. Its rotation stays
+     * as it opened, like the selection's axes.
+     */
+    private fun followBody(head: Pose) {
+      selection.follow(head)
+      val offset = panelFromNeck ?: return
+      placePanel(neckPoint(head) + offset)
+    }
+
+    private fun placePanel(position: Vector3) {
+      val last = panelPosition
+      if (last != null && last.distanceTo(position) < PANEL_STILL_M) return
+      panelPosition = position
+      panel?.setComponent(Transform(Pose(position, panelRotation)))
     }
 
     /**
@@ -446,18 +500,24 @@ class HandMenusFeature(
       item.action()
     }
 
-    /** Shows the fingertip hint at [at] (scene space), or hides it when null. */
+    /**
+     * Shows the fingertip hint at [at] (scene space), or hides it when null. It is smoothed
+     * relative to the body, so walking does not leave it trailing behind the fingertip.
+     */
     private fun showHint(at: Vector3?, head: Pose?) {
       val hint = hintPanel ?: return
       if (at == null || head == null) {
-        if (hintPosition != null) hint.setComponent(Visible(false))
-        hintPosition = null
+        if (hintFromNeck != null) hint.setComponent(Visible(false))
+        hintFromNeck = null
         return
       }
-      val previous = hintPosition
-      val position = if (previous == null) at else previous.lerp(at, HINT_SMOOTHING)
+      val neck = neckPoint(head)
+      val target = at - neck
+      val previous = hintFromNeck
+      val offset = if (previous == null) target else previous.lerp(target, HINT_SMOOTHING)
       if (previous == null) hint.setComponent(Visible(true))
-      hintPosition = position
+      hintFromNeck = offset
+      val position = neck + offset
       hintState.progress = gesture.progress
       hint.setComponent(Transform(Pose(position, Quaternion.lookRotation(position - head.t))))
     }
@@ -492,6 +552,8 @@ class HandMenusFeature(
     /** About the size of the runtime's own menu glyph, and a fingertip's width. */
     const val HINT_SIZE_M = 0.016f
     const val HINT_SMOOTHING = 0.6f
+    /** The open ring is only moved once its body-relative spot is this far from where it is. */
+    const val PANEL_STILL_M = 0.001f
     /** How long a chosen item stays marked before the ring hides. */
     const val CONFIRM_MS = 250L
     /** A hint that fills this far and then empties back below [NEAR_MISS_RESET] is a near miss. */

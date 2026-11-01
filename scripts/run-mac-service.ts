@@ -69,6 +69,14 @@ async function packageApp() {
   const swiftBin = await run(["swift", "build", "-c", "release", "--package-path", mac, "--show-bin-path"], { timeout: 60_000 });
   await run(["/bin/cp", join(swiftBin, "vrcode-mac"), join(binaries, `vrcode-mac-${triple}`)]);
 
+  // The AI mic's agent runner: Bun itself as the vrcode-bun sidecar (it also runs the ACP agents
+  // the runner starts, so the Mac needs no Bun or Node), and the runner bundled into one file that
+  // the app carries in its Resources.
+  await run([process.execPath, "install", "--frozen-lockfile"], { cwd: repoRoot, timeout: 300_000, inherit: true });
+  await run([process.execPath, "build", "--target=bun", join(repoRoot, "mac/agent/vrcode-agent.ts"), "--outfile", join(tauriDir, "resources/vrcode-agent.js")],
+    { cwd: repoRoot, timeout: 300_000, inherit: true });
+  await run(["/bin/cp", process.execPath, join(binaries, `vrcode-bun-${triple}`)]);
+
   // The xmux bridge, from the xmux checkout, as the xmux-bridge sidecar.
   await run(["cargo", "build", "--release", "-p", "xmux-bridged", "--bin", "xmux-bridge"], { cwd: xmuxDir, timeout: 1_200_000, inherit: true });
   await run(["/bin/cp", join(xmuxDir, "target/release/xmux-bridge"), join(binaries, `xmux-bridge-${triple}`)]);

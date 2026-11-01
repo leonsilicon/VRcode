@@ -23,7 +23,7 @@ class AppSettingsTest {
 
   @Test fun sanitizingPreservesValidUserChoices() {
     val chosen = AppSettings(passthrough = false, windowDistanceM = 2.1f, autoConnect = false, windowStyle = WindowStyle.Windows, textMicProp = VoiceProp.Banana, aiMicProp = VoiceProp.Megaphone, defaultWindowMode = WindowMode.Follow,
-      pointerCursor = PointerCursorStyle.Crosshair, pointerCursorSize = 1.5f)
+      pointerCursor = PointerCursorStyle.Crosshair, pointerCursorSize = 1.5f, pinchDrag = PinchDrag.Select)
     assertEquals(chosen, chosen.sanitized())
   }
 
@@ -107,6 +107,13 @@ class AppSettingsTest {
     assertEquals(PointerCursorStyle.Arrow, PointerCursorStyle.fromStorage(null))
     assertEquals(PointerCursorStyle.Arrow, PointerCursorStyle.fromStorage("future-cursor"))
     for (style in PointerCursorStyle.entries) assertEquals(style, PointerCursorStyle.fromStorage(style.storageValue))
+  }
+
+  @Test fun pinchDragScrollsByDefaultAndSavedChoicesSurvive() {
+    assertEquals(PinchDrag.Scroll, AppSettings().pinchDrag)
+    assertEquals(PinchDrag.Scroll, PinchDrag.fromStorage(null))
+    assertEquals(PinchDrag.Scroll, PinchDrag.fromStorage("future-gesture"))
+    for (drag in PinchDrag.entries) assertEquals(drag, PinchDrag.fromStorage(drag.storageValue))
   }
 
   @Test fun invalidPointerSizesCannotMakeThePointerInvisibleOrTooLarge() {

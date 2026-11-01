@@ -33,6 +33,47 @@ class SceneLayoutTest {
   private fun layout(mode: WindowMode = WindowMode.Fixed) =
     SceneLayout().seeded(a, mode, world, user).seeded(b, WindowMode.Fixed, Pose(Vector3(1f, 1f, 1f)), user)
 
+  @Test fun newTerminalOpensAtTheConfiguredDistanceAlongTheCurrentGaze() {
+    // Turning, tilting and leaning must all affect creation, independently of the existing arc.
+    for (pitch in listOf(-65f, 0f, 50f)) {
+      val viewer = Pose(Vector3(3f, 1.8f, -2f), Quaternion(pitch, 125f, 20f))
+      val opened = layout().openedInFront("screen_new", WindowMode.Fixed, viewer, viewer.t, 1.7f)
+      val actual = opened.renderPose("screen_new", viewer, viewer.t, 1.6f, 0.9f)!!
+      val offset = actual.t - viewer.t
+      assertEquals(1.7f, offset.length(), 0.0001f)
+      assertEquals(1f, offset.normalize().dot(viewer.forward().normalize()), 0.0001f)
+      // The panel's visible face is its local -Z, so its forward points away from the viewer.
+      assertEquals(1f, actual.forward().normalize().dot(offset.normalize()), 0.0001f)
+      assertEquals(layout().windows, opened.windows - "screen_new")
+    }
+  }
+
+  @Test fun creationReplyAfterArcSeedingStillBringsOnlyTheCreatedScreenInFront() {
+    val seeded = layout().scaled(a, 1.5f).minimized(a).fullscreenToggled(b)
+    val opened = seeded.openedInFront(a, WindowMode.Fixed, movedHead, walked, 1.3f)
+    assertNull(opened.fullscreen)
+    assertTrue(opened.visible(a))
+    assertTrue(opened.visible(b))
+    assertEquals(seeded.windows[b], opened.windows[b])
+    assertEquals(1.5f, opened.windows[a]!!.scale)
+    val actual = opened.renderPose(a, movedHead, walked, 1f, 1f)!!
+    assertEquals(1f, (actual.t - movedHead.t).normalize().dot(movedHead.forward().normalize()), 0.0001f)
+    // Once opened it stays placed when the wearer turns, and the placement survives a reconnect.
+    assertPose(actual, opened.renderPose(a, head, user, 1f, 1f))
+    assertPose(actual, SceneLayout.fromJson(opened.toJson())!!.renderPose(a, head, user, 1f, 1f))
+  }
+
+  @Test fun newFollowingTerminalUsesTheEasedUserAnchorButStartsAtTheCurrentGaze() {
+    // The follow anchor can lag behind the tracked head while walking.
+    val opened = layout().openedInFront("screen_new", WindowMode.Follow, movedHead, user, 2f)
+    val actual = opened.renderPose("screen_new", movedHead, user, 1f, 1f)!!
+    assertEquals(WindowMode.Follow, opened.windows["screen_new"]!!.mode)
+    assertEquals(2f, (actual.t - movedHead.t).length(), 0.0001f)
+    assertEquals(1f, (actual.t - movedHead.t).normalize().dot(movedHead.forward().normalize()), 0.0001f)
+    assertPose(actual, opened.renderPose("screen_new", head, user, 1f, 1f))
+    assertPose(actual.shifted(walked - user), opened.renderPose("screen_new", movedHead, walked, 1f, 1f))
+  }
+
   @Test fun fixedWindowsStayInTheRoomWhenTheUserMoves() {
     val l = layout()
     assertPose(world, l.renderPose(a, head, user, 1f, 1f))

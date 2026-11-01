@@ -16,8 +16,9 @@ in the menu; unsupported daemon capabilities are never replaced with foreground 
 **Copy screen** and **Copy history** copy text to Quest and Mac clipboards. **Paste** reads the
 Quest clipboard; **Paste from Mac** reads the Mac clipboard. Both write directly to the captured
 terminal. **Select / find text** gives the Quest its own read-only text view and search/selection
-controls. Selection and copy do not depend on a selection in a Mac frontend. The existing
-pinch-drag selection also copies to the Quest clipboard. **Send right-click to terminal app**
+controls. Selection and copy do not depend on a selection in a Mac frontend. With **Pinch and
+drag** set to Select text (Settings → Customization → Pointer; Scroll is the default), a pinch-drag
+selection also copies to the Quest clipboard. **Send right-click to terminal app**
 forwards a right-button press/release to the cell where the menu was opened.
 
 The menu consumes hardware-keyboard input while open, so typing names or search text does not

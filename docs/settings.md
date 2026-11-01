@@ -24,33 +24,43 @@ while its title and Close button stay visible. Close, Escape/Back, the same gear
 terminal below a shorter sheet dismisses it. The collapsed dock handle
 (see `docs/dock.md`) stays visible below it. The panel entity and registration are reused on subsequent openings.
 
-Point at a terminal's title bar, then hold a pinch or controller trigger and drag to reposition
-the window. Release to leave it in place. Both macOS and Windows header styles support dragging;
-the settings button, active window controls, and terminal body keep their own input behavior.
+With the right hand, point at a terminal's title bar, then hold a pinch or controller trigger and
+drag to reposition the window. Release to leave it in place. Both macOS and Windows header styles
+support dragging; the settings button, active window controls, and terminal body keep their own
+input behavior. The **left hand's pinch only moves windows**, from anywhere on them or just past
+an edge, and never clicks or resizes (see [hand input](hand-input.md#left-pinch-moves-windows)).
 Dragging sweeps the window around the user: the grabbed point stays under the pointer at its
 distance from the head, and the window turns upright to face the user (no roll), like windows
 placed by Arrange. Dragged sideways, up or down, it never ends up edge-on or drifts nearer or
 further away; an angled window turns to face the user when the drag starts. Movement uses the
 panel's current physical scale, including windows scaled with the corner handles.
 
-A window resizes two ways:
+A window resizes two ways, both with the right hand (or controller) only:
 
 - **Corners scale it.** The SDK's corner handles enlarge or shrink the whole window, text
   included, at a fixed aspect ratio (Interaction SDK `Simple` resize). The terminal keeps its
   rows and columns. The scale is saved in the window's cmux layout entry (`scale`), so it returns
   after a restart.
-- **Edges change its rows or columns.** Point just past the left, right, top or bottom edge (up
-  to 5 cm out, at least 7 cm from a corner): a bar lights up along that edge inside the window.
-  Pinch or pull the trigger and drag. The window grows or shrinks with the pointer a whole cell at
-  a time, and the opposite edge stays put. Until release the terminal keeps its grid, so new
+- **Edges change its rows or columns.** Point just past the left, right or bottom edge, at
+  least 7 cm from a corner: a bar lights up beside that edge, outside the window, and turns blue
+  while you drag. The band reaches about 3.4° past the edge (5 cm at arm's length, 15 cm on a
+  window 2.5 m away, at most 25 cm). The focus dot and short laser remain visible over the band,
+  including during the drag. Pinch or pull the trigger and drag. Tracked hands
+  use the runtime's index pinch directly: the SDK's panel trigger is unavailable outside a panel.
+  A pinch that closes
+  within 0.3 s of the ray drifting off the band still grabs it, as long as the ray is within twice
+  the band and not on the window, and a pinch that drops for less than 0.15 s keeps the drag. The
+  window grows or shrinks with the pointer a whole cell at a time, and the opposite edge stays put. Until release the terminal keeps its grid, so new
   space shows empty and a cut-off part is hidden. On release vrcode pins the grid that fills the
   window in cmux through the Mac service (`TerminalGridSizing`), and the window takes that grid's
   exact size with the opposite edge (and, across the drag, the title bar) still in place. If no
   new grid arrives within 3 s, the window returns to its grid's size. The SDK's edge grab handles
   are off (`SpatialConfig.edgeGrabHandles = false`), so the edges only resize; move a window by its
-  title bar. A fullscreen window does not resize from its edges. Logcat shows `VrcodeWindow` lines
-  `edge resize: screen N right edge by the right hand at 1.02 m x 0.71 m` and `… released at
-  1.24 m x 0.71 m`, and `XmuxSpatial` / `VrcodeGridSize` lines for the requested grids.
+  title bar. The top edge never resizes: it is the title bar's side and only moves the window, so
+  pointing above a window lights no bar. A fullscreen window does not resize from its edges. Logcat shows `VrcodeWindow` lines
+  `edge resize: screen N right edge by the right hand at 1.02 m x 0.71 m, 2.48 m away` (with how
+  long before the pinch the ray left the edge, when it had) and `… released at 1.24 m x 0.71 m`,
+  and `XmuxSpatial` / `VrcodeGridSize` lines for the requested grids.
 
 To move a window nearer or further, push or pull the hand (or controller) holding the drag: reach
 out along the pointer to send it away, draw the hand back toward you to bring it closer. Depth
@@ -68,7 +78,7 @@ Each terminal window has working close, minimize and maximize controls in both h
 
 - Close sends `screen.close` for that window's cmux screen ID. The live topology removes the
   window and its dock entry. It follows cmux's screen lifecycle; explicit `terminal.close` in
-  Actions remains the operation for terminating a retained process. Errors appear in Actions,
+  Actions remains the operation for terminating a retained process. Errors appear in an info box above that terminal,
   and repeated presses while a close request is pending do not send duplicate requests.
 - Minimize hides the window while keeping its live session and dock entry. Hidden windows
   receive neither pointer hits nor keyboard/voice input. Recall it from the Quest dock to show
@@ -119,8 +129,8 @@ Available app options:
   window at the same offset from where the user is, so the windows stay around them as they walk,
   stand up or sit down. Follow windows track position only: turning, looking up/down or tilting the
   head does not move them, so the user can look between windows placed all around. Small moves
-  (leaning in to read, swaying) stay inside a 40 cm dead zone; past it the windows ease along and
-  catch up when the user stops. The choice saves immediately and applies only when a new screen window mounts. Existing
+  (leaning in to read, swaying) stay inside a 40 cm dead zone; past it the windows glide along on
+  a spring, without bobbing with each step, and catch up when the user stops. The choice saves immediately and applies only when a new screen window mounts. Existing
   windows retain their individual mode. Each terminal title bar has a Fixed / Follow toggle on
   the right, followed by Settings, in both macOS and Windows styles. Switching modes preserves
   the current pose; switching to Fixed leaves the window where it is. Title-bar dragging and
@@ -157,15 +167,21 @@ Available app options:
   VRcode Mac's "AI provider keys" section (Keychain service `dev.improve.vrcode`, accounts
   `anthropic-api-key`, `openai-api-key`, `gemini-api-key`). The choice saves as `ai_provider` and
   goes out as the `provider` of each `AI_REQUEST`. Without that provider's key, the AI pane says so
-  and a paste types what was said.
-- Customization → AI mic → Thinking (`ai_thinking`): **Think, shown above** (`above`, the
-  default), **Think, shown below** (`below`) or **Quick answer** (`off`). Thinking runs the
-  provider's agent CLI on the Mac (Claude Code, Codex or Gemini CLI, signed in with its own login,
-  not the API key) in the target pane's working directory: it reads the project, never changes
-  it, and streams its thinking and each tool call onto a panel just above or below the window it
-  will type into, with Stop. When it answers, the panel shows what it typed and why for 6 s.
-  Quick answer makes one API call with the key below and shows no panel. Goes out as `agent` in
-  each `AI_REQUEST`; see [the protocol](vrcode-protocol.md).
+  and a paste types what was said. What you say to the AI mic is heard by a model, not taken from
+  the on-device transcript (which spells "Claude Code" as "claw code"): the pane previews the
+  transcript while you speak, then shows what the model heard. Claude's API takes no audio, so this
+  needs a Gemini or OpenAI key in VRcode Mac, in agent mode too: the chosen provider hears when it
+  can, else Gemini, then OpenAI. Without either, the AI gets the on-device transcript
+  ([protocol](vrcode-protocol.md)).
+- Customization → AI mic → Thinking (`ai_thinking`): **Agent, shown above** (`above`, the
+  default), **Agent, shown below** (`below`) or **Quick answer** (`off`). Agent runs the
+  provider's coding agent on the Mac (Claude Code, Codex or Gemini CLI, signed in with its own
+  login, not the API key) over the Agent Client Protocol: it finds files and runs commands itself
+  and works in the target terminal, full auto (no approval prompts), while its thinking and each
+  step stream onto a panel just above or below that window, with Stop. When it finishes, the panel
+  shows what it did for 6 s. Follow-up requests to the same terminal continue its session. Quick
+  answer makes one API call with the key below, shows no panel and only types. Goes out as
+  `agent` in each `AI_REQUEST`; see [the protocol](vrcode-protocol.md).
 - Customization → AI mic → Model: the chosen provider's models, fastest first. Claude: Haiku 5.5,
   Sonnet 5.5 (the default), Opus 5.5, Fable 5.1. ChatGPT: GPT-6 Luna, GPT-6.1 Terra, GPT-6.1 Sol
   (the default), GPT-6 Astra. Gemini: 3.5 Flash-Lite, 3.8 Flash (the default), 4 Argon. Each
@@ -185,8 +201,12 @@ Available app options:
   the app, and hides when hand tracking is lost (after the existing 250 ms tracking grace period).
 - Customization → Pointer → Pointer cursor: Arrow (default), Dot, Crosshair, or No cursor, with previews and
   a 75–200% size control for visible cursors. Changes save immediately and apply to the right-hand
-  pointer. No cursor hides the graphic and pressed-state halo while pinch clicks and drag selection
+  pointer. No cursor hides the graphic and pressed-state halo while pinch clicks and drags
   stay enabled. This preference is separate from the terminal's text cursor in Appearance.
+- Customization → Pointer → Pinch and drag: **Scroll** (default) or **Select text**, saved as
+  `pinch_drag` and synced to VRcode Mac. Scroll sends wheel rows to apps that track the mouse
+  (Claude Code, Codex); a plain shell prompt has nothing to scroll. Select text keeps the
+  highlight-and-copy drag ([hand input](hand-input.md#pointer-cursor-scrolling-and-text-selection)).
 - Customization → Quick inputs: what each direction of the
   [quick inputs ring](hand-input.md#quick-inputs-left-index-pinch) sends. A 3 × 3 keypad shows the
   eight directions around the pinch point; pick one, then pick its input below or **Leave empty**.

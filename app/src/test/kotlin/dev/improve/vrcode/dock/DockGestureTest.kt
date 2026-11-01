@@ -3,6 +3,7 @@ package dev.improve.vrcode.dock
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
 import com.meta.spatial.core.Vector3
+import dev.improve.vrcode.DockShelf
 import dev.improve.vrcode.dock.DockGesture.Event
 import dev.improve.vrcode.dock.DockGesture.Hand
 import dev.improve.vrcode.dock.DockGesture.Phase
@@ -22,7 +23,7 @@ class DockGestureTest {
   private val bar = Pose(Vector3(0f, 0f, 0.5f), Quaternion.lookRotation(Vector3(0f, 0f, 1f)))
   private val options = DockLayout.optionXs(5) // -0.12, -0.06, 0, 0.06, 0.12
   private val row = DockPlacement.ROW_Y_M
-  private val pull = DockGesture.REVEAL_DRAG_M
+  private val pull = DockPlacement.TRAVEL_M
   private var now = 0L
 
   /** One frame with the right hand at [tip] / [pinch], aiming [pointer], pinching if [pressed]. */
@@ -53,8 +54,8 @@ class DockGestureTest {
   private fun reveal(g: DockGesture) {
     frame(g, pinch = at())
     assertEquals(Event.None, frame(g, pinch = at(), pressed = true))
-    assertEquals(Event.Revealed, frame(g, pinch = at(y = pull + 0.005f), pressed = true))
-    frame(g)
+    assertEquals(Event.None, frame(g, pinch = at(y = pull), pressed = true))
+    assertEquals(Event.Revealed, frame(g))
     now += DockGesture.GUARD_MS
   }
 
@@ -111,13 +112,14 @@ class DockGestureTest {
     assertEquals(Event.None, frame(g, pinch = at(x = 0.02f, y = -0.01f + pull / 2f), pressed = true))
     assertEquals(0.5f, g.lift, 1e-3f)
     assertFalse(g.revealed)
-    assertEquals(Event.Revealed, frame(g, pinch = at(x = 0.025f, y = -0.01f + pull + 0.002f), pressed = true))
+    assertEquals(Event.None, frame(g, pinch = at(x = 0.025f, y = -0.01f + pull), pressed = true))
+    assertTrue(g.pulling)
+    assertEquals(1f, g.lift, 1e-6f)
+    // The sheet reaches the top without abandoning the held pinch.
+    assertEquals(Event.None, frame(g, pinch = at(x = 0.025f, y = -0.01f + pull), pressed = true))
+    assertEquals(Event.Revealed, frame(g))
     assertTrue(g.revealed)
-    assertFalse(g.pulling)
-    assertEquals(0f, g.lift, 1e-6f)
-    // Still holding: no further event, and the dock stays up.
-    assertEquals(Event.None, frame(g, pinch = at(y = 0.06f), pressed = true))
-    assertTrue(g.revealed)
+    assertEquals(1f, g.lift, 1e-6f)
   }
 
   @Test
@@ -125,13 +127,123 @@ class DockGestureTest {
     val g = DockGesture()
     frame(g, pinch = at())
     frame(g, pinch = at(), pressed = true)
-    frame(g, pinch = at(y = pull * 0.8f), pressed = true)
-    assertEquals(Event.None, frame(g, pinch = at(y = pull * 0.8f)))
+    frame(g, pinch = at(y = pull * 0.3f), pressed = true)
+    assertEquals(Event.None, frame(g, pinch = at(y = pull * 0.3f)))
     assertFalse(g.pulling)
+    now += DockGesture.SETTLE_MS
+    frame(g)
     assertEquals(0f, g.lift, 1e-6f)
     // Moving on up with the hand open does not finish the pull.
     assertEquals(Event.None, frame(g, pinch = at(y = 0.06f)))
     assertFalse(g.revealed)
+  }
+
+  @Test
+  fun theSameHeldPinchCanReverseAtTheTopAndCloseTheSheet() {
+    val g = DockGesture()
+    frame(g, pinch = at())
+    frame(g, pinch = at(), pressed = true)
+    for (fraction in listOf(0.2f, 0.6f, 1f, 0.7f, 0.3f, 0f)) {
+      assertEquals(Event.None, frame(g, pinch = at(y = pull * fraction), pressed = true))
+      assertEquals(fraction, g.lift, 1e-5f)
+      assertTrue(g.pulling)
+    }
+    assertEquals(Event.None, frame(g))
+    assertFalse(g.revealed)
+    assertFalse(g.bodyVisible)
+  }
+
+  @Test
+  fun releasingPastHalfwaySettlesToTheTopWithoutJumpingOnRelease() {
+    val g = DockGesture()
+    frame(g, pinch = at())
+    frame(g, pinch = at(), pressed = true)
+    frame(g, pinch = at(y = pull * 0.65f), pressed = true)
+    assertEquals(Event.Revealed, frame(g))
+    assertEquals(0.65f, g.lift, 1e-5f)
+    frame(g)
+    assertTrue(g.lift > 0.65f && g.lift < 1f)
+    now += DockGesture.SETTLE_MS
+    frame(g)
+    assertEquals(1f, g.lift, 1e-6f)
+  }
+
+  @Test
+  fun aShortDownwardSwipeReturnsToTheTopAndCanBeRegrabbedImmediately() {
+    val g = DockGesture()
+    reveal(g)
+    frame(g, pinch = at(y = pull), pressed = true)
+    frame(g, pinch = at(y = pull * 0.8f), pressed = true)
+    assertEquals(Event.None, frame(g))
+    assertTrue(g.revealed)
+    assertEquals(0.8f, g.lift, 1e-5f)
+    // Interrupt the settle at the currently rendered handle, retaining its grab offset.
+    frame(g)
+    val before = g.lift
+    frame(g, pinch = at(y = pull * before), pressed = true)
+    assertTrue(g.pulling)
+    val grabbed = g.lift
+    frame(g, pinch = at(y = pull * before), pressed = true)
+    assertEquals(grabbed, g.lift, 1e-5f)
+    frame(g, pinch = at(y = 0f), pressed = true)
+    assertEquals(Event.Dismissed, frame(g))
+  }
+
+  @Test
+  fun releasingASidewaysSweepCannotOpenTheSheet() {
+    val g = DockGesture()
+    frame(g, pinch = at())
+    frame(g, pinch = at(), pressed = true)
+    frame(g, pinch = at(x = 0.4f, y = pull), pressed = true)
+    assertEquals(Event.None, frame(g))
+    assertFalse(g.revealed)
+    now += DockGesture.SETTLE_MS
+    frame(g)
+    assertEquals(0f, g.lift, 1e-6f)
+  }
+
+  @Test
+  fun anExpandedRayHandleCanBePinchedAndSwipedBackDown() {
+    val g = DockGesture()
+    reveal(g)
+    frame(g, pointer = aimAt(0f, pull))
+    frame(g, pointer = aimAt(0f, pull), pressed = true)
+    assertTrue(g.pulling)
+    frame(g, pointer = aimAt(0f, pull * 0.4f), pressed = true)
+    assertEquals(0.4f, g.lift, 1e-5f)
+    assertEquals(Event.Dismissed, frame(g))
+  }
+
+  @Test
+  fun theCollapsedLocationCannotGrabTheExpandedHandle() {
+    val g = DockGesture()
+    reveal(g)
+    frame(g, pinch = at(), pointer = aimAt(0f, 0f), pressed = true)
+    assertFalse(g.pulling)
+    assertTrue(g.revealed)
+  }
+
+  @Test
+  fun anotherHandCannotStealAHeldSwipe() {
+    val g = DockGesture()
+    frame(g, pinch = at())
+    frame(g, pinch = at(), pressed = true)
+    frame(g, pinch = at(y = pull * 0.4f), pressed = true)
+    g.update(bar, listOf(Hand(pinch = at(y = pull * 0.4f), pressed = true), Hand(pinch = at(y = pull * 0.6f), pressed = true)), emptyList(), options, now + 16)
+    assertEquals(0.6f, g.lift, 1e-5f)
+    assertTrue(g.pulling)
+  }
+
+  @Test
+  fun pausedDockResetsAPartiallyRaisedSheet() {
+    val g = DockGesture()
+    frame(g, pinch = at())
+    frame(g, pinch = at(), pressed = true)
+    frame(g, pinch = at(y = pull * 0.6f), pressed = true)
+    g.reset()
+    assertFalse(g.pulling)
+    assertFalse(g.bodyVisible)
+    assertEquals(Event.None, frame(g, pinch = at(y = pull), pressed = true))
   }
 
   @Test
@@ -155,10 +267,11 @@ class DockGestureTest {
     val g = DockGesture()
     frame(g, pinch = at())
     frame(g, pinch = at(), pressed = true)
-    assertEquals(Event.None, frame(g, pinch = at(x = 0.06f, y = pull + 0.005f), pressed = true))
+    assertEquals(Event.None, frame(g, pinch = at(x = 0.4f, y = pull), pressed = true))
     assertFalse(g.revealed)
     // Straightening up raises it.
-    assertEquals(Event.Revealed, frame(g, pinch = at(x = 0.02f, y = pull + 0.005f), pressed = true))
+    assertEquals(Event.None, frame(g, pinch = at(x = 0.02f, y = pull), pressed = true))
+    assertEquals(Event.Revealed, frame(g))
   }
 
   @Test
@@ -169,7 +282,9 @@ class DockGestureTest {
     assertTrue(g.hover > 0f)
     assertEquals(Event.None, frame(g, pointer = aimAt(0f, 0f, pressed = true), pressed = true))
     assertTrue(g.pulling)
-    assertEquals(Event.Revealed, frame(g, pointer = aimAt(0f, pull + 0.005f, pressed = true), pressed = true))
+    assertEquals(Event.None, frame(g, pointer = aimAt(0f, pull, pressed = true), pressed = true))
+    assertEquals(1f, g.lift, 1e-6f)
+    assertEquals(Event.Revealed, frame(g))
     assertTrue(g.revealed)
   }
 
@@ -195,14 +310,14 @@ class DockGestureTest {
     val g = DockGesture()
     frame(g, pinch = at())
     frame(g, pinch = at(), pressed = true)
-    assertEquals(Event.Revealed, frame(g, pinch = at(y = pull + 0.005f), pressed = true))
+    assertEquals(Event.None, frame(g, pinch = at(y = pull), pressed = true))
     // The pulling hand ends among the options: touching them while held runs nothing, however long.
     now += DockGesture.GUARD_MS * 3
-    assertEquals(Event.None, frame(g, down(Surface.Body, 0f, row), pinch = at(y = row), pressed = true))
-    assertEquals(Event.None, frame(g, down(Surface.Bar, 0f, 0f), pinch = at(y = row), pressed = true))
-    assertTrue(g.revealed)
+    assertEquals(Event.None, frame(g, down(Surface.Body, 0f, row), pinch = at(y = pull), pressed = true))
+    assertEquals(Event.None, frame(g, down(Surface.Bar, 0f, 0f), pinch = at(y = pull), pressed = true))
+    assertTrue(g.pulling)
     // Letting go starts the guard, which a finger landing straight after must also respect.
-    frame(g, tip = at(y = row))
+    assertEquals(Event.Revealed, frame(g, tip = at(y = row)))
     assertEquals(Event.None, frame(g, down(Surface.Body, 0f, row), tip = at(y = row)))
     now += DockGesture.GUARD_MS
     assertEquals(Event.Activated(2), frame(g, down(Surface.Body, 0f, row), tip = at(y = row)))
@@ -248,47 +363,49 @@ class DockGestureTest {
   fun touchingBesideTheRowRunsNothing() {
     val g = DockGesture()
     reveal(g)
-    assertEquals(Event.None, frame(g, down(Surface.Body, 0.2f, DockPlacement.BODY_TOP_M + 0.03f))) // the label space
+    assertEquals(Event.None, frame(g, down(Surface.Body, 0.2f, DockPlacement.LABEL_Y_M))) // the label space
+    assertEquals(Event.None, frame(g, down(Surface.Body, 0.2f, DockPlacement.SHEET_BOTTOM_M + 0.003f))) // the sheet's bottom margin
     assertEquals(Event.None, frame(g, down(Surface.Body, 0.25f, row))) // past the last option
     assertTrue(g.revealed)
   }
 
   @Test
-  fun touchingTheBarAgainLowersTheDock() {
+  fun theExpandedHandleStaysAtTheTopAndRequiresASwipeDown() {
     val g = DockGesture()
     reveal(g)
-    // The bar stays where it is under the raised options, and still bulges under a hand.
-    frame(g, pinch = Vector3(0f, 0f, 0.47f))
+    frame(g, pinch = at(y = pull, front = 0.03f))
     assertTrue(g.hover > 0.4f)
-    assertEquals(Event.Dismissed, frame(g, down(Surface.Bar, 0.02f, 0.01f)))
+    assertEquals(Event.None, frame(g, down(Surface.Bar, 0.02f, 0.01f)))
+    assertTrue(g.revealed)
+    frame(g, pinch = at(y = pull), pressed = true)
+    assertTrue(g.pulling)
+    frame(g, pinch = at(y = pull * 0.6f), pressed = true)
+    assertEquals(0.6f, g.lift, 1e-5f)
+    frame(g, pinch = at(), pressed = true)
+    assertEquals(0f, g.lift, 1e-5f)
+    assertEquals(Event.Dismissed, frame(g))
     assertFalse(g.revealed)
-    now += DockGesture.GUARD_MS
-    // Down again, touching it does nothing; a pinch pulls it back up.
-    assertEquals(Event.None, frame(g, down(Surface.Bar, 0f, 0f)))
+    // The bar can be grabbed immediately, without waiting out the option touch guard.
     reveal(g)
     assertTrue(g.revealed)
   }
 
   @Test
-  fun aFingerRestingOnTheBarAfterLoweringItDoesNotPullItStraightBack() {
+  fun aFingerRestingOnTheBarDoesNotToggleIt() {
     val g = DockGesture()
     reveal(g)
-    assertEquals(Event.Dismissed, frame(g, down(Surface.Bar, 0f, 0f), pinch = at()))
-    // Direct touch can report a resting finger as a quick release and press again.
-    assertEquals(Event.None, frame(g, down(Surface.Bar, 0f, 0f), pinch = at()))
-    // A pinch closing straight after the dock lowered does not grab the bar, even pulled up later.
-    assertEquals(Event.None, frame(g, pinch = at(), pressed = true))
-    now += DockGesture.GUARD_MS
-    assertEquals(Event.None, frame(g, pinch = at(y = pull + 0.01f), pressed = true))
-    assertFalse(g.revealed)
+    repeat(5) { assertEquals(Event.None, frame(g, down(Surface.Bar, 0f, 0f), pinch = at(y = pull))) }
+    assertTrue(g.revealed)
   }
 
   @Test
-  fun theRaisedDockLowersItselfWhenLeftAlone() {
+  fun theExpandedSheetStaysAtTheTopWhenLeftAlone() {
     val g = DockGesture()
     reveal(g)
-    now += DockGesture.IDLE_MS + 100
-    assertEquals(Event.Dismissed, frame(g))
+    now += 60_000
+    assertEquals(Event.None, frame(g))
+    assertTrue(g.revealed)
+    assertEquals(1f, g.lift, 1e-6f)
   }
 
   @Test
@@ -309,9 +426,103 @@ class DockGestureTest {
   }
 
   @Test
-  fun theRaisedBodySitsAboveTheBarWithoutOverlappingIt() {
-    assertTrue(DockPlacement.BODY_BOTTOM_M > DockPlacement.BAR_HIT_HEIGHT_M / 2f)
-    assertTrue(DockPlacement.ROW_Y_M - 0.03f > DockPlacement.BAR_HIT_HEIGHT_M / 2f)
+  fun theHandleIsTheSheetsTopEdgeDuringTheWholeSwipe() {
+    for (lift in listOf(0f, 0.25f, 0.5f, 1f)) {
+      val handle = DockPlacement.handlePose(bar, lift)
+      assertEquals(pull * lift, handle.t.y, 1e-6f)
+      // The handle rides inside the sheet's top edge, never apart from it.
+      val sheet = DockPlacement.sheetPose(bar, lift)
+      val sheetTop = sheet.t.y + DockPlacement.sheetHeight(lift) / 2f
+      assertEquals(DockPlacement.GRABBER_INSET_M, sheetTop - handle.t.y, 1e-6f)
+      // The sheet grows up out of the bar's resting place: its bottom edge stays put.
+      assertEquals(DockPlacement.SHEET_BOTTOM_M, sheet.t.y - DockPlacement.sheetHeight(lift) / 2f, 1e-6f)
+      // The handle's panel is in front of the sheet, so rays meet the handle first.
+      assertTrue(handle.t.z < DockPlacement.sheetPanelPose(bar).t.z)
+    }
+    // The sheet's panel does not move; the drawn sheet grows inside it.
+    assertEquals(DockPlacement.SHEET_TOP_M, DockPlacement.sheetPanelPose(bar).t.y + DockPlacement.SHEET_HEIGHT_M / 2f, 1e-6f)
+    assertEquals(0f, DockPlacement.sheetDrop(1f), 1e-6f)
+    // Expanded, the handle's target clears the label, which clears even a magnified icon.
+    assertTrue(pull - DockPlacement.BAR_HIT_HEIGHT_M / 2f > DockPlacement.LABEL_Y_M + DockPlacement.LABEL_HALF_HEIGHT_M)
+    assertTrue(DockPlacement.MAGNIFIED_TOP_M < DockPlacement.LABEL_Y_M - DockPlacement.LABEL_HALF_HEIGHT_M)
+    // A full-size tile is inside the row's touch band, and its running dot (in the margin below it) inside the sheet.
+    val tileBottom = DockPlacement.ROW_Y_M - DockPlacement.TILE_M / 2f
+    val dotBottom = tileBottom - DockLayout.MAX_SPACING_M * (DockShelf.PAD + DockShelf.DOT) / 2f
+    assertTrue(dotBottom > DockPlacement.SHEET_BOTTOM_M)
+    assertTrue(tileBottom > row - 0.03f)
+    assertTrue(row + DockPlacement.TILE_M / 2f < row + 0.03f)
+  }
+
+  @Test
+  fun aSeparatorSplitsTheTerminalsFromTheToolsLikeTheMacDock() {
+    // Connection, two windows | Keyboard, Arrange, Settings.
+    val xs = DockLayout.optionXs(6, separatorBefore = 3)
+    val spacing = DockLayout.spacingOf(xs)
+    assertEquals(DockLayout.MAX_SPACING_M, spacing, 1e-6f)
+    assertEquals(spacing, xs[1] - xs[0], 1e-6f)
+    assertEquals(spacing * (1f + DockShelf.SEPARATOR), xs[3] - xs[2], 1e-6f)
+    assertEquals(0f, xs.first() + xs.last(), 1e-6f) // still centred on the bar
+    assertEquals((xs[2] + xs[3]) / 2f, DockLayout.separatorX(xs, 3)!!, 1e-6f)
+    assertNull(DockLayout.separatorX(xs, 0))
+    assertNull(DockLayout.separatorX(xs, null))
+    // A full row shrinks its icons, separator included, to stay within the span.
+    val many = DockLayout.optionXs(20, separatorBefore = 17)
+    val small = DockLayout.spacingOf(many)
+    assertEquals(DockLayout.spacing(20, separated = true), small, 1e-6f)
+    assertEquals(DockLayout.MAX_SPAN_M, many.last() - many.first() + small, 1e-5f)
+  }
+
+  @Test
+  fun aFullRowAcceptsTouchesOnlyOverItsShrunkenIcons() {
+    val many = DockLayout.optionXs(20, separatorBefore = 17)
+    val g = DockGesture()
+    frame(g, pinch = at())
+    frame(g, pinch = at(), pressed = true)
+    frame(g, pinch = at(y = pull), pressed = true)
+    g.update(bar, listOf(null, null), emptyList(), many, now + 16)
+    now += 16 + DockGesture.GUARD_MS
+    val spacing = DockLayout.spacingOf(many)
+    val last = many.last()
+    assertEquals(Event.None, g.update(bar, listOf(null, null), listOf(down(Surface.Body, last + spacing * 0.6f, row)), many, now))
+    assertEquals(Event.Activated(19), g.update(bar, listOf(null, null), listOf(down(Surface.Body, last + spacing * 0.4f, row)), many, now + 16))
+  }
+
+  @Test
+  fun theFingertipsPositionDrivesTheMagnificationWhileItHighlightsAnOption() {
+    val g = DockGesture()
+    reveal(g)
+    assertNull(g.pointedX)
+    frame(g, tip = Vector3(0.071f, row, 0.48f))
+    assertEquals(3, g.highlighted)
+    assertEquals(0.071f, g.pointedX!!, 1e-5f)
+    frame(g, tip = Vector3(0.071f, row, 0.3f)) // pulled back out of reach
+    assertNull(g.highlighted)
+    assertNull(g.pointedX)
+    frame(g, tip = Vector3(0.05f, row, 0.48f))
+    assertEquals(Event.Activated(3), frame(g, down(Surface.Body, 0.05f, row), tip = Vector3(0.05f, row, 0.5f)))
+    assertNull(g.pointedX)
+  }
+
+  @Test
+  fun theSheetFadesInAtTheStartOfTheSwipe() {
+    assertEquals(0f, DockPlacement.sheetOpacity(0f), 1e-6f)
+    assertTrue(DockPlacement.sheetOpacity(0.1f) in 0.2f..0.8f)
+    assertEquals(1f, DockPlacement.sheetOpacity(0.3f), 1e-6f)
+  }
+
+  @Test
+  fun aPinchClosingOnTheTopOfTheRowDoesNotGrabTheExpandedHandle() {
+    val g = DockGesture()
+    reveal(g)
+    val top = row + 0.03f
+    frame(g, pinch = at(y = top))
+    frame(g, pinch = at(y = top), pressed = true)
+    assertFalse(g.pulling)
+    frame(g)
+    // The handle just above it can still be pinched.
+    frame(g, pinch = at(y = pull - 0.04f))
+    frame(g, pinch = at(y = pull - 0.04f), pressed = true)
+    assertTrue(g.pulling)
   }
 
   @Test
@@ -323,9 +534,9 @@ class DockGestureTest {
     assertEquals(DockPlacement.BAR_HIT_HEIGHT_M / 2f, top, 1e-6f)
     val (left, panelTop) = DockPlacement.touchPoint(Surface.Body, 0f, 0f)
     assertEquals(-DockPlacement.BODY_WIDTH_M / 2f, left, 1e-6f)
-    assertEquals(DockPlacement.BODY_PANEL_TOP_M, panelTop, 1e-6f)
+    assertEquals(DockPlacement.SHEET_TOP_M, panelTop, 1e-6f)
     val (_, bottom) = DockPlacement.touchPoint(Surface.Body, 0.5f, 1f)
-    assertEquals(DockPlacement.BODY_BOTTOM_M, bottom, 1e-6f)
+    assertEquals(DockPlacement.SHEET_BOTTOM_M, bottom, 1e-6f)
   }
 
   @Test

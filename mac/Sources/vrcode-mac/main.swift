@@ -57,8 +57,9 @@ func parseOptions() -> Options {
   return options
 }
 
-/// Streams [path] as 16 kHz mono PCM in 100 ms chunks through an [Utterance], like the headset does.
-func transcribeFile(_ path: String, engine: SpeechEngine) async throws {
+/// Streams [path] as 16 kHz mono PCM in 100 ms chunks through the recognizer the headset would
+/// get (ElevenLabs with a key, else [engine]), like the headset does.
+func transcribeFile(_ path: String, locale: String, engine: SpeechEngine?) async throws {
   let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
   let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
   guard let converter = AVAudioConverter(from: file.processingFormat, to: target) else {
@@ -81,13 +82,21 @@ func transcribeFile(_ path: String, engine: SpeechEngine) async throws {
   if let error { throw error }
   let pcm = Data(bytes: out.int16ChannelData![0], count: Int(out.frameLength) * 2)
 
-  let utterance = try await Utterance.start(id: 1, engine: engine, sampleRate: 16000, channels: 1) { update in
-    if update.done {
-      print("FINAL: \(update.final)")
-    } else {
-      log("final=\"\(update.final)\" volatile=\"\(update.volatile)\"")
+  guard let utterance = try await startUtterance(
+    id: 1, sampleRate: 16000, channels: 1, locale: locale, engine: engine,
+    onUpdate: { update in
+      if update.done {
+        print("FINAL: \(update.final)")
+      } else {
+        log("final=\"\(update.final)\" volatile=\"\(update.volatile)\"")
+      }
+    },
+    onError: { message in
+      log("error: \(message)")
+      exit(1)
     }
-  }
+  ) else { throw SpeechError.unavailable }
+  log("transcribing with \(utterance is ScribeUtterance ? "ElevenLabs \(ElevenLabs.model)" : "the on-device recognizer")")
   let chunk = 3200  // 100 ms
   var offset = 0
   while offset < pcm.count {
@@ -140,24 +149,32 @@ var service: Server?
 if options.transcribe == nil {
   do {
     let server = try Server(port: options.port, anyInterface: options.anyInterface,
-      cmuxEndpoint: CmuxEndpoint(session: options.cmuxSession, socket: options.cmuxSocket))
+      cmuxEndpoint: CmuxEndpoint(session: options.cmuxSession, socket: options.cmuxSocket), locale: options.locale)
     service = server
     server.start()
   } catch { log("fatal: \(error)"); exit(1) }
+  log(ElevenLabs.apiKey() != nil
+    ? "speech: ElevenLabs \(ElevenLabs.model), the on-device recognizer as fallback"
+    : "speech: on-device (an ElevenLabs key in VRcode Mac switches it to ElevenLabs Scribe)")
 }
+// --control-only skips the on-device recognizer; with an ElevenLabs key, speech still works.
 if options.controlOnly { RunLoop.main.run(); exit(0) }
 Task {
+  var engine: SpeechEngine?
   do {
-    let engine = try await SpeechEngine.make(localeIdentifier: options.locale)
-    try await engine.prepare()
-    if let path = options.transcribe {
-      try await transcribeFile(path, engine: engine)
-      exit(0)
-    }
-    service?.setSpeechEngine(engine)
+    let made = try await SpeechEngine.make(localeIdentifier: options.locale)
+    try await made.prepare()
+    engine = made
   } catch {
-    log("speech unavailable: \(error)")
-    if options.transcribe != nil { exit(1) }
+    log("on-device speech unavailable: \(error)")
   }
+  if let path = options.transcribe {
+    do { try await transcribeFile(path, locale: options.locale, engine: engine) } catch {
+      log("speech unavailable: \(error)")
+      exit(1)
+    }
+    exit(0)
+  }
+  if let engine { service?.setSpeechEngine(engine) }
 }
 if runsAsApp { NSApplication.shared.run() } else { RunLoop.main.run() }

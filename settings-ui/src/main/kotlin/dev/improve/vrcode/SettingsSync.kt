@@ -37,6 +37,7 @@ object SettingsSync {
       "default_terminal_rows" to s.defaultTerminalSize.rows,
       "pointer_cursor" to s.pointerCursor.storageValue,
       "pointer_cursor_size" to s.pointerCursorSize,
+      "pinch_drag" to s.pinchDrag.storageValue,
       "quick_inputs" to s.quickInputs.storageValues,
     )
   }
@@ -66,6 +67,7 @@ object SettingsSync {
     int("default_terminal_rows")?.let { s = s.copy(defaultTerminalSize = s.defaultTerminalSize.copy(rows = it)) }
     enum("pointer_cursor", PointerCursorStyle.entries) { it.storageValue }?.let { s = s.copy(pointerCursor = it) }
     float("pointer_cursor_size")?.let { s = s.copy(pointerCursorSize = it) }
+    enum("pinch_drag", PinchDrag.entries) { it.storageValue }?.let { s = s.copy(pinchDrag = it) }
     // Eight entries, clockwise from the top, "" where empty; anything else is ignored.
     (values["quick_inputs"] as? List<*>)?.takeIf { it.size == QuickInputSlot.entries.size }?.let { list ->
       s = s.copy(quickInputs = QuickInputRing.fromStorageValues(list.map { it as? String }))
@@ -166,7 +168,11 @@ object SettingsSync {
             item("choice", "key" to "pointer_cursor", "options" to PointerCursorStyle.entries.map { option(it.storageValue, it.label) }),
             slider("pointer_cursor_size", "Pointer size", AppSettings.MIN_POINTER_SIZE, AppSettings.MAX_POINTER_SIZE, 0.25f, "%", scale = 100)
               .apply { put("hiddenWhen", mapOf("pointer_cursor" to PointerCursorStyle.None.storageValue)) },
-          ), detail = "Choose the cursor where your right hand points. Pinch to click and drag with any option.", tab = CustomizationTab.Pointer.name),
+          ), detail = POINTER_DETAIL, tab = CustomizationTab.Pointer.name),
+          section(PINCH_DRAG_TITLE, listOf(
+            item("choice", "key" to "pinch_drag", "options" to PinchDrag.entries.map { option(it.storageValue, it.label, it.detail) }),
+            item("note", "text" to PINCH_DRAG_NOTE),
+          ), tab = CustomizationTab.Pointer.name),
         ) + micSections(VoiceMic.Text, "text_mic_prop") + micSections(VoiceMic.Ai, "ai_mic_prop") + quickInputSections()
         SettingsPage.Connection -> listOf(
           section("Your Mac", listOf(item("toggle", "key" to "auto_connect", "label" to "Connect on launch", "detail" to "Reconnect to your Mac when VRcode starts."))),

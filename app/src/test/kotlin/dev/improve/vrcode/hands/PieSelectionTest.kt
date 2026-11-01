@@ -86,6 +86,65 @@ class PieSelectionTest {
   }
 
   @Test
+  fun walkingWhilePinchedCarriesTheMenuAlong() {
+    // Opened with the hand down to the left, so walking straight ahead crosses the menu's right axis.
+    val start = Pose(Vector3(0f, 1.6f, 0f), Quaternion(0f, 0f, 0f))
+    val hand = floatArrayOf(-0.25f, -0.2f, -0.35f) // VIEW space, held still relative to the head
+    val s = PieSelection(RadialMenu(4, deadZoneM = 0.035f, reachM = 0.07f))
+    s.open(viewToScene(start, hand), start)
+    for (t in listOf(Vector3(0f, 1.63f, 0.4f), Vector3(0.1f, 1.58f, 1.2f), Vector3(-0.5f, 1.6f, 2.5f))) {
+      val walked = Pose(t, start.q)
+      s.follow(walked)
+      s.update(viewToScene(walked, hand))
+      assertNull(s.highlighted)
+      assertEquals(0f, s.distanceM, 1e-4f)
+    }
+    // After the walk, the hand's own movement still picks: right of the pinch is the right item.
+    val walked = Pose(Vector3(-0.5f, 1.6f, 2.5f), start.q)
+    s.update(viewToScene(walked, floatArrayOf(-0.25f, -0.2f, -0.35f)) + s.right * 0.08f)
+    assertEquals(1, s.reached)
+  }
+
+  @Test
+  fun withoutFollowingTheSameWalkWouldPickAnItem() {
+    // What the menus did before they followed the body: the walk alone reached an item.
+    val start = Pose(Vector3(0f, 1.6f, 0f), Quaternion(0f, 0f, 0f))
+    val hand = floatArrayOf(-0.25f, -0.2f, -0.35f)
+    val s = PieSelection(RadialMenu(4, deadZoneM = 0.035f, reachM = 0.07f))
+    s.open(viewToScene(start, hand), start)
+    s.update(viewToScene(Pose(Vector3(0f, 1.6f, 0.4f), start.q), hand))
+    assertTrue(s.reached != null)
+  }
+
+  @Test
+  fun turningOrNoddingTheHeadAboutTheNeckLeavesTheMenuWhereItWas() {
+    val start = Pose(Vector3(0.3f, 1.6f, -0.2f), Quaternion(0f, 40f, 0f))
+    val neck = neckPoint(start)
+    val s = PieSelection(RadialMenu(4, deadZoneM = 0.035f, reachM = 0.07f))
+    val opened = viewToScene(start, floatArrayOf(0f, -0.2f, -0.4f))
+    s.open(opened, start)
+    for (q in listOf(Quaternion(25f, 40f, 0f), Quaternion(-10f, 70f, 0f), Quaternion(30f, 15f, 8f))) {
+      // A real head turns about the neck, so the tracked eyes move as well as rotate.
+      val turned = Pose(neck + q * (EYES_TO_NECK * -1f), q)
+      assertVector(neck, neckPoint(turned))
+      s.follow(turned)
+      assertVector(opened, s.center!!)
+      s.update(opened) // the hand held still
+      assertNull(s.highlighted)
+    }
+  }
+
+  @Test
+  fun aClosedMenuDoesNotFollow() {
+    val head = Pose(Vector3(0f, 1.6f, 0f), Quaternion(0f, 0f, 0f))
+    val s = PieSelection(RadialMenu(3))
+    s.open(viewToScene(head, floatArrayOf(0f, 0f, -0.4f)), head)
+    s.close()
+    s.follow(Pose(Vector3(1f, 1.6f, 1f), head.q))
+    assertNull(s.center)
+  }
+
+  @Test
   fun closingForgetsTheSelection() {
     val head = Pose(Vector3(0f, 1.6f, 0f), Quaternion(0f, 0f, 0f))
     val s = PieSelection(RadialMenu(3))

@@ -57,7 +57,7 @@ import kotlin.math.sin
 
 /** An item's icon: a drawn glyph, or short [glyph] text for keys that read best as letters. */
 enum class PieIcon(val glyph: String? = null) {
-  AddTerminal, Codex, Claude, BringForward, Keyboard, Enter, Escape, Tab, Interrupt, Paste, Clear,
+  AddTerminal, CloseTerminal, Codex, Claude, BringForward, ClearPath, BringBack, Keyboard, Enter, Escape, Tab, Interrupt("^C"), Paste, Clear,
   ArrowUp, ArrowRight, ArrowDown, ArrowLeft, ShiftTab, Backspace,
   CtrlD("^D"), CtrlZ("^Z"), CtrlL("^L"), CtrlR("^R"), PageUp("PgUp"), PageDown("PgDn"), Home("Home"), End("End"),
 }
@@ -327,19 +327,26 @@ private fun QuickActionIcon(icon: PieIcon, modifier: Modifier) {
         drawLine(ink, Offset(x1, y1), Offset(x2, y2), strokeWidth = 1.8f, cap = StrokeCap.Round)
       fun box(x: Float, y: Float, w: Float, h: Float, radius: Float = 1.5f) =
         drawRoundRect(ink, Offset(x, y), Size(w, h), CornerRadius(radius), style = stroke)
+      // A terminal window with its lower-right corner open, for a mark that stays distinct at icon
+      // size, including over the hovered pill's progress fill.
+      fun terminal() {
+        drawPath(Path().apply {
+          moveTo(13f, 20f)
+          lineTo(4f, 20f); quadraticTo(2f, 20f, 2f, 18f)
+          lineTo(2f, 6f); quadraticTo(2f, 4f, 4f, 4f)
+          lineTo(20f, 4f); quadraticTo(22f, 4f, 22f, 6f)
+          lineTo(22f, 11f)
+        }, ink, style = stroke)
+        line(6f, 8f, 10f, 12f); line(10f, 12f, 6f, 16f); line(13f, 16f, 14f, 16f)
+      }
       when (icon) {
         PieIcon.AddTerminal -> {
-          // Leave the lower-right corner open so the plus stays distinct at icon size,
-          // including over the hovered pill's progress fill.
-          drawPath(Path().apply {
-            moveTo(13f, 20f)
-            lineTo(4f, 20f); quadraticTo(2f, 20f, 2f, 18f)
-            lineTo(2f, 6f); quadraticTo(2f, 4f, 4f, 4f)
-            lineTo(20f, 4f); quadraticTo(22f, 4f, 22f, 6f)
-            lineTo(22f, 11f)
-          }, ink, style = stroke)
-          line(6f, 8f, 10f, 12f); line(10f, 12f, 6f, 16f); line(13f, 16f, 14f, 16f)
+          terminal()
           line(16f, 18f, 22f, 18f); line(19f, 15f, 19f, 21f)
+        }
+        PieIcon.CloseTerminal -> {
+          terminal()
+          line(16.5f, 15.5f, 21.5f, 20.5f); line(21.5f, 15.5f, 16.5f, 20.5f)
         }
         PieIcon.Codex -> {
           line(8f, 6f, 2f, 12f); line(2f, 12f, 8f, 18f)
@@ -366,6 +373,20 @@ private fun QuickActionIcon(icon: PieIcon, modifier: Modifier) {
             line(cx, cy, tipX, tipY)
             line(tipX, tipY, tipX - dx * 3f, tipY)
             line(tipX, tipY, tipX, tipY - dy * 3f)
+          }
+        }
+        PieIcon.ClearPath, PieIcon.BringBack -> {
+          // A window at each side with arrows between them: parting outward clears the middle,
+          // pointing inward brings them back.
+          box(1f, 7f, 5f, 10f)
+          box(18f, 7f, 5f, 10f)
+          val out = icon == PieIcon.ClearPath
+          for ((inner, outer) in listOf(11f to 8f, 13f to 16f)) {
+            val (from, tip) = if (out) inner to outer else outer to inner
+            val back = if (tip < from) 2.5f else -2.5f
+            line(from, 12f, tip, 12f)
+            line(tip, 12f, tip + back, 9.5f)
+            line(tip, 12f, tip + back, 14.5f)
           }
         }
         PieIcon.Keyboard -> {
@@ -407,7 +428,6 @@ private fun QuickActionIcon(icon: PieIcon, modifier: Modifier) {
             line(12f, 20f, 12f, 4f); line(12f, 4f, 6f, 10f); line(12f, 4f, 18f, 10f)
           }
         }
-        PieIcon.Interrupt -> box(5f, 5f, 14f, 14f, 2f)
         PieIcon.Paste -> {
           box(5f, 5f, 14f, 17f); box(9f, 2f, 6f, 5f)
           line(9f, 12f, 15f, 12f); line(9f, 16f, 15f, 16f)
@@ -418,7 +438,7 @@ private fun QuickActionIcon(icon: PieIcon, modifier: Modifier) {
           line(10f, 10f, 10f, 17f); line(14f, 10f, 14f, 17f)
         }
         // Drawn as text by GlyphIcon.
-        PieIcon.CtrlD, PieIcon.CtrlZ, PieIcon.CtrlL, PieIcon.CtrlR, PieIcon.PageUp, PieIcon.PageDown,
+        PieIcon.Interrupt, PieIcon.CtrlD, PieIcon.CtrlZ, PieIcon.CtrlL, PieIcon.CtrlR, PieIcon.PageUp, PieIcon.PageDown,
         PieIcon.Home, PieIcon.End -> Unit
       }
     }

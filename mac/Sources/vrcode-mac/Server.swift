@@ -10,13 +10,15 @@ final class Server: @unchecked Sendable {
   private var clients: [UUID: Client] = [:]
 
   /// Listens on [port]; loopback only unless [anyInterface] (USB with `adb reverse` reaches loopback).
-  init(port: UInt16, anyInterface: Bool, cmuxEndpoint: CmuxEndpoint = CmuxEndpoint()) throws {
+  /// [locale] is the speech language, also for ElevenLabs before the on-device model is ready.
+  init(port: UInt16, anyInterface: Bool, cmuxEndpoint: CmuxEndpoint = CmuxEndpoint(), locale: String = "en-US") throws {
     let params = NWParameters.tcp
     params.allowLocalEndpointReuse = true
     if !anyInterface { params.requiredInterfaceType = .loopback }
     guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw SpeechError.unsupportedAudio("port \(port)") }
     listener = try NWListener(using: params, on: nwPort)
     self.cmuxEndpoint = cmuxEndpoint
+    speech.locale = locale
   }
 
   func setSpeechEngine(_ engine: SpeechEngine) {
@@ -60,9 +62,14 @@ final class Server: @unchecked Sendable {
 final class SpeechServiceState: @unchecked Sendable {
   private let lock = NSLock()
   private var value: SpeechEngine?
+  private var localeValue = "en-US"
   var engine: SpeechEngine? {
     get { lock.withLock { value } }
     set { lock.withLock { value = newValue } }
+  }
+  var locale: String {
+    get { lock.withLock { localeValue } }
+    set { lock.withLock { localeValue = newValue } }
   }
 }
 
@@ -84,7 +91,11 @@ final class Client: @unchecked Sendable {
   private var reader = FrameReader()
   private let frames: AsyncStream<Frame>.Continuation
   private let frameStream: AsyncStream<Frame>
-  private var utterance: Utterance?
+  private var utterance: (any SpeechUtterance)?
+  /// AI-mic dictations' audio (AUDIO_START `ai`), by utterance id, for the AI to hear (AiHearing);
+  /// [recordingOrder] is oldest first. Touched only while handling frames, one at a time.
+  private var recordings: [UInt32: AiHearing.Audio] = [:]
+  private var recordingOrder: [UInt32] = []
   private let name: String
   /// Agent runs in flight, by AI_REQUEST id, so AI_CANCEL or a disconnect can stop them.
   private let aiLock = NSLock()
@@ -146,15 +157,18 @@ final class Client: @unchecked Sendable {
     }
     await utterance?.cancel()
     utterance = nil
+    recordings.removeAll()
+    recordingOrder.removeAll()
     aiLock.withLock { aiTasks.values.forEach { $0.cancel() }; aiTasks.removeAll() }
     cmux.close()
   }
 
   func welcome() {
     let engine = speech.engine
+    // With an ElevenLabs key, speech works before (or without) the on-device model.
     send(.welcome, body: jsonBody([
-      "service": "vrcode-mac", "protocol": Int(protocolVersion), "locale": engine?.locale.identifier ?? "",
-      "ready": engine?.ready ?? false, "cmux": allowControl, "settings": true,
+      "service": "vrcode-mac", "protocol": Int(protocolVersion), "locale": engine?.locale.identifier ?? speech.locale,
+      "ready": engine?.ready == true || ElevenLabs.apiKey() != nil, "cmux": allowControl, "settings": true,
     ]))
   }
 
@@ -185,33 +199,43 @@ final class Client: @unchecked Sendable {
         sendError("unsupported encoding \(encoding)", id: frame.id)
         return
       }
-      guard let engine = speech.engine, engine.ready else {
-        sendError("speech model is still downloading", id: frame.id)
-        return
-      }
       let sampleRate = (info["sampleRate"] as? NSNumber)?.doubleValue ?? 16000
       let channels = (info["channels"] as? NSNumber)?.intValue ?? 1
       let id = frame.id
+      // Kept whether or not a recognizer is ready: the AI hears the recording itself.
+      if info["ai"] as? Bool == true { record(id, sampleRate: Int(sampleRate), channels: channels) }
       do {
-        utterance = try await Utterance.start(
-          id: id, engine: engine, sampleRate: sampleRate, channels: channels
-        ) { [weak self] update in
-          self?.send(.transcript, id: id, body: jsonBody([
-            "final": update.final, "volatile": update.volatile, "done": update.done,
-          ]))
+        // ElevenLabs Scribe with a key, else the on-device recognizer (ElevenLabsTranscription.swift).
+        guard let started = try await startUtterance(
+          id: id, sampleRate: sampleRate, channels: channels, locale: speech.locale, engine: speech.engine,
+          onUpdate: { [weak self] update in
+            self?.send(.transcript, id: id, body: jsonBody([
+              "final": update.final, "volatile": update.volatile, "done": update.done,
+            ]))
+          },
+          onError: { [weak self] message in self?.sendError(message, id: id) }
+        ) else {
+          sendError("speech model is still downloading (or add an ElevenLabs key in VRcode Mac)", id: id)
+          return
         }
-        log("\(name): utterance \(id) started (\(Int(sampleRate)) Hz)")
+        utterance = started
+        log("\(name): utterance \(id) started (\(Int(sampleRate)) Hz, \(started is ScribeUtterance ? "ElevenLabs" : "on-device"))")
       } catch {
         sendError("\(error)", id: id)
       }
     case .audio:
       if let u = utterance, u.id == frame.id { u.feed(frame.body) }
+      // Read the size first: holding a copy of the recording while appending would copy all of it.
+      if let size = recordings[frame.id]?.pcm.count, size + frame.body.count <= Self.maxRecordingBytes {
+        recordings[frame.id]?.pcm.append(frame.body)
+      }
     case .audioEnd:
       guard let u = utterance, u.id == frame.id else { return }
       utterance = nil
       await u.finish()
       log("\(name): utterance \(u.id) finished")
     case .audioCancel:
+      forget(frame.id)
       guard let u = utterance, u.id == frame.id else { return }
       utterance = nil
       await u.cancel()
@@ -230,11 +254,14 @@ final class Client: @unchecked Sendable {
       )
       let provider = AiProvider.from(info["provider"] as? String)
       let model = provider.model(info["model"] as? String)
+      let audio = recorded((info["utterances"] as? [NSNumber])?.map(\.uint32Value) ?? [])
       if info["agent"] as? Bool == true {
-        runAgent(id: id, provider: provider, model: model, transcript: transcript, pane: pane, terminal: info["terminal"] as? String)
+        runAgent(
+          id: id, provider: provider, model: model, transcript: transcript, audio: audio, pane: pane, terminal: info["terminal"] as? String)
         return
       }
       Task { [weak self] in
+        let transcript = await self?.hear(id: id, audio: audio, transcript: transcript, pane: pane, provider: provider, model: model) ?? transcript
         do {
           let steps = try await AiService.complete(provider: provider, model: model, transcript: transcript, pane: pane)
           log("ai \(id) (\(provider.rawValue) \(model)): \(AiKeystroke.summary(steps))")
@@ -275,25 +302,32 @@ final class Client: @unchecked Sendable {
   }
 
   /**
-   * Thinking mode: runs the provider's agent CLI in the target terminal's working directory (from
-   * cmux), streams what it does as AI_PROGRESS, then answers with AI_RESULT (adding `summary`) or
-   * ERROR. A cancelled run (AI_CANCEL, or the headset left) sends nothing more.
+   * Agent mode: the provider's coding agent works on the user's behalf (AiAgent.swift), starting in
+   * the target terminal's working directory (from cmux) and acting in that terminal itself. What it
+   * does streams as AI_PROGRESS; it ends with AI_RESULT carrying its `summary` and no `keys` (it
+   * already typed what it meant to), or ERROR. A cancelled run (AI_CANCEL, or the headset left)
+   * sends nothing more.
    */
-  private func runAgent(id: UInt32, provider: AiProvider, model: String, transcript: String, pane: AiService.Pane, terminal: String?) {
+  private func runAgent(
+    id: UInt32, provider: AiProvider, model: String, transcript: String, audio: AiHearing.Audio?, pane: AiService.Pane,
+    terminal: String?
+  ) {
     let endpoint = cmuxEndpoint
     let report: @Sendable (AiAgent.Progress) -> Void = { [weak self] progress in
       self?.send(.aiProgress, id: id, body: jsonBody(progress.json))
     }
     let task = Task { [weak self] in
+      let transcript = await self?.hear(id: id, audio: audio, transcript: transcript, pane: pane, provider: provider, model: model) ?? transcript
       let cwd = terminal.flatMap { AiAgent.workingDirectory(endpoint: endpoint, terminal: $0) }
+      let cmux = terminal == nil ? nil : AiAgent.cmux(endpoint)
       let started = Date()
       do {
-        let answer = try await AiAgent.run(provider: provider, model: model, transcript: transcript, pane: pane, cwd: cwd, progress: report)
+        let summary = try await AiAgent.run(
+          provider: provider, model: model, transcript: transcript, pane: pane, terminal: terminal, cwd: cwd, cmux: cmux, progress: report)
         let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
-        log("ai \(id) (agent \(provider.rawValue) \(model), \(seconds) s): \(AiKeystroke.summary(answer.steps))")
-        let typed = answer.steps.compactMap { step -> String? in if case .text(let text) = step { return text } else { return nil } }.joined()
+        log("ai \(id) (agent \(provider.rawValue) \(model), \(seconds) s): done, \(summary.count)-char summary")
         self?.send(.aiResult, id: id, body: jsonBody([
-          "keys": answer.steps.map(\.json), "text": typed, "summary": answer.summary, "provider": provider.rawValue, "model": model,
+          "keys": [Any](), "text": "", "summary": summary, "acted": true, "provider": provider.rawValue, "model": model,
         ]))
       } catch is CancellationError {
         log("ai \(id): agent stopped")
@@ -303,6 +337,65 @@ final class Client: @unchecked Sendable {
       self?.aiLock.withLock { _ = self?.aiTasks.removeValue(forKey: id) }
     }
     aiLock.withLock { aiTasks[id] = task }
+  }
+
+  /**
+   * What the user said to the AI: [audio], their recording, as a model heard it (AiHearing), also
+   * sent to the headset as AI_PROGRESS `heard` so their pane shows it. [transcript], the live
+   * preview, when there is no recording, no Gemini or OpenAI key to hear it with, or hearing fails.
+   */
+  private func hear(
+    id: UInt32, audio: AiHearing.Audio?, transcript: String, pane: AiService.Pane, provider: AiProvider, model: String
+  ) async -> String {
+    guard let audio else { return transcript }
+    guard let listener = AiHearing.listener(provider: provider, model: model) else {
+      log("ai \(id): no Gemini or OpenAI key to hear the recording with (Claude's API takes no audio), so the AI gets the live transcript; add one in VRcode Mac")
+      return transcript
+    }
+    let started = Date()
+    do {
+      let heard = try await AiHearing.hear(audio, pane: pane, by: listener)
+      let took = String(format: "%.1f", Date().timeIntervalSince(started)), length = String(format: "%.1f", audio.seconds)
+      log("ai \(id): \(listener.model) heard \(length) s of audio in \(took) s: \"\(heard)\" (live: \"\(transcript)\")")
+      guard !heard.isEmpty else { return transcript }
+      send(.aiProgress, id: id, body: jsonBody(["kind": "heard", "text": heard]))
+      return heard
+    } catch {
+      if !Task.isCancelled { log("ai \(id): \(listener.model) couldn't hear it (\(error)); the AI gets the live transcript") }
+      return transcript
+    }
+  }
+
+  /// At most this much audio is kept per recording, and heard per request (about 3 minutes at 16 kHz mono).
+  private static let maxRecordingBytes = 6 * 1024 * 1024
+  /// Recordings kept per connection; older ones are dropped.
+  private static let maxRecordings = 12
+
+  /// Starts keeping utterance [id]'s audio for the AI to hear.
+  private func record(_ id: UInt32, sampleRate: Int, channels: Int) {
+    guard (8000...48000).contains(sampleRate), (1...2).contains(channels) else { return }
+    forget(id)
+    recordings[id] = AiHearing.Audio(pcm: Data(), sampleRate: sampleRate, channels: channels)
+    recordingOrder.append(id)
+    while recordingOrder.count > Self.maxRecordings { recordings.removeValue(forKey: recordingOrder.removeFirst()) }
+  }
+
+  private func forget(_ id: UInt32) {
+    guard recordings.removeValue(forKey: id) != nil else { return }
+    recordingOrder.removeAll { $0 == id }
+  }
+
+  /// [utterances]' recordings joined in order; nil when there are none, any is gone, or they differ in format.
+  private func recorded(_ utterances: [UInt32]) -> AiHearing.Audio? {
+    guard let first = utterances.first.flatMap({ recordings[$0] }) else { return nil }
+    var audio = AiHearing.Audio(pcm: Data(), sampleRate: first.sampleRate, channels: first.channels)
+    for id in utterances {
+      guard let part = recordings[id], part.sampleRate == audio.sampleRate, part.channels == audio.channels,
+        audio.pcm.count + part.pcm.count <= Self.maxRecordingBytes
+      else { return nil }
+      audio.pcm.append(part.pcm)
+    }
+    return audio.pcm.isEmpty ? nil : audio
   }
 
   private func sendError(_ message: String, id: UInt32) {

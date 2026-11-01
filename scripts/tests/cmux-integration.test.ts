@@ -1,6 +1,6 @@
 /** Real daemon tests, with no cmux frontend. Opt in with VRCODE_CMUX_BINARY=/path/to/vrcode-mac. */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { createConnection, createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { once } from "node:events";
@@ -181,6 +181,55 @@ suite("background cmux control", () => {
     }
   });
 
+  test("a new floating terminal inherits the source's directory and grid before receiving input", async () => {
+    const workspace = (await control.ok("workspace.create", { name: "Inherited directory QA", initial_content: "empty" }, true)).value.workspace_id;
+    const path = join(directory, "项目 with spaces ' and $() literals");
+    await mkdir(path);
+    const expected = await realpath(path);
+    let childWorkspace: string | undefined;
+    try {
+      const source = (await control.ok("workspace.run", { workspace, argv: ["/bin/sh"], cwd: directory, cols: 228, rows: 83 }, true)).value;
+      const quoted = `'${path.replaceAll("'", "'\\''")}'`;
+      await control.ok("terminal.input.write", { terminal: source.terminal_id, text: `cd ${quoted}\n` }, true);
+      let process: any;
+      for (let i = 0; i < 80; i++) {
+        process = await control.ok("terminal.process.get", { terminal: source.terminal_id });
+        if ((process.foreground_cwd || process.cwd) === expected) break;
+        await Bun.sleep(50);
+      }
+      expect(process.foreground_cwd || process.cwd).toBe(expected);
+      const sourceTerminal = await control.ok("terminal.get", { terminal: source.terminal_id });
+      const cols = sourceTerminal.cols ?? sourceTerminal.size?.cols;
+      const rows = sourceTerminal.rows ?? sourceTerminal.size?.rows;
+      expect({ cols, rows }).toEqual({ cols: 228, rows: 83 });
+      childWorkspace = (await control.ok("workspace.create", { initial_content: "empty" }, true)).value.workspace_id;
+      const child = (await control.ok("tab.create_terminal", {
+        workspace: childWorkspace, cwd: process.foreground_cwd || process.cwd, name: "Inherited directory", cols, rows,
+      }, true)).value;
+      expect(child.screen_id).not.toBe(source.screen_id);
+      expect(child.terminal_id).not.toBe(source.terminal_id);
+      expect(child.workspace_id).toBe(childWorkspace);
+      expect(child.workspace_id).not.toBe(workspace);
+      let childProcess: any;
+      for (let i = 0; i < 80; i++) {
+        childProcess = await control.ok("terminal.process.get", { terminal: child.terminal_id });
+        if ((childProcess.foreground_cwd || childProcess.cwd) === expected) break;
+        await Bun.sleep(50);
+      }
+      expect(childProcess.foreground_cwd || childProcess.cwd).toBe(expected);
+      const terminal = await control.ok("terminal.get", { terminal: child.terminal_id });
+      expect(terminal.cols ?? terminal.size?.cols).toBe(cols);
+      expect(terminal.rows ?? terminal.size?.rows).toBe(rows);
+    } finally {
+      // Closing a screen can prune empty workspaces as well; tolerate only an already-gone one.
+      for (const id of [childWorkspace, workspace]) {
+        if (!id) continue;
+        const reply = await control.request("workspace.close", { workspace: id }, crypto.randomUUID());
+        if (!reply.ok && reply.error?.code !== "selector.not_found") throw new Error(JSON.stringify(reply.error));
+      }
+    }
+  }, 15_000);
+
   test("the Quest pins a terminal's grid over other viewers and can hand it back", async () => {
     const workspace = (await control.ok("workspace.create", { name: "Grid size QA", initial_content: "empty" }, true)).value.workspace_id;
     const stream = `stream_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -288,4 +337,52 @@ suite("background cmux control", () => {
       await new Promise<void>((resolve) => fake.close(() => resolve()));
     }
   }, 10_000);
+});
+
+suite("a cmux daemon the service starts", () => {
+  const cmux = process.env.CMUX_BIN ?? `${process.env.HOME}/.cmux/bin/cmux`;
+  const harness = { NO_COLOR: "1", FORCE_COLOR: "0", CI: "1", PAGER: "cat", GIT_PAGER: "cat", GIT_EDITOR: "true",
+    CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli", CODEX_CI: "1" };
+
+  test("keeps a coding agent's NO_COLOR and other tool-shell settings out of its terminals", async () => {
+    const directory = await mkdtemp("/tmp/vrcode-cmux-env-");
+    const session = `qa-${crypto.randomUUID().slice(0, 8)}`;
+    // The service as an agent's tool shell would start it, against an isolated session it must start itself.
+    const env = { ...process.env, ...harness, VRCODE_KEPT: "kept", XDG_RUNTIME_DIR: directory,
+      CMUX_TUI_STATE_DIR: join(directory, "state"), CMUX_TUI_CONFIG: join(directory, "config"),
+      CMUX_TUI_SOCKET: undefined, CMUX_MUX_SOCKET: undefined };
+    await Bun.write(join(directory, "config"), "");
+    const port = await freePort();
+    const service = Bun.spawn([binary!, "--control-only", "--cmux-session", session, "--port", String(port),
+      "--link-port", String(await freePort()), "--link-directory", join(directory, "link")], { env, stdout: "ignore", stderr: "ignore" });
+    let control: Control | undefined;
+    let workspace: string | undefined;
+    try {
+      for (let i = 0; i < 80 && !control; i++) {
+        try { const socket = createConnection({ host: "127.0.0.1", port }); await once(socket, "connect"); control = new Control(socket); }
+        catch { await Bun.sleep(100); }
+      }
+      if (!control) throw new Error("VRcode control service did not start");
+      control.send(1, { client: "vrcode-cmux-env-test", protocol: 1 });
+      workspace = (await control.ok("workspace.create", { initial_content: "empty" }, true)).value.workspace_id;
+      // A terminal's process gets the daemon's environment, as the palm menu's Claude Code does.
+      const terminal = (await control.ok("workspace.run", {
+        workspace, argv: ["/bin/sh", "-c", "env; printf 'ENV_%s\\n' DONE; exec sleep 30"], cols: 200, rows: 100,
+      }, true)).value.terminal_id;
+      let text = "";
+      for (let i = 0; i < 80 && !text.includes("ENV_DONE"); i++) {
+        text = (await control.ok("terminal.copy", { terminal, mode: "scrollback" })).text;
+        if (!text.includes("ENV_DONE")) await Bun.sleep(50);
+      }
+      expect(text).toContain("ENV_DONE");
+      const names = text.split("\n").map((line) => line.split("=")[0].trim());
+      expect(names).toContain("VRCODE_KEPT");
+      expect(names.filter((name) => name in harness)).toEqual([]);
+    } finally {
+      if (control && workspace) await control.request("workspace.close", { workspace }, crypto.randomUUID()).catch(() => {});
+      control?.socket.destroy(); service.kill();
+      Bun.spawnSync([cmux, "--session", session, "server", "stop", "--force"], { env, stdout: "ignore", stderr: "ignore" });
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
 });

@@ -245,13 +245,20 @@ enum AiService {
   }
 
   /// POSTs [body] as JSON and returns the decoded reply, throwing the API's own message on failure.
-  private static func post(_ provider: AiProvider, _ url: String, body: [String: Any], headers: [String: String]) async throws -> [String: Any] {
+  static func post(
+    _ provider: AiProvider, _ url: String, body: [String: Any], headers: [String: String], timeout: TimeInterval = 30
+  ) async throws -> [String: Any] {
     var request = URLRequest(url: URL(string: url)!)
     request.httpMethod = "POST"
-    request.timeoutInterval = 30
+    request.timeoutInterval = timeout
     request.setValue("application/json", forHTTPHeaderField: "content-type")
     for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
     request.httpBody = try JSONSerialization.data(withJSONObject: body)
+    return try await send(provider, request)
+  }
+
+  /// Sends [request] and returns the decoded JSON reply, throwing the API's own message on failure.
+  static func send(_ provider: AiProvider, _ request: URLRequest) async throws -> [String: Any] {
     let (data, response) = try await URLSession.shared.data(for: request)
     let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -274,10 +281,16 @@ enum AiService {
 
   // MARK: Keys
 
-  private static func apiKey(_ provider: AiProvider) -> String? {
-    if let key = keychainKey(provider.keyAccount) { return key }
-    if let key = ProcessInfo.processInfo.environment[provider.keyEnvironment], !key.isEmpty { return key }
-    let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/vrcode/\(provider.keyAccount)")
+  static func apiKey(_ provider: AiProvider) -> String? {
+    key(account: provider.keyAccount, environment: provider.keyEnvironment)
+  }
+
+  /// A key VRcode Mac keeps: the Keychain item (service `dev.improve.vrcode`, [account]), else the
+  /// environment variable [environment], else the first line of `~/.config/vrcode/<account>`.
+  static func key(account: String, environment: String) -> String? {
+    if let key = keychainKey(account) { return key }
+    if let key = ProcessInfo.processInfo.environment[environment], !key.isEmpty { return key }
+    let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/vrcode/\(account)")
     let key = (try? String(contentsOf: file, encoding: .utf8))?.components(separatedBy: .newlines).first?
       .trimmingCharacters(in: .whitespaces)
     return key?.isEmpty == false ? key : nil

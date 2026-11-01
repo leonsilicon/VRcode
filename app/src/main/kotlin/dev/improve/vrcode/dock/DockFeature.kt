@@ -12,6 +12,7 @@ import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Vector3
 import com.meta.spatial.isdk.IsdkGrabbable
 import com.meta.spatial.runtime.Scene
+import com.meta.spatial.runtime.SceneLayer
 import com.meta.spatial.toolkit.Hittable
 import com.meta.spatial.toolkit.MeshCollision
 import com.meta.spatial.toolkit.Transform
@@ -31,17 +32,22 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.roundToInt
 
 /**
- * The dock, used like an iPhone's home bar (see [DockGesture]): a short faint bar at the bottom of
- * the view that bulges under a hand. Pinching the bar and pulling it up raises the dock; a plain
- * touch does not, so brushing the bar never opens it. Touching an option runs it at once. The bar
- * stays where it is, underneath the raised options, and touching it again lowers the dock.
+ * The dock, used like an iPhone's home bar and bottom sheet (see [DockGesture]): a short faint bar
+ * at the bottom of the view that bulges under a hand. Pinching the bar and pulling it up raises the
+ * dock's sheet; a plain touch does not, so brushing the bar never opens it. Touching an option runs
+ * it at once. The bar follows the pinch for the entire swipe and is always the sheet's top edge,
+ * like a bottom sheet's grabber: the sheet grows up out of the bar's resting place beneath it, and
+ * expanded, the bar sits inside the sheet above the options. Pinching it again and swiping down
+ * collapses the dock.
  *
  * Pinches are read from the hands' own tracking ([HandAim], the runtime's index pinch) or, without
  * tracked hands, a controller's trigger. Touches come from the Interaction SDK, as for every other
  * panel: a fingertip touching a panel (direct touch) or a pinching ray on it reaches the panel's
- * Compose content, which reports each touch as it lands (see `DockTouch`). Two pooled panels, independent of terminal reconnects: the
- * bar, always shown, and the raised body above it, shown and hittable only while raised, so it never
- * takes a touch or swallows terminal input while hidden. The bar is always rendered while the head is tracked and
+ * Compose content, which reports each touch as it lands (see `DockTouch`). Two pooled panels,
+ * independent of terminal reconnects: the handle, always shown, and the sheet, shown while raised and
+ * hittable only when expanded, so it never takes a touch or swallows terminal input while hidden. The
+ * handle's panel overlaps the sheet's top, so its compositor layer is raised ([BAR_Z_INDEX]) to draw
+ * over the sheet; by default the SDK orders layers by distance, which would put the sheet in front. The bar is always rendered while the head is tracked and
  * [onSceneTick]'s `visible` is set, including while settings is open: it is how the user can tell
  * VRcode loaded.
  */
@@ -54,13 +60,15 @@ internal class DockFeature(
   private val onArrange: () -> Unit,
   private val onSettings: () -> Unit,
   private val onConnection: () -> Unit,
+  /** The compositor layer of a mounted panel, once the SDK has created it. */
+  private val panelLayer: (Entity) -> SceneLayer? = { null },
 ) {
   private var barPanel: Entity? = null
   private var bodyPanel: Entity? = null
   private val follow = DockFollow()
   private val gesture = DockGesture()
   private val hands = listOf(HandAim(left = true), HandAim(left = false))
-  /** Each hand's index pinch on the last tick (left, right), which keeps a held pinch through dropouts. */
+  /** Each hand's index pinch on the last tick (left, right), for runtime pinch hysteresis. */
   private val pinching = BooleanArray(2)
   private var wasPulling = false
   private var lastTickMs: Long? = null
@@ -68,13 +76,22 @@ internal class DockFeature(
   /** Touches from the panels' Compose content, drained each tick. */
   private val touches = ConcurrentLinkedQueue<DockGesture.Touch>()
   private var showing: Showing? = null
+  private var bodyHittable = false
+  /** The handle's layer as last raised over the sheet; raised again if the SDK replaces it. */
+  private var raisedLayer: SceneLayer? = null
 
   // What the panels draw.
   private var options by mutableStateOf(emptyList<DockOption>())
+  /** Where the separator goes, between the terminals and the tools; set with [options]. */
+  private var separatorBefore: Int? = null
   private var xs by mutableStateOf(emptyList<Float>())
+  private var slot by mutableFloatStateOf(DockLayout.MAX_SPACING_M / DockPlacement.BODY_WIDTH_M)
+  private var separatorX by mutableStateOf<Float?>(null)
+  private var hoverX by mutableStateOf<Float?>(null)
   private var highlighted by mutableStateOf<Int?>(null)
   private var bulge by mutableFloatStateOf(0f)
-  private var lift by mutableFloatStateOf(0f)
+  private var reveal by mutableFloatStateOf(0f)
+  private var drop by mutableFloatStateOf(1f)
   private var raised by mutableStateOf(false)
 
   val expanded: Boolean get() = gesture.revealed
@@ -86,14 +103,17 @@ internal class DockFeature(
     if (barPanel != null) return
     val metresPerPx = xmux.config.windowWidthM / xmux.spec.widthPx
     barPanel = mount(DockPlacement.BAR_HIT_WIDTH_M, DockPlacement.BAR_HIT_HEIGHT_M, metresPerPx) {
-      DockBar(bulge, raised, barFraction = DockPlacement.BAR_WIDTH_M / DockPlacement.BAR_HIT_WIDTH_M, lift = lift) { queue(DockGesture.Surface.Bar, it) }
+      DockBar(bulge, raised, barFraction = DockPlacement.BAR_WIDTH_M / DockPlacement.BAR_HIT_WIDTH_M) { queue(DockGesture.Surface.Bar, it) }
     }
-    bodyPanel = mount(DockPlacement.BODY_WIDTH_M, DockPlacement.BODY_PANEL_HEIGHT_M, metresPerPx) {
+    bodyPanel = mount(DockPlacement.BODY_WIDTH_M, DockPlacement.SHEET_HEIGHT_M, metresPerPx) {
       DockBody(
-        options, xs, highlighted, rowY = fromTop(DockPlacement.ROW_Y_M), bodyTop = fromTop(DockPlacement.BODY_TOP_M),
+        options, xs, slot, highlighted, rowY = fromTop(DockPlacement.ROW_Y_M), labelY = fromTop(DockPlacement.LABEL_Y_M),
+        separatorX = separatorX, hoverX = hoverX, drop = drop, reveal = reveal,
       ) { queue(DockGesture.Surface.Body, it) }
     }
     showing = null
+    raisedLayer = null
+    Log.i(TAG, "dock bottom sheet ready: ${(DockPlacement.TRAVEL_M * 100).roundToInt()} cm swipe, handle attached to the sheet's top, macOS-style icons")
   }
 
   /** Called from the panels' Compose content; handled on the next scene tick. */
@@ -110,14 +130,15 @@ internal class DockFeature(
 
   private enum class Showing { None, Collapsed, Raised }
 
-  /** Only panels showing take touches and rays: the bar whenever the dock shows, the body while raised. */
-  private fun show(which: Showing) {
-    if (showing == which) return
+  /** The handle always takes rays; the sheet only takes option touches once fully expanded. */
+  private fun show(which: Showing, interactive: Boolean = false) {
+    if (showing == which && bodyHittable == interactive) return
     showing = which
+    bodyHittable = interactive
     val bar = which != Showing.None
     val body = which == Showing.Raised
     barPanel?.setComponent(Hittable(if (bar) MeshCollision.LineTest else MeshCollision.NoCollision))
-    bodyPanel?.setComponent(Hittable(if (body) MeshCollision.LineTest else MeshCollision.NoCollision))
+    bodyPanel?.setComponent(Hittable(if (body && interactive) MeshCollision.LineTest else MeshCollision.NoCollision))
     barPanel?.setComponent(Visible(bar))
     bodyPanel?.setComponent(Visible(body))
   }
@@ -148,12 +169,13 @@ internal class DockFeature(
     }
     val dtS = lastTickMs?.let { (nowMs - it) / 1000f } ?: 0f
     lastTickMs = nowMs
-    val bar = follow.update(tracked, dtS)
-    val optionXs = DockLayout.optionXs(options.size)
+    // A held pinch owns the sheet's frame; head follow must not slide the handle out of the hand.
+    val bar = follow.pose?.takeIf { gesture.pulling } ?: follow.update(tracked, dtS)
+    val optionXs = DockLayout.optionXs(options.size, separatorBefore)
     val event = gesture.update(bar, handsNow(tracked, pointers), drainTouches(), optionXs, nowMs)
     if (gesture.pulling != wasPulling) {
       wasPulling = gesture.pulling
-      if (wasPulling) Log.d(TAG, "dock bar pinched") else if (event != DockGesture.Event.Revealed) Log.d(TAG, "dock bar let go before raising")
+      Log.d(TAG, if (wasPulling) "dock bar pinched" else "dock bar released at ${(gesture.lift * 100).roundToInt()}%")
     }
     when (event) {
       DockGesture.Event.Revealed -> {
@@ -166,17 +188,36 @@ internal class DockFeature(
       DockGesture.Event.Dismissed -> Log.d(TAG, "dock lowered")
       DockGesture.Event.None -> {}
     }
-    xs = optionXs.map { (it + DockPlacement.BODY_WIDTH_M / 2f) / DockPlacement.BODY_WIDTH_M }
+    xs = optionXs.map(::acrossBody)
+    slot = DockLayout.spacingOf(optionXs) / DockPlacement.BODY_WIDTH_M
+    separatorX = DockLayout.separatorX(optionXs, separatorBefore)?.let(::acrossBody)
+    // Millimetre steps: the magnification follows the finger without redrawing the panel for tracking jitter.
+    hoverX = gesture.pointedX?.let { acrossBody((it * 1000f).roundToInt() / 1000f) }
     highlighted = gesture.highlighted
     bulge = gesture.hover
-    lift = gesture.lift
-    raised = gesture.revealed
-    barPanel?.setComponent(Transform(bar))
-    bodyPanel?.setComponent(Transform(bar * Pose(Vector3(0f, DockPlacement.BODY_PANEL_CENTER_M, 0f))))
-    show(if (gesture.revealed) Showing.Raised else Showing.Collapsed)
+    reveal = DockPlacement.sheetOpacity(gesture.lift)
+    drop = DockPlacement.sheetDrop(gesture.lift) / DockPlacement.SHEET_HEIGHT_M
+    raised = gesture.revealed || gesture.lift >= 0.5f
+    barPanel?.setComponent(Transform(DockPlacement.handlePose(bar, gesture.lift)))
+    bodyPanel?.setComponent(Transform(DockPlacement.sheetPanelPose(bar)))
+    show(if (gesture.bodyVisible) Showing.Raised else Showing.Collapsed, gesture.revealed && !gesture.pulling && gesture.lift == 1f)
+    raiseBarLayer()
   }
 
-  /** The options in the order they sit along the dock, with what each does. */
+  /** Draws the handle over the sheet it overlaps, whatever their distances from the head. */
+  private fun raiseBarLayer() {
+    val layer = barPanel?.let(panelLayer) ?: return
+    if (layer === raisedLayer) return
+    layer.setZIndex(BAR_Z_INDEX)
+    raisedLayer = layer
+    Log.d(TAG, "dock bar layer raised over the sheet (zIndex $BAR_Z_INDEX)")
+  }
+
+  /**
+   * The options in the order they sit along the dock, with what each does. Like the macOS Dock:
+   * Connection first (where Finder sits), then every running terminal window, a separator, and the
+   * tools. A window that is minimized or behind a fullscreen one is [DockOption.hidden].
+   */
   private fun buildOptions(connected: Boolean, keyboardShown: Boolean) {
     val list = mutableListOf<DockOption>()
     val run = mutableListOf<() -> Unit>()
@@ -185,9 +226,13 @@ internal class DockFeature(
     val focused = (xmux.focused ?: xmux.windows.firstOrNull { it.visible })?.screen?.value
     for ((index, window) in xmux.windows.withIndex()) {
       val id = window.screen?.value ?: continue
-      list += DockOption(window.state.title.ifBlank { "Terminal ${index + 1}" }, DockOptionKind.Window, selected = id == focused, enabled = connected)
+      list += DockOption(
+        window.state.title.ifBlank { "Terminal ${index + 1}" }, DockOptionKind.Window,
+        selected = id == focused, enabled = connected, hidden = !window.visible,
+      )
       run += { onWindow(id) }
     }
+    separatorBefore = list.size
     list += DockOption("Keyboard", DockOptionKind.Keyboard, selected = keyboardShown)
     run += onKeyboard
     list += DockOption("Arrange", DockOptionKind.Arrange, enabled = connected && xmux.windows.isNotEmpty())
@@ -228,12 +273,12 @@ internal class DockFeature(
     return terminal == null || distance < terminal
   }
 
-  /** Distance along a ray to the visible dock: the bar, or the raised body above it. */
+  /** Foreground geometry follows the rendered handle and the visible sheet, including partial swipes. */
   fun hitDistance(origin: Vector3, direction: Vector3): Float? {
     val bar = follow.pose ?: return null
-    val onBar = DockPlacement.hitDistance(bar, origin, direction, DockPlacement.BAR_HIT_WIDTH_M, DockPlacement.BAR_HIT_HEIGHT_M)
-    if (!gesture.revealed) return onBar
-    val onBody = DockPlacement.hitDistance(DockPlacement.bodyPose(bar), origin, direction, DockPlacement.BODY_WIDTH_M, DockPlacement.BODY_TOP_M - DockPlacement.BODY_BOTTOM_M)
+    val onBar = DockPlacement.hitDistance(DockPlacement.handlePose(bar, gesture.lift), origin, direction, DockPlacement.BAR_HIT_WIDTH_M, DockPlacement.BAR_HIT_HEIGHT_M)
+    if (!gesture.bodyVisible) return onBar
+    val onBody = DockPlacement.hitDistance(DockPlacement.sheetPose(bar, gesture.lift), origin, direction, DockPlacement.BODY_WIDTH_M, DockPlacement.sheetHeight(gesture.lift))
     return listOfNotNull(onBar, onBody).minOrNull()
   }
 
@@ -253,13 +298,19 @@ internal class DockFeature(
     bodyPanel?.destroy()
     barPanel = null
     bodyPanel = null
+    raisedLayer = null
   }
 
-  /** A dock-local height (metres above the bar) as a fraction of the body panel from its top. */
-  private fun fromTop(y: Float): Float = (DockPlacement.BODY_PANEL_TOP_M - y) / DockPlacement.BODY_PANEL_HEIGHT_M
+  /** A dock-local height (metres above the resting bar) as a fraction of the expanded sheet from its top. */
+  private fun fromTop(y: Float): Float = (DockPlacement.SHEET_TOP_M - y) / DockPlacement.SHEET_HEIGHT_M
+
+  /** A dock-local X (metres right of the bar) as a fraction of the sheet's panel from its left edge. */
+  private fun acrossBody(x: Float): Float = (x + DockPlacement.BODY_WIDTH_M / 2f) / DockPlacement.BODY_WIDTH_M
 
   private companion object {
     const val TAG = "VrcodeDock"
     const val INDEX_TIP = 10
+    /** Above the default 0 of every other panel, so the handle draws over the sheet behind it. */
+    const val BAR_Z_INDEX = 1
   }
 }

@@ -1,12 +1,13 @@
 # VRcode Mac (the Mac app)
 
 `VRcode Mac.app` is vrcode's Mac side: a signed menu-bar app built with Tauri 2 (`mac-app/`).
-It bundles and supervises two helpers:
+It bundles and supervises two helpers, and ships the AI mic's agent runner beside them:
 
 | Helper | From | Serves |
 |---|---|---|
 | `vrcode-mac` | the Swift service in `mac/` (release build) | speech on 7273, the TLS connection relay on 7274 (LAN, hotspots, Bluetooth, ADB), cmux control |
 | `xmux-bridge` | the xmux checkout (`XMUX_DIR`, default `~/Developer/github/leonsilicon/xmux`) | the cmux session to the headset on 7272 |
+| `vrcode-bun` + `vrcode-agent.js` | Bun itself (the one running the packaging script), and `mac/agent/vrcode-agent.ts` bundled with `bun build` into the app's Resources | started by `vrcode-mac` for the AI mic's agent mode: drives Claude Code, Codex or Gemini CLI over the Agent Client Protocol, and is the Bun that runs them ([protocol](vrcode-protocol.md)) |
 
 Nothing else needs to run on the Mac: no separate xmux CLI or LaunchAgent, and no terminal.
 
@@ -34,13 +35,15 @@ bun run mac:uninstall                    # stop and remove the LaunchAgent and i
 `mac:run` and `mac:install` package the app the same way (`scripts/run-mac-service.ts`):
 
 1. `swift build -c release` in `mac/`, copied to `mac-app/src-tauri/binaries/vrcode-mac-<triple>`.
-2. `cargo build --release -p xmux-bridged --bin xmux-bridge` in the xmux checkout, copied as
+2. `bun install --frozen-lockfile`, then `bun build --target=bun mac/agent/vrcode-agent.ts` into
+   `mac-app/src-tauri/resources/vrcode-agent.js`, and Bun itself copied as `vrcode-bun-<triple>`.
+3. `cargo build --release -p xmux-bridged --bin xmux-bridge` in the xmux checkout, copied as
    `xmux-bridge-<triple>`.
-3. `cargo tauri build --bundles app`, signing the app and both helpers with the hardened runtime.
+4. `cargo tauri build --bundles app`, signing the app and its sidecars with the hardened runtime.
    The identity is `APPLE_SIGNING_IDENTITY`, else the first "Developer ID Application" identity,
    else "Apple Development", else ad hoc. A stable identity matters: macOS privacy grants and the
    Keychain access list follow the signature, so with ad hoc signing every rebuild asks again.
-4. The bundle is copied to `mac/.build/VRcode Mac.app` and the signature is verified.
+5. The bundle is copied to `mac/.build/VRcode Mac.app` and the signature is verified.
 
 `mac:install` copies the app to `~/Library/Application Support/dev.improve.vrcode/VRcode Mac.app`
 and writes the LaunchAgent `dev.improve.vrcode.mac`:
@@ -144,7 +147,7 @@ as the headset's settings panel, and changes them from the Mac:
 | Services | state, pid, uptime, restarts, last exit and arguments of each helper; Restart per helper or all; whether the LaunchAgent is installed |
 | Headset pairing | the served session and address; waiting headsets; enter the six-digit code the headset shows and Approve, or Reject; paired headsets with Unpair. It uses the bundled `xmux-bridge status --json`, `pair CODE`, `pair --reject` and `unpair ID`. When a headset starts waiting, the window opens on this section with the code field focused |
 | Permissions | Screen & System Audio Recording and Accessibility (granted or not, **Allow…** asks macOS and opens the list), plus shortcuts to the Bluetooth and Local Network lists |
-| AI provider keys | saves or removes the Keychain items `dev.improve.vrcode` / `anthropic-api-key`, `openai-api-key` and `gemini-api-key` that `AiService.swift` reads (Claude, ChatGPT, Gemini; the provider is picked on the Quest). Only the AI mic's Quick answer uses them: with thinking on (the default) the service runs Claude Code, Codex or Gemini CLI, which use their own logins (`claude`, `codex login`, `gemini`), so sign in to the provider's CLI on this Mac ([protocol](vrcode-protocol.md)) |
+| AI provider keys | saves or removes the Keychain items `dev.improve.vrcode` / `anthropic-api-key`, `openai-api-key` and `gemini-api-key` that `AiService.swift` reads (Claude, ChatGPT, Gemini; the provider is picked on the Quest). Only the AI mic's Quick answer uses them: in agent mode (the default) the bundled `vrcode-agent` runner starts Claude Code, Codex or Gemini CLI over the Agent Client Protocol, and they use their own logins (`claude`, `codex login`, `gemini`), so sign in to the provider's CLI on this Mac ([protocol](vrcode-protocol.md)). In both modes a Gemini or OpenAI key also lets a model hear what was said to the AI mic in place of the on-device transcript (`AiHearing.swift`); Claude's API takes no audio |
 | Log | both helpers' output and the app's own notes; the bridge's "run `xmux pair`" hint reads "approve it in VRcode Mac under Headset pairing" here |
 
 The Quest stays the source of truth for its settings; the Mac shows them and requests changes.

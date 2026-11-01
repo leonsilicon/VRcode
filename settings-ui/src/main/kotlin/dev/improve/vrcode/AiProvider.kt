@@ -47,17 +47,17 @@ enum class AiProvider(
 }
 
 /**
- * Whether the AI mic thinks before it types, and where its thinking shows. [Above] and [Below] run
- * the provider's agent CLI on the Mac ([AiProvider.agentCli], signed in with its own login) in the
- * target pane's folder: it thinks and may read the project (read-only) before choosing the
- * keystrokes, and its thinking streams onto a panel just above or below the target window. [Off]
- * asks the provider's API once, quickly, with the API key added in VRcode Mac and no panel.
- * [storageValue] is the saved preference and the synced settings value.
+ * Whether the AI mic runs an agent, and where its thinking shows. [Above] and [Below] run the
+ * provider's coding agent on the Mac ([AiProvider.agentCli], signed in with its own login) over the
+ * Agent Client Protocol: it can look through files, run commands and work in the target terminal
+ * itself, without asking, while its thinking and each step stream onto a panel just above or below
+ * that window. [Off] asks the provider's API once, quickly, with the API key added in VRcode Mac
+ * and no panel; it only types. [storageValue] is the saved preference and the synced settings value.
  */
 enum class AiThinking(val storageValue: String, val label: String, val detail: String) {
-  Above("above", "Think, shown above", "Looks at your project and thinks first. Its thinking shows above the window."),
-  Below("below", "Think, shown below", "Looks at your project and thinks first. Its thinking shows below the window."),
-  Off("off", "Quick answer", "One fast call to the model's API. Sees only the screen; no thinking shown.");
+  Above("above", "Agent, shown above", "Works in your terminal: finds files, runs commands, types for you. Its steps show above the window."),
+  Below("below", "Agent, shown below", "Works in your terminal: finds files, runs commands, types for you. Its steps show below the window."),
+  Off("off", "Quick answer", "One fast call to the model's API. Sees only the screen and types an answer; no steps shown.");
 
   /** True when the Mac runs the agent CLI (and the panel shows its thinking). */
   val agent: Boolean get() = this != Off

@@ -116,6 +116,33 @@ class PieMenuTest {
     compose.runOnIdle { assertNull(state.rayHovered); assertNull(state.rayRun) }
   }
 
+  @Test fun theLeftRingsCloseTerminalSitsRightAfterAddTerminalAndEveryPillFits() {
+    // The left palm ring as HandMenusFeature builds it: item 0 at the top, then clockwise.
+    val labels = listOf("Add terminal", "Close terminal", "Codex", "Claude Code", "Bring forward")
+    val icons = listOf(PieIcon.AddTerminal, PieIcon.CloseTerminal, PieIcon.Codex, PieIcon.Claude, PieIcon.BringForward)
+    val state = PieState("New", labels.zip(icons) { label, icon -> PieItem(label, icon) {} })
+    mount(state)
+    val menu = menuBounds()
+    val centres = labels.associateWith {
+      compose.onNodeWithContentDescription(it).fetchSemanticsNode().boundsInRoot.center - menu.center
+    }
+    // Add terminal straight up, Close terminal up and to the right of it (screen y grows downward).
+    with(centres.getValue("Add terminal")) { assertEquals(0f, x, 1.5f); assertTrue(y < 0) }
+    with(centres.getValue("Close terminal")) { assertTrue(x > 0 && y < 0) }
+    with(centres.getValue("Bring forward")) { assertTrue(x < 0) }
+    capture("quick-actions-left-icons.png")
+    for (i in labels.indices) {
+      compose.runOnIdle { state.highlighted = i; state.progress = 0.5f }
+      compose.mainClock.advanceTimeBy(200)
+      compose.onNodeWithText(labels[i]).assertIsDisplayed()
+      assertLabelFits(labels[i])
+      val icon = compose.onNodeWithContentDescription(labels[i]).fetchSemanticsNode().boundsInRoot
+      assertEquals(icon.height, icon.width, 1f)
+      assertInsideMenu(compose.onNodeWithTag(pieLabelTag(i)).fetchSemanticsNode().boundsInRoot)
+      if (labels[i] == "Close terminal") capture("quick-actions-close-terminal.png")
+    }
+  }
+
   @Test fun sixActionsKeepTheirPillsInsideTheMenuAndClicksCannotLaunch() {
     var launches = 0
     val labels = listOf("Keyboard", "Enter", "Esc", "Ctrl-C", "Paste voice", "Clear voice")

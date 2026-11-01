@@ -21,11 +21,15 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
+const val POINTER_DETAIL = "Choose the cursor where your right hand points. Pinch to click with any option."
+const val PINCH_DRAG_TITLE = "Pinch and drag"
+const val PINCH_DRAG_NOTE = "Scrolling reaches apps that read the mouse, such as Claude Code and Codex. " +
+  "A plain shell prompt has no app to scroll, so a drag there does nothing."
+
 @Composable
 fun PointerCursorControls(settings: AppSettings, onChange: (AppSettings) -> Unit) {
   Text("Pointer cursor", style = MaterialTheme.typography.headlineSmall)
-  Text("Choose the cursor where your right hand points. Pinch to click and drag with any option.",
-    color = MaterialTheme.colorScheme.onSurfaceVariant)
+  Text(POINTER_DETAIL, color = MaterialTheme.colorScheme.onSurfaceVariant)
   Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
     for (style in PointerCursorStyle.entries) {
       PointerOption(style, settings.pointerCursor == style, settings.pointerCursorSize, Modifier.weight(1f)) {
@@ -47,6 +51,25 @@ fun PointerCursorControls(settings: AppSettings, onChange: (AppSettings) -> Unit
       modifier = Modifier.testTag("settings-pointer-size").semantics { contentDescription = "Pointer size" },
     )
   }
+  HorizontalDivider()
+  Text(PINCH_DRAG_TITLE, style = MaterialTheme.typography.titleLarge)
+  Column(Modifier.fillMaxWidth().selectableGroup()) {
+    for (drag in PinchDrag.entries) {
+      Row(
+        Modifier.fillMaxWidth().testTag("settings-pinch-drag-${drag.storageValue}")
+          .selectable(settings.pinchDrag == drag, role = Role.RadioButton, onClick = { onChange(settings.copy(pinchDrag = drag)) })
+          .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        RadioButton(settings.pinchDrag == drag, onClick = null)
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+          Text(drag.label, style = MaterialTheme.typography.titleMedium)
+          Text(drag.detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+      }
+    }
+  }
+  Text(PINCH_DRAG_NOTE, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable

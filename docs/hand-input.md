@@ -29,6 +29,29 @@ Physical pinch recognition and targeting need a Quest wearer: test right-hand mi
 pinches, a left-hand middle pinch, holding/releasing, tracking loss, and settings/app suspension
 against a terminal app that handles right mouse events.
 
+## Left pinch moves windows
+
+The **left hand's index pinch** (palm away from you), or the left controller's trigger or X, only
+**moves terminal windows**. Point anywhere on a window (its title bar, its terminal, even its
+header buttons) or just past any edge or corner (the same widening band as the edge resize, about
+3.4° past the window, all the way around), pinch and drag. The window moves like a title-bar drag:
+the grabbed point stays under the pointer at its distance from your head, the window turns to face
+you, and reaching out or drawing the hand back pushes or pulls it. Release to leave it there; the
+move is saved to cmux. A pinch that closes within 0.3 s of the ray drifting just off the window
+still grabs it, and a pinch that drops for less than 0.15 s keeps the drag.
+
+The left pinch never does anything else to a window. It does not click, select text or press
+header buttons (the panels only take the right trigger and A, `SpatialConfig.windowClickButtons`),
+it never resizes from an edge (only the right hand does), and while the left ray is on a window
+or its band, that window's corner handles are off, unless the right ray is on the same window
+(then the right hand can still scale it). A panel in front of the window, such as the floating
+keyboard, the dock or a voice pane, still takes the left pinch as a press. Moving stands down
+while the left palm faces you (its palm menu and quick inputs), while its mic is live, and while
+Settings, Terminal actions or window settings are open. A fullscreen window does not move.
+
+Logcat shows `VrcodeWindow` lines `left-hand move: screen N grabbed at (412, 37) px of 1210 x 690,
+1.52 m from the head` and `left-hand move: screen N released at 1.80 m` (`LeftHandMove`).
+
 ## Palm menus (both hands)
 
 Turn either **palm toward yourself** and touch the **middle finger to the thumb**, keeping the index
@@ -52,8 +75,14 @@ pinch; a fully filled hint means the runtime reports a full middle pinch.
 
 | Hand | Items (item 0 at the top, then clockwise) |
 |---|---|
-| Left | **Add terminal** (terminal with a plus), **Codex**, **Claude Code**. Add terminal opens a new cmux screen (a new floating window) and focuses it. Codex and Claude Code type `codex` / `claude` into the focused terminal when its shell waits at an empty prompt: no program in the foreground (cmux `terminal.process.get`) and nothing typed after the prompt (read off the screen: the cursor follows a prompt character such as `%`, `#`, `>` or `❯`, with nothing after it except a right prompt). Otherwise, or when that cannot be checked, they open a new cmux screen and type the command into its fresh login shell. Either way the shell remains when they exit. If the Mac service is unavailable, the Terminal actions panel opens with the error. **Bring forward** (a small window with arrows out of its corners, on the ring's left side) glides the focused window from wherever it is to straight ahead of you at eye height, at Settings' window distance and facing you: where Arrange puts a single window. Only your head's heading counts, not its tilt, because you are looking down at your palm when you pick it. A Follow window keeps following at the new spot; a minimized one is shown; a fullscreen one is already in front and stays as it is. The move is saved to cmux like a drag. |
+| Left | **Add terminal** (terminal with a plus), **Close terminal** (terminal with an ×, up and to the right of Add terminal), **Codex**, **Claude Code**, **Bring forward**, **Clear path** (a window at each side with arrows parting them; **Bring back**, arrows pointing in, once windows are aside). Add terminal opens a new cmux screen (a new floating window) and focuses it. Its fresh login shell starts in the focused terminal's current working directory (the foreground program's directory when available, otherwise its shell's). It also copies the focused window’s width, height and corner-handle scale. Without a focused terminal it uses the default terminal size; without a readable directory it uses the default directory. Codex and Claude Code type `codex` / `claude` into the focused terminal when its shell waits at an empty prompt: no program in the foreground (cmux `terminal.process.get`) and nothing typed after the prompt (read off the screen: the cursor follows a prompt character such as `%`, `#`, `>` or `❯`, with nothing after it except a right prompt). Otherwise, or when that cannot be checked, they open a new cmux screen in that same directory and type the command into its fresh login shell. Either way the shell remains when they exit. If the Mac service is unavailable, the Terminal actions panel opens with the error. **Close terminal** closes the focused window's cmux screen, with every pane and tab in it, exactly as the window's title bar × does: the info box above the window says "Closing the screen…", then the window and its dock entry go once cmux removes the screen. Only a shown, focused window is closed; with none focused (or the focused one minimized) it closes nothing and logs `close terminal: no focused window`, rather than pick another window. **Bring forward** (a small window with arrows out of its corners, on the ring's left side) glides the focused window from wherever it is to straight ahead of you at eye height, at Settings' window distance and facing you: where Arrange puts a single window. Only your head's heading counts, not its tilt, because you are looking down at your palm when you pick it. A Follow window keeps following at the new spot; a minimized one is shown; a fullscreen one is already in front and stays as it is. The move is saved to cmux like a drag. **Clear path** clears the way ahead when windows crowd it: the windows in front of you glide out to either side over about half a second, swinging around you like parting curtains. Those right of your heading go right, those left of it go left, each side together and just far enough that its nearest window's inner edge ends 50° from straight ahead. Each keeps its distance, height and order and still faces you; windows already clear, beside or behind you stay put, and a fullscreen window leaves fullscreen first. As with Bring forward, only your head's heading counts. The item then reads **Bring back**: picking it glides every window it moved that is still open back to where it was, including one you dragged meanwhile (a Follow window to its spot around where you are now). Arrange forgets the windows instead. The moves are saved to cmux like drags; where the windows were is kept only until the app closes. Logcat shows `VrcodeWindow` lines `clear path: 5 of 7 shown windows moved aside` and `bring back: 5 windows returned`. |
 | Right | **Keyboard** (the same floating keyboard as the dock's), Enter, Esc, Ctrl-C (focused pane), Paste voice, Clear voice |
+
+Ctrl-C uses the `^C` icon and sends one Ctrl+C key press. Claude Code uses that press to interrupt
+work or clear the prompt, then requires a quick second press to exit. A fresh one-second menu dwell
+misses that confirmation window: in Claude Code 2.1.316, two presses 1.1 seconds apart kept the
+session running, while presses 100 ms apart exited cleanly (verified through cmux on 2026-11-01).
+Use `/exit` followed by Enter when quitting Claude Code through the headset menus.
 
 Only one ring is open at a time. Neither opens while voice is listening or while Settings or
 Terminal actions are open. An index pinch taking over from the middle pinch, a fist, or
@@ -65,6 +94,17 @@ reading pauses the dwell clock, so no action can launch during that grace period
 release discards all progress. A pinch must
 start with the palm already facing you; turning a held palm-away pinch (the right-click) toward
 you does not open a ring. While the right palm faces you, the right-click stands down.
+
+**The rings work while you walk.** A ring, its selection centre and the fingertip hint travel with
+your body, not the room: they keep their offset from a neck point 7.5 cm below and 8 cm behind the
+eyes (LibOVR's default neck model), so walking, stepping aside or bobbing while pinched carries the
+ring along. Only moving the hand relative to your body picks an item. Turning or nodding the head
+swings the eyes around that point without moving it, so looking around the ring still moves
+nothing, and the ring keeps the orientation it opened with. Turning your whole body during a pinch
+swings the hand across the ring like moving the arm would, because no torso heading is tracked.
+Before this, the ring stayed where it opened in the room: walking moved the hand away from the
+centre, which picked or ran items by accident and left the ring behind (`hands/PieSelection.kt`
+`neckPoint`, `PieSelection.follow`).
 
 **Detection uses the runtime's recognizers, not app heuristics.** No Kotlin, C++ or Spatial SDK
 library recognizes "palm toward the user + middle pinch" for this stack. Meta's Interaction SDK
@@ -132,7 +172,8 @@ says no pinch, palm-away versus palm-facing, the `SYSTEM_GESTURE` path, the join
 take-over (and both fingers reading as pinched), fists while open, flickering readings while the hand
 moves, dropouts versus real tracking loss, and fresh-pinch rules including a flicker after an item ran. `PieSelectionTest`
 covers clockwise picking, reach, the VIEW-to-scene conversion and the menu axes at several head
-yaws. `MenuDwellTest` covers the one-second deadline, reaching the label (only for the item whose label
+yaws, walking while pinched (the ring follows; the same walk without following reached an item),
+and head turns about the neck leaving the centre in place. `MenuDwellTest` covers the one-second deadline, reaching the label (only for the item whose label
 is showing, once, not across a reopen), flickers, switching/leaving items, release at the
 deadline, reopening, and firing only once. `PieGeometryTest` checks that every label begins as far
 past its icon as the icon is from the centre, the same distance out on every spoke, stays on the
@@ -198,14 +239,36 @@ package's `QuickInputRingTest` renders the default ring on its diagonals and eve
 catalogue with its label pill inside the ring, and `QuickInputSettingsTest` edits,
 swaps, empties, reloads and restores the ring in Settings.
 
-## Pointer cursor and text selection
+## Pointer cursor, scrolling and text selection
 
 Point the **right hand** (or right controller) at a cmux window to see a white mouse arrow.
-Its tip marks the aim ray's exact panel hit, including headers and tab strips. An **index pinch**
-turns it blue. Keep pinching and move across terminal text to select it; a blue highlight follows
-the drag in either direction and across lines. Release to keep the highlight and copy the text
-to the **Quest clipboard**. Terminal Actions → Paste can insert it into a terminal.
-A pinch released in the same cell remains a normal left click.
+Its tip marks the aim ray’s exact panel hit, including headers and tab strips. An **index pinch**
+turns it blue. A pinch released in the same cell is a normal left click. What a pinch **dragged**
+across a terminal does is **Settings → Customization → Pointer → Pinch and drag**:
+
+- **Scroll** (the default). Keep pinching and move up or down: the text follows the hand, like a
+  touchscreen, one row per row the pointer crosses (drag down to see earlier output). The rows go
+  to cmux as wheel input (`terminal.input.mouse`, `kind: wheel`) at the cell the pinch started on,
+  and keep counting past the pane’s edges. cmux only turns a wheel into a mouse report for an app
+  that tracks the mouse, as Claude Code and Codex do, so they scroll their own conversation. A plain
+  shell prompt tracks nothing, and a drag there changes nothing: cmux keeps a viewer’s scrollback
+  in the frontend (`terminal.viewport.scroll` only moves its inspection viewport, not the attached
+  stream xmux draws), and xmux does not render history yet. Drifting sideways out of the starting
+  cell cancels the click without scrolling.
+- **Select text.** Keep pinching and move across terminal text to select it; a blue highlight
+  follows the drag in either direction and across lines. Release to keep the highlight and copy
+  the text to the **Quest clipboard**. Terminal Actions → Paste can insert it into a terminal.
+
+Meta's own laser (the thin white ray out from a tracked hand or controller) stays visible while
+no mic is live, including when the ray points past every panel. The Interaction SDK only draws it
+over a panel: its cursor system (`IsdkDefaultCursorSystem`, SDK 0.14) skips rays that hit nothing.
+For those rays `FreeLasers` (`FreeLaser.kt`) draws the SDK's own laser: the same box mesh and
+`data/shaders/isdk/pointerlaser` shader, white and blue while pinching. It is drawn at the SDK's
+full length, 25 cm, starting 10 cm out from a hand or at a controller's tip. Over a panel the
+SDK's laser and cursor take over unchanged, including their fade as a hand comes within touch range.
+A hand shows no laser while its palm faces the headset (the runtime's system gesture, which the
+palm menus use) or its aim is invalid. While a mic is live, the hand holding it shows no laser and
+the free hand keeps only the SDK's laser over panels. `FreeLaserShapeTest` covers the geometry.
 
 **Settings → Customization → Pointer cursor** offers Arrow, Dot, Crosshair, and No cursor.
 Visible cursors can be scaled from 75% to 200%, with previews showing the chosen size. Arrow at
@@ -217,7 +280,7 @@ The emulator settings preview is saved in
 [`screenshots/hand-pointer/settings.png`](screenshots/hand-pointer/settings.png).
 
 The pointer and selection overlays are visual only and leave headers, tabs, and wheel input on
-their existing SDK paths. Selection uses the Interaction SDK's Android down/move/up events,
+their existing SDK paths. Scrolling and selection both use the Interaction SDK's Android down/move/up events,
 stays with the starting pane, and clamps at its visible edges. It includes complete wide glyphs,
 combining sequences, and emoji without modifying the streamed cells. The current xmux protocol
 does not expose soft-wrap metadata, so copying multiple displayed rows joins them with newlines.
@@ -234,7 +297,10 @@ previous highlight. Completed selection text remains in the Quest clipboard.
 `TerminalTextSelectionTest` checks ranges and Unicode extraction. `TerminalSelectionInputTest`
 drives the production Android input binding and renderer, checking highlighted pixels, copy on
 release, quick/backward/multiline drags, pane boundaries, cancellation, target replacement,
-clicks, and tab handling. `PointerCursorRenderingTest` covers the cursor overlay:
+clicks, and tab handling. Its scroll cases check the wheel rows sent from the starting cell
+(including past the pane), that a scroll never clicks, copies or highlights, and that a pinch in
+place still clicks. `PinchDrag` defaults and sync are in `AppSettingsTest` and `SettingsSyncTest`.
+`PointerCursorRenderingTest` covers the cursor overlay:
 
 ```sh
 ./gradlew :app:testDebugUnitTest :settings-ui:testDebugUnitTest :app:assembleDebug

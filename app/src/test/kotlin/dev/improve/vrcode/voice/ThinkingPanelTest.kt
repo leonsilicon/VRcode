@@ -24,6 +24,14 @@ class ThinkingPanelTest {
     assertEquals(window.t.y - windowHeightM / 2f - ThinkingPlacement.GAP_M, pose.t.y + panelHeightM / 2f, 1e-4f)
   }
 
+  @Test fun thinkingStacksAboveAnExistingTerminalInfoBox() {
+    val occupied = panelHeightM + ThinkingPlacement.GAP_M
+    val pose = ThinkingPlacement.pose(window, windowHeightM, panelHeightM, above = true, offsetM = occupied)
+    val first = ThinkingPlacement.pose(window, windowHeightM, panelHeightM, above = true)
+    assertEquals(first.t.y + panelHeightM / 2f + ThinkingPlacement.GAP_M, pose.t.y - panelHeightM / 2f, 1e-4f)
+    assertEquals(first.t.z, pose.t.z, 1e-4f)
+  }
+
   @Test fun followsATiltedWindowAlongItsOwnUpAxis() {
     val tilted = Pose(window.t, Quaternion(-30f, 45f, 0f))
     val pose = ThinkingPlacement.pose(tilted, windowHeightM, panelHeightM, above = true)

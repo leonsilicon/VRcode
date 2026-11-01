@@ -6,6 +6,16 @@ All 127 public transported operations are carried over one persistent Unix-socke
 
 The Quest Actions panel provides common controls and searchable forms for the full catalog. Selectors use explicit resource IDs from a live session snapshot. Logical cmux focus changes daemon state; it does not activate any macOS app or window.
 
+Terminal actions show progress and failures in an info box above the targeted floating terminal.
+This includes quick-action launches (Claude Code, Codex and new terminals), closing a terminal,
+resizing its grid, clipboard actions and operations launched from Terminal actions. Running actions
+and live streams stay visible until they finish; successful actions clear their notice immediately.
+Errors stay for ten seconds, with Dismiss to close them sooner. The box follows the terminal's position, rotation and size,
+hides with the terminal, and keeps its captured target when focus changes. Creation moves its
+message from the source window to the new terminal once mounted. Concurrent actions retain their
+own messages. AI mic thinking stacks above an existing info box (or stays below if configured).
+Failures never open Terminal actions automatically; that panel opens only when requested.
+
 ## Public operations
 
 | Operation | Kind | Quest route |

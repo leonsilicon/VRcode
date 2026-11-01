@@ -1,6 +1,7 @@
-//! API keys for the service's AI voice mode, kept in the login Keychain as generic passwords
-//! under service `dev.improve.vrcode`, one account per provider (what `AiService.swift` reads):
-//! `anthropic-api-key`, `openai-api-key`, `gemini-api-key`.
+//! API keys for the service's AI voice mode and speech-to-text, kept in the login Keychain as
+//! generic passwords under service `dev.improve.vrcode`, one account per provider (what
+//! `AiService.swift` and `ElevenLabsTranscription.swift` read): `anthropic-api-key`,
+//! `openai-api-key`, `gemini-api-key`, `elevenlabs-api-key`.
 //!
 //! Each item is created with an access list that trusts both this app and the bundled
 //! `vrcode-mac` helper. The helper is a separately signed binary, and without that list its
@@ -23,11 +24,13 @@ use security_framework::item::{ItemClass, ItemSearchOptions};
 const SERVICE: &str = "dev.improve.vrcode";
 const ERR_SEC_ITEM_NOT_FOUND: OSStatus = -25300;
 
-/// The AI providers: (id used by the window, Keychain account, item label).
-const PROVIDERS: [(&str, &str, &str); 3] = [
+/// The key providers: the AI providers, then ElevenLabs for speech-to-text (id used by the
+/// window, Keychain account, item label).
+const PROVIDERS: [(&str, &str, &str); 4] = [
     ("anthropic", "anthropic-api-key", "VRcode Anthropic API key"),
     ("openai", "openai-api-key", "VRcode OpenAI API key"),
     ("gemini", "gemini-api-key", "VRcode Gemini API key"),
+    ("elevenlabs", "elevenlabs-api-key", "VRcode ElevenLabs API key"),
 ];
 
 #[link(name = "Security", kind = "framework")]
@@ -210,6 +213,7 @@ mod tests {
         assert_eq!(provider("anthropic").unwrap().0, "anthropic-api-key");
         assert_eq!(provider("openai").unwrap().0, "openai-api-key");
         assert_eq!(provider("gemini").unwrap().0, "gemini-api-key");
+        assert_eq!(provider("elevenlabs").unwrap().0, "elevenlabs-api-key");
         assert!(provider("other").is_err());
     }
 }

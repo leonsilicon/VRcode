@@ -84,4 +84,32 @@ class TitleBarDragGateTest {
     assertEquals(true, gate.holder(other))
     assertEquals(2, logs.count { "held by" in it })
   }
+
+  @Test fun aHeaderGestureRestartDoesNotReplaceAPhysicallyHeldDrag() {
+    gate.update(listOf(right(pressed = true, header = window)))
+    assertEquals(anchor, gate.drag(window, anchor, Offset(120f, 20f)))
+    val restarted = Offset(450f, 30f)
+    assertEquals(anchor, gate.drag(window, restarted, Offset(470f, 30f)))
+    assertEquals(false, gate.holder(window))
+    assertEquals(1, logs.count { "held by" in it })
+  }
+
+  @Test fun theOtherHandCannotReplaceAnExistingHolderOnTheSameHeader() {
+    gate.update(listOf(left(pressed = true, header = window)))
+    assertEquals(anchor, gate.drag(window, anchor, Offset(120f, 20f)))
+    gate.update(listOf(left(pressed = true, header = window), right(pressed = true, header = window)))
+    assertEquals(anchor, gate.drag(window, Offset(700f, 30f), Offset(720f, 30f)))
+    assertEquals(true, gate.holder(window))
+  }
+
+  @Test fun cancellationRequiresReleaseBeforeAnotherDrag() {
+    gate.update(listOf(right(pressed = true, header = window)))
+    assertEquals(anchor, gate.drag(window, anchor, Offset(120f, 20f)))
+    gate.cancel()
+    gate.update(listOf(right(pressed = true, header = window)))
+    assertNull(gate.drag(window, anchor, Offset(160f, 20f)))
+    gate.update(listOf(right(pressed = false)))
+    gate.update(listOf(right(pressed = true, header = window)))
+    assertEquals(Offset(180f, 20f), gate.drag(window, anchor, Offset(180f, 20f)))
+  }
 }

@@ -32,6 +32,16 @@ class DockFollowTest {
     assertAt(start, follow.hold(head(-10f, pitch = 8f, at = eye + Vector3(0.05f, -0.04f, 0.05f)), 3f))
   }
 
+  @Test fun followsASmallLookUpSoTheBarNeverDropsOutOfView() {
+    val follow = DockFollow()
+    val start = follow.update(head(0f), 0f)
+    // A tiny upward nod is still ignored.
+    assertAt(start, follow.hold(head(0f, pitch = -3f), 2f))
+    // A nod that a downward dead zone would ignore still pulls the bar back up into view.
+    val up = follow.hold(head(0f, pitch = -8f), 3f)
+    assertAt(DockPlacement.pose(head(0f, pitch = -8f)), up, 0.01f)
+  }
+
   @Test fun followsALargeLookDownLikeAHomeBarAtTheBottomOfTheView() {
     val follow = DockFollow()
     val start = follow.update(head(0f), 0f)

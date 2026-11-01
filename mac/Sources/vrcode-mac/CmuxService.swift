@@ -301,13 +301,10 @@ struct CmuxEndpoint {
   func resolve() throws -> String {
     if let socket { return socket }
     let process = Process()
-    let home = FileManager.default.homeDirectoryForCurrentUser.path
-    let paths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
-    let override = ProcessInfo.processInfo.environment["CMUX_BIN"].map { [$0] } ?? []
-    guard let binary = (override + paths.map { $0 + "/cmux" } + [home + "/.cmux/bin/cmux"])
-      .first(where: FileManager.default.isExecutableFile(atPath:)) else { throw CmuxFailure("cmux CLI is not installed") }
+    guard let binary = Self.binary() else { throw CmuxFailure("cmux CLI is not installed") }
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = ["--session", session, "--json", "server", "ensure"]
+    process.environment = Self.daemonEnvironment(ProcessInfo.processInfo.environment)
     let output = Pipe()
     process.standardOutput = output
     process.standardError = FileHandle.nullDevice
@@ -318,5 +315,31 @@ struct CmuxEndpoint {
           let status = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
           let path = status["socket"] as? String else { throw CmuxFailure("Could not start or locate cmux session \(session)") }
     return path
+  }
+
+  /// The environment `server ensure` runs with, and so the environment of a daemon it starts, which
+  /// every terminal cmux opens inherits. A service started from a coding agent's or CI's shell (a
+  /// development run, a test) would otherwise pass on that harness's settings for machine-read
+  /// output: `NO_COLOR=1` left Claude Code, launched from the palm menu, in plain white text, and
+  /// `CLAUDECODE` makes Claude Code think it is nested in another session. A daemon started under the
+  /// LaunchAgent never has them, and the terminals' shells reread the user's own from their
+  /// dotfiles. Everything else, including the `XDG_*` and `CMUX_*` paths that pick the session's
+  /// socket and state, is kept.
+  static func daemonEnvironment(_ inherited: [String: String]) -> [String: String] {
+    inherited.filter { name, _ in !harnessVariables.contains(name) && !harnessPrefixes.contains(where: name.hasPrefix) }
+  }
+
+  private static let harnessVariables: Set<String> = [
+    "NO_COLOR", "FORCE_COLOR", "CI", "PAGER", "GIT_PAGER", "GH_PAGER", "GIT_EDITOR",
+    "AI_AGENT", "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT",
+  ]
+  private static let harnessPrefixes = ["CODEX_", "CLAUDE_CODE_"]
+
+  /// The cmux CLI: `CMUX_BIN`, else the first `cmux` on PATH, else `~/.cmux/bin/cmux`.
+  static func binary() -> String? {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    let paths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+    let override = ProcessInfo.processInfo.environment["CMUX_BIN"].map { [$0] } ?? []
+    return (override + paths.map { $0 + "/cmux" } + [home + "/.cmux/bin/cmux"]).first(where: FileManager.default.isExecutableFile(atPath:))
   }
 }

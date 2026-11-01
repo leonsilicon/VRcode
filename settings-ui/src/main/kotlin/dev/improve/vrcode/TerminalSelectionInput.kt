@@ -13,9 +13,15 @@ import dev.improve.xmux.terminal.grid.TerminalGridView
 import kotlin.math.floor
 
 /**
- * ISDK index-pinch events select the displayed text locally. The remote mouse API only writes
- * mouse reports to the PTY, so it cannot supply a selection or its highlight. Defer a click until
- * release: once the hand drags to another cell, no mouse input is sent to the terminal program.
+ * ISDK index-pinch events scroll the terminal or select its displayed text, per [drag]. Defer a
+ * click until release: once the hand drags to another cell, no click reaches the terminal program.
+ *
+ * [PinchDrag.Scroll] sends wheel rows from the cell the pinch started on ([onScroll], negative
+ * scrolls up) so the text follows the hand, like a touchscreen: dragging down a row scrolls up a
+ * row. The drag keeps counting rows past the pane's edges.
+ *
+ * [PinchDrag.Select] selects locally. The remote mouse API only writes mouse reports to the PTY,
+ * so it cannot supply a selection or its highlight; no mouse input is sent during the drag.
  */
 class TerminalSelectionInput<T : Any>(
   private val screen: ScreenView,
@@ -23,6 +29,7 @@ class TerminalSelectionInput<T : Any>(
   private val onFocus: (Int) -> Unit,
   private val onClick: (T, TerminalTextSelection.Cell) -> Unit,
   private val onCopy: (String) -> Unit,
+  private val onScroll: (T, TerminalTextSelection.Cell, Int) -> Unit = { _, _, _ -> },
   private val onStart: () -> Unit = {},
 ) : AutoCloseable {
   var enabled = true
@@ -31,6 +38,9 @@ class TerminalSelectionInput<T : Any>(
       if (!value) clear()
     }
 
+  /** Read when a pinch starts; a held drag keeps the behavior it began with. */
+  var drag: PinchDrag = PinchDrag.Scroll
+
   private inner class Capture(
     val target: T,
     val pane: Int,
@@ -38,9 +48,12 @@ class TerminalSelectionInput<T : Any>(
     val grid: CellGrid,
     val anchor: TerminalTextSelection.Cell,
     var pointerId: Int?,
+    val drag: PinchDrag,
   ) {
     var extent = anchor
     var moved = false
+    /** The unclamped row the hand is on, for scrolling; the anchor's row to begin with. */
+    var scrollRow = anchor.row
     val overlay = SelectionOverlay(view)
   }
 
@@ -75,8 +88,17 @@ class TerminalSelectionInput<T : Any>(
     if (!x.isFinite() || !y.isFinite()) return
     // Retain the starting pane even over a divider, tab strip, or outside the panel.
     val col = floor((x - c.view.left - c.view.paddingPx) / c.view.font.cellWidth).toInt().coerceIn(0, c.grid.cols - 1)
-    val row = floor((y - c.view.top - c.view.paddingPx) / c.view.font.cellHeight).toInt().coerceIn(0, c.grid.rows - 1)
-    val cell = TerminalTextSelection.Cell(row, col)
+    val unclamped = floor((y - c.view.top - c.view.paddingPx) / c.view.font.cellHeight).toInt()
+    val cell = TerminalTextSelection.Cell(unclamped.coerceIn(0, c.grid.rows - 1), col)
+    if (c.drag == PinchDrag.Scroll) {
+      val rows = unclamped - c.scrollRow
+      if (cell != c.extent || rows != 0) c.moved = true
+      c.extent = cell
+      if (rows == 0) return
+      c.scrollRow = unclamped
+      onScroll(c.target, c.anchor, -rows)
+      return
+    }
     if (cell == c.extent) return
     c.extent = cell
     c.moved = true
@@ -105,9 +127,11 @@ class TerminalSelectionInput<T : Any>(
         val target = targetAt(hit.pane) ?: return true
         val view = screen.gridView(hit.pane) ?: return true
         capture = Capture(target, hit.pane, view, view.grid,
-          TerminalTextSelection.Cell(hit.row, hit.col), event.getPointerId(0)).also {
-          it.overlay.setBounds(0, 0, view.width, view.height)
-          view.overlay.add(it.overlay)
+          TerminalTextSelection.Cell(hit.row, hit.col), event.getPointerId(0), drag).also {
+          if (it.drag == PinchDrag.Select) {
+            it.overlay.setBounds(0, 0, view.width, view.height)
+            view.overlay.add(it.overlay)
+          }
         }
       }
       MotionEvent.ACTION_MOVE -> {
@@ -121,7 +145,10 @@ class TerminalSelectionInput<T : Any>(
         if (event.getPointerId(index) != c.pointerId) return true
         move(c, event.getX(index), event.getY(index))
         c.pointerId = null
-        if (c.moved) {
+        if (c.drag == PinchDrag.Scroll) {
+          clear()
+          if (!c.moved) onClick(c.target, c.anchor)
+        } else if (c.moved) {
           TerminalTextSelection(c.anchor, c.extent).text(c.grid).takeIf { it.isNotEmpty() }?.let(onCopy)
         } else {
           clear()

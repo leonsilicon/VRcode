@@ -1,59 +1,63 @@
 package dev.improve.vrcode
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.border
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.foundation.Canvas
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 
 /** IDs belong to the live bridge, never a locally stored terminal list. */
 data class DockWindow(val id: Int, val title: String)
 
 enum class DockOptionKind { Connection, Window, Keyboard, Arrange, Settings }
 
-/** One option of the raised dock. */
-data class DockOption(val label: String, val kind: DockOptionKind, val selected: Boolean = false, val enabled: Boolean = true)
-
-private val DockAccent = Color(0xFF4C8DFF)
+/**
+ * One icon of the raised dock. A window always shows a running dot; [selected] brightens it for
+ * the focused window, and gives the keyboard one while it is open. [hidden] is a window that is
+ * minimized or behind a fullscreen one, drawn translucent like a hidden app in the macOS Dock.
+ * [enabled] is the bridge's state for Connection (green online, amber offline); a disabled
+ * window, or Arrange, is faded.
+ */
+data class DockOption(
+  val label: String,
+  val kind: DockOptionKind,
+  val selected: Boolean = false,
+  val enabled: Boolean = true,
+  val hidden: Boolean = false,
+)
 
 enum class DockTouchPhase { Down, Move, Up }
 
@@ -93,122 +97,120 @@ private fun Modifier.dockTouches(onTouch: (DockTouch) -> Unit): Modifier {
 }
 
 /**
- * The dock's bar, like an iPhone mini's home bar: a short, faint, rounded bar. It stays in place
- * whether the dock is down or [raised] (it then sits underneath the options, a little brighter).
+ * The sheet's handle, like an iPhone bottom sheet's grabber: a short, faint, rounded bar. Its
+ * spatial panel follows the user's pinch and is always the top edge of the sheet; when [raised] it
+ * sits inside the sheet, above the options, and is drawn over it.
  * A hand near it makes it bulge ([bulge], 0..1) and shows a chevron: up to pull the dock up, down to
- * lower it. A pinch pulling it up lifts it ([lift], 0..1 of the pull that raises the dock), and it
- * springs back if let go early. Every touch goes to [onTouch] the moment it lands; while the dock
- * is down a touch does nothing, while raised it lowers the dock.
+ * lower it. Movement belongs to the spatial panel so the drawing and hit target stay together.
+ * Every touch goes to [onTouch]; a plain touch never toggles the dock.
  */
 @Composable
-fun DockBar(bulge: Float, raised: Boolean = false, barFraction: Float = 0.7f, lift: Float = 0f, onTouch: (DockTouch) -> Unit = {}) {
+fun DockBar(bulge: Float, raised: Boolean = false, barFraction: Float = 0.7f, onTouch: (DockTouch) -> Unit = {}) {
   val b by animateFloatAsState(bulge.coerceIn(0f, 1f), spring(dampingRatio = 0.6f, stiffness = 500f), label = "bulge")
-  val l by animateFloatAsState(lift.coerceIn(0f, 1f), spring(dampingRatio = 0.7f, stiffness = 900f), label = "lift")
   VrcodeTheme {
     BoxWithConstraints(Modifier.fillMaxSize().testTag("vrcode-dock-bar").dockTouches(onTouch), contentAlignment = Alignment.Center) {
       val barHeight = 4.dp + 4.dp * b
       Box(
-        Modifier.offset(y = -maxHeight * 0.25f * l)
-          .width(maxWidth * barFraction * (1f + 0.15f * b))
+        Modifier.width(maxWidth * barFraction * (1f + 0.15f * b))
           .height(barHeight)
           .clip(CircleShape)
           .background(Color.White.copy(alpha = (if (raised) 0.55f else 0.3f) + 0.4f * b)),
       )
-      if (b > 0.05f && l < 0.95f) {
-        // Below the bar while raised, so it never sits on the options above; it fades as a pull lifts the bar into it.
-        Text(if (raised) "⌄" else "⌃", Modifier.offset(y = maxHeight * (if (raised) 0.28f else -0.32f)),
-          color = Color.White.copy(alpha = 0.7f * b * (1f - l)), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+      if (b > 0.05f) {
+        Text(if (raised) "⌄" else "⌃", Modifier.offset(y = maxHeight * (if (raised) 0.24f else -0.32f)),
+          color = Color.White.copy(alpha = 0.7f * b), fontSize = 12.sp, fontWeight = FontWeight.Bold)
       }
     }
   }
 }
 
+private val DockSheetShape = RoundedCornerShape(22.dp)
+
+/** The shelf is never narrower than this fraction of the panel, so the grabber always sits on its top edge. */
+private const val MIN_SHELF_FRACTION = 0.3f
+
 /**
- * The raised dock: a row of options at [rowY] (fractions of the panel's height from its top) on a
- * body from [bodyTop] down to the panel's bottom edge, above the bar (a separate panel that stays
- * where it is). [xs] are the options' centres as fractions of the panel's width. The option a hand
- * is near ([highlighted]) grows and shows its label above the body; touching an option runs it, and
- * every touch goes to [onTouch] as it happens.
+ * The dock's sheet: it moves like an iPhone bottom sheet and looks like the macOS Dock. The panel
+ * is the size of the expanded sheet. The sheet's bottom edge stays at the panel's bottom and its
+ * top edge, which carries the handle (drawn by [DockBar] on its own panel), sits [drop] (a fraction
+ * of the panel's height) below the panel's top: 0 when expanded. The icons and their tooltip ride
+ * with the top edge, so they rise into view out of the sheet's bottom as it is pulled up. [reveal]
+ * fades the sheet in at the start of the swipe.
+ *
+ * Like the macOS Dock, the sheet is a translucent graphite shelf that hugs a row of square icons
+ * ([DockTile]), with a separator at [separatorX] between the terminals and the tools, and a running
+ * dot under each window. [xs] are the icons' centres and [slot] the distance between neighbours,
+ * both fractions of the panel's width; every icon size follows [slot] ([DockShelf]), so icons shrink
+ * rather than overlap when many windows are open. [rowY] (the icons' centres) and [labelY] are
+ * fractions of the panel's height from the expanded sheet's top.
+ *
+ * Icons grow, bottom-anchored, under the fingertip at [hoverX] (a fraction of the width), or under
+ * [highlighted] without one; the highlighted icon's name shows in a tooltip at [labelY], between
+ * the row and the handle. Touching an icon runs it; every touch goes to [onTouch] as it happens.
  */
 @Composable
 fun DockBody(
   options: List<DockOption>,
   xs: List<Float>,
+  slot: Float,
   highlighted: Int?,
   rowY: Float,
-  bodyTop: Float,
+  labelY: Float,
+  separatorX: Float? = null,
+  hoverX: Float? = null,
+  drop: Float = 0f,
+  reveal: Float = 1f,
   onTouch: (DockTouch) -> Unit = {},
 ) {
+  val centre = hoverX ?: highlighted?.let { xs.getOrNull(it) }
+  // Where the magnification was last centred, so it shrinks back in place once the hand leaves.
+  val anchor = remember { floatArrayOf(0.5f) }
+  if (centre != null) anchor[0] = centre
+  val magnify by animateFloatAsState(if (centre != null) 1f else 0f, tween(140), label = "magnify")
+  fun scaleAt(x: Float) = 1f + (DockShelf.magnification((x - anchor[0]) / slot.coerceAtLeast(0.0001f)) - 1f) * magnify
   VrcodeTheme {
-    BoxWithConstraints(Modifier.fillMaxSize().testTag("vrcode-dock").dockTouches(onTouch)) {
+    BoxWithConstraints(Modifier.fillMaxSize().graphicsLayer { alpha = reveal.coerceIn(0f, 1f) }.testTag("vrcode-dock").dockTouches(onTouch)) {
       val w = maxWidth
       val h = maxHeight
-      // The body behind the row.
+      val top = h * drop.coerceIn(0f, 1f)
+      val slotDp = w * slot
+      val end = slotDp * DockShelf.END
+      val left = minOf(w * (xs.firstOrNull() ?: 0.5f) - end, w * (0.5f - MIN_SHELF_FRACTION / 2f)).coerceAtLeast(0.dp)
+      val right = maxOf(w * (xs.lastOrNull() ?: 0.5f) + end, w * (0.5f + MIN_SHELF_FRACTION / 2f)).coerceAtMost(w)
+      // The visible shelf, clipping what rides inside it at its rounded edges.
       Box(
-        Modifier.offset(y = h * bodyTop).fillMaxWidth().height(h * (1f - bodyTop)).clip(RoundedCornerShape(22.dp))
-          .background(Color(0xE61A202B)).border(BorderStroke(1.dp, Color(0x30FFFFFF)), RoundedCornerShape(22.dp)),
-      )
-      val icon = (h * 0.27f).coerceAtMost(w * 0.11f)
-      for ((i, option) in options.withIndex()) {
-        val x = xs.getOrElse(i) { 0.5f }
-        val picked = i == highlighted
-        val size = icon * (if (picked) 1.2f else 1f)
-        Box(
-          Modifier.offset(x = w * x - size / 2, y = h * rowY - size / 2).size(size).clip(CircleShape)
-            .background(if (picked) DockAccent else if (option.selected) Color(0xFF2C4263) else Color(0x33FFFFFF))
-            .testTag("dock-option-$i"),
-          contentAlignment = Alignment.Center,
-        ) {
-          val glyph = Modifier.size(size * 0.55f)
-          when (option.kind) {
-            DockOptionKind.Window -> TerminalGlyph(glyph)
-            DockOptionKind.Keyboard -> KeyboardGlyph(glyph)
-            DockOptionKind.Arrange -> Icon(Icons.Default.Refresh, contentDescription = null, modifier = glyph, tint = Color.White)
-            DockOptionKind.Settings -> Icon(Icons.Default.Settings, contentDescription = null, modifier = glyph, tint = Color.White)
-            DockOptionKind.Connection ->
-              Box(Modifier.size(size * 0.3f).clip(CircleShape).background(if (option.enabled) Color(0xFF8CDCB0) else Color(0xFFE8B86D)))
+        Modifier.offset(x = left, y = top).size(right - left, h - top).clip(DockSheetShape)
+          .background(DockShelfBrush).border(1.dp, DockShelfEdge, DockSheetShape)
+          .testTag("vrcode-dock-sheet"),
+      ) {
+        // The expanded layout in panel coordinates, pinned to the sheet's top edge so it moves with the handle.
+        Box(Modifier.wrapContentSize(Alignment.TopStart, unbounded = true).offset(x = -left).requiredSize(w, h)) {
+          val tile = slotDp * DockShelf.TILE
+          val rowCentre = h * rowY
+          val tileBottom = rowCentre + tile / 2
+          separatorX?.let { x ->
+            Box(Modifier.offset(x = w * x - 0.5.dp, y = rowCentre - tile * 0.42f).size(1.dp, tile * 0.84f).background(DockSeparatorColor))
           }
-        }
-        if (picked) {
-          // The label in a pill above the body, over the option. The world shows behind it in the headset.
-          Box(
-            Modifier.offset(x = (w * x - w * 0.15f).coerceIn(0.dp, w * 0.7f), y = (h * bodyTop - h * 0.2f).coerceAtLeast(0.dp)).width(w * 0.3f),
-            contentAlignment = Alignment.Center,
-          ) {
-            Text(
-              option.label,
-              Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xE61A202B)).padding(horizontal = 8.dp, vertical = 2.dp),
-              color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1,
-              overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-            )
+          for ((i, option) in options.withIndex()) {
+            val x = xs.getOrElse(i) { 0.5f }
+            val scale = scaleAt(x)
+            val size = tile * scale
+            Box(
+              Modifier.offset(x = w * x - size / 2, y = tileBottom - size).zIndex(scale)
+                .graphicsLayer { alpha = dockTileAlpha(option) }
+                .clearAndSetSemantics { contentDescription = option.label; testTag = "dock-option-$i" },
+            ) { DockTile(option, size) }
+            dockRunningDot(option)?.let { color ->
+              val dot = slotDp * DockShelf.DOT
+              Box(Modifier.offset(x = w * x - dot / 2, y = tileBottom + slotDp * DockShelf.PAD / 2 - dot / 2).size(dot).background(color, CircleShape))
+            }
+          }
+          val picked = highlighted?.takeIf { it in options.indices }
+          if (picked != null) {
+            DockTooltip(options[picked].label, centreX = w * xs.getOrElse(picked) { 0.5f }, centreY = h * labelY, minX = left, maxX = right)
           }
         }
       }
     }
-  }
-}
-
-@Composable
-private fun TerminalGlyph(modifier: Modifier = Modifier.size(24.dp)) {
-  Canvas(modifier) {
-    val tint = Color(0xFFA9C7FF)
-    val stroke = size.width * 0.065f
-    drawRoundRect(tint, Offset(stroke, stroke * 2), Size(size.width - stroke * 2, size.height - stroke * 4), CornerRadius(stroke * 2), style = Stroke(stroke))
-    drawLine(tint, Offset(size.width * 0.24f, size.height * 0.36f), Offset(size.width * 0.4f, size.height * 0.5f), stroke)
-    drawLine(tint, Offset(size.width * 0.4f, size.height * 0.5f), Offset(size.width * 0.24f, size.height * 0.64f), stroke)
-    drawLine(tint, Offset(size.width * 0.51f, size.height * 0.64f), Offset(size.width * 0.73f, size.height * 0.64f), stroke)
-  }
-}
-
-@Composable
-private fun KeyboardGlyph(modifier: Modifier = Modifier.size(24.dp)) {
-  Canvas(modifier) {
-    val tint = Color(0xFFE4EAF5)
-    val stroke = size.width * 0.06f
-    drawRoundRect(tint, Offset(stroke, size.height * 0.18f), Size(size.width - stroke * 2, size.height * 0.64f), CornerRadius(stroke * 2), style = Stroke(stroke))
-    for (row in 0..1) for (col in 0..3) {
-      drawCircle(tint, stroke * 0.65f, Offset(size.width * (0.22f + col * 0.185f), size.height * (0.36f + row * 0.16f)))
-    }
-    drawLine(tint, Offset(size.width * 0.3f, size.height * 0.68f), Offset(size.width * 0.7f, size.height * 0.68f), stroke)
   }
 }

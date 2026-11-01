@@ -4,7 +4,7 @@ import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
 import com.meta.spatial.core.Vector3
 import dev.improve.vrcode.WindowMode
-import dev.improve.vrcode.voice.PaneFollow
+import dev.improve.xmux.spatial.WindowLayout
 import kotlin.math.max
 import kotlin.math.sqrt
 import kotlin.math.tan
@@ -81,6 +81,12 @@ data class SceneLayout(
     val follow = mode == WindowMode.Follow && user != null
     val pose = if (follow) offset(world, user!!) else world
     return with(screen, WindowPlacement(if (follow) WindowMode.Follow else WindowMode.Fixed, pose))
+  }
+
+  /** A quick-action terminal opens along the current gaze, even if its arc slot was already seeded. */
+  fun openedInFront(screen: String, mode: WindowMode, head: Pose, user: Vector3?, distanceM: Float): SceneLayout {
+    val world = WindowLayout.inFrontOfHead(head, distanceM)
+    return exitFullscreen().seeded(screen, mode, world, user).shown(screen).moved(screen, world, user)
   }
 
   /** Switching modes keeps the window where it is: Follow stores the current offset, Fixed the current pose. */
@@ -214,12 +220,14 @@ data class SceneLayout(
     }
 
     /**
-     * The point Follow windows hang from: the head's position, eased. Leaning in to read, swaying,
-     * or the few centimetres the eyes shift when the head turns stay inside the 40 cm dead zone and
-     * leave the windows still; walking, standing up or sitting down carries them along, and they
-     * catch up (0.3 s time constant) once the user stops. A tracking jump of over 3 m snaps.
+     * The point Follow windows hang from: the head's position, smoothed ([UserFollow]). Leaning in
+     * to read, swaying, or the few centimetres the eyes shift when the head turns stay inside the
+     * 40 cm dead zone and leave the windows still; walking, standing up or sitting down carries them
+     * along on a critically damped spring (0.35 s across the floor, 0.6 s in height, so a walking
+     * gait's bob barely reaches them), and they catch up once the user stops. A tracking jump of
+     * over 3 m snaps.
      */
-    internal fun userFollow() = PaneFollow(deadZoneM = 0.4f, timeConstantS = 0.3f, snapM = 3f)
+    internal fun userFollow() = UserFollow(deadZoneM = 0.4f, horizontalTimeS = 0.35f, verticalTimeS = 0.6f, snapM = 3f)
 
     /** Fullscreen fits the panel into a 74° wide by 58° tall field of view, straight ahead of the head. */
     fun fullscreenOffset(widthM: Float, heightM: Float): Pose {

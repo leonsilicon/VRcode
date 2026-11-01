@@ -35,6 +35,13 @@ class TerminalWindows(
   private val head: () -> Pose?,
   private val defaultMode: () -> WindowMode,
   private val distanceM: () -> Float,
+  /**
+   * When the frame being built will be on the display, in nanoseconds (the Spatial SDK's predicted
+   * display time). Moving windows step by this rather than by when the tick happened to run: the
+   * tick's own timing wobbles by milliseconds, and at walking speed a 2 ms error puts a following
+   * window a few display pixels off for one frame, which reads as judder.
+   */
+  private val frameTimeNs: () -> Long = System::nanoTime,
 ) {
   private val link: CmuxLink = CmuxLink(scope, { sync.onConnected() }, { sync.onStream(it) })
   private val sync = LayoutSync(scope, ProjectionIdentity.forDevice(deviceKey), link::call, { link.connected })
@@ -45,12 +52,23 @@ class TerminalWindows(
   private val applied = mutableMapOf<ScreenWindow, Pose>()
   /** Likewise the scale; a different one means the user dragged a corner handle. */
   private val appliedScale = mutableMapOf<ScreenWindow, Float>()
+  private data class InheritedSize(val widthM: Float, val heightM: Float, val scale: Float)
+  private val inheritedSizes = mutableMapOf<ScreenWindow, InheritedSize>()
+  /** Exact cmux ids returned by quick-action creation; topology may arrive before or after the reply. */
+  private val openingInFront = mutableSetOf<String>()
   private val ticks = mutableMapOf<ScreenWindow, Int>()
   private val modes = mutableStateMapOf<ScreenId, WindowMode>()
   /** The user's eased position, which every Follow window hangs from. */
   private val userFollow = SceneLayout.userFollow()
   private var user: Vector3? = null
-  private var lastTickMs: Long? = null
+  private var lastFrameNs: Long? = null
+  /** Where each window Clear path moved aside was (its cmux placement), by cmux screen id, until Bring back. */
+  private val aside = LinkedHashMap<String, WindowPlacement>()
+  /** Clear path and Bring back glide windows around the user rather than jump them. */
+  private val glide = WindowGlide<ScreenId>()
+
+  /** True while windows Clear path moved aside are still open: the next toggle brings them back. */
+  val pathCleared: Boolean get() = aside.keys.any { id -> xmux.windows.any { idOf(it) == id } }
 
   /** The window shown fullscreen, as Compose state for headers. */
   var fullscreenScreen by mutableStateOf<ScreenId?>(null)
@@ -80,8 +98,12 @@ class TerminalWindows(
     sync.reset()
     applied.clear()
     appliedScale.clear()
+    inheritedSizes.clear()
+    openingInFront.clear()
     ticks.clear()
     modes.clear()
+    aside.clear()
+    glide.cancelAll()
     resetUser()
     fullscreenScreen = null
   }
@@ -91,18 +113,37 @@ class TerminalWindows(
     val s = session
     val head = head()
     val user = updateUser(head, resumed)
+    // Paused mid-glide (no head pose to glide around), windows land where they were going.
+    for ((screen, pose) in glide.tick(if (resumed) frameMs() else Long.MAX_VALUE / 2)) place(screen, pose)
     if (s != null) mountNewScreens(s, head, user)
     for (window in xmux.windows) {
       val screen = window.screen ?: continue
       val id = idOf(window) ?: continue
       val age = (ticks[window] ?: 0) + 1
       ticks[window] = age
+      if (id in openingInFront && resumed && head != null && age > SETTLE_TICKS && window.pose() != null) {
+        sync.edit { it.openedInFront(id, defaultMode(), head, user, distanceM()) }
+        openingInFront.remove(id)
+        // An old arc pose or an attaching viewer's resize is not a user drag of this placement.
+        applied.remove(window)
+        applyVisibility()
+        Log.i(TAG, "opened screen $id in front of the current head pose at ${distanceM()} m")
+      }
       window.setVisible(sync.layout.visible(id))
       // Until xmux has placed a new window, let it; then cmux's layout owns the window.
       if (id !in sync.layout.windows) {
         val pose = window.pose()
         if (age <= SETTLE_TICKS || pose == null || !resumed) continue
         sync.seed(id, defaultMode(), pose, user)
+      }
+      inheritedSizes.remove(window)?.let { size ->
+        sync.edit { it.scaled(id, size.scale) }
+        xmux.setScale(window, size.scale)
+        appliedScale[window] = size.scale
+        // Fit the entire new window, including its header. This also matches a source with
+        // split panes or a per-window text size, whose grid alone has different dimensions.
+        xmux.resizeWindow(window, size.widthM, size.heightM)
+        Log.i(TAG, "inherited size for $id: ${size.widthM}x${size.heightM} m, scale ${size.scale}")
       }
       applyScale(window, id, age)
       if (!resumed || !window.visible) { applied.remove(window); continue }
@@ -117,6 +158,7 @@ class TerminalWindows(
     }
     applied.keys.retainAll(xmux.windows.toSet())
     appliedScale.keys.retainAll(xmux.windows.toSet())
+    inheritedSizes.keys.retainAll(xmux.windows.toSet())
     ticks.keys.retainAll(xmux.windows.toSet())
     modes.keys.retainAll(xmux.windows.mapNotNull { it.screen }.toSet())
     publishFullscreen()
@@ -126,8 +168,76 @@ class TerminalWindows(
   /** Saves unsaved changes now (the app may be killed while paused). */
   fun flush() = sync.flush(liveScreens())
 
-  /** The user moved [screen] to [world]; it stays there (relative to the user, if it follows). */
+  /** Apply once its placement is seeded, so cmux persists the copied scale rather than undoing it. */
+  fun inheritSize(window: ScreenWindow, widthM: Float, heightM: Float, scale: Float) {
+    inheritedSizes[window] = InheritedSize(widthM, heightM, scale)
+  }
+
+  /** Place once tracking and the new window are ready; never capture a head pose before the network wait. */
+  fun openInFront(cmuxScreen: String) {
+    openingInFront += cmuxScreen
+  }
+
+  /** The user moved [screen] to [world]; it stays there (relative to the user, if it follows). It stops any glide. */
   fun move(screen: ScreenId, world: Pose) {
+    glide.cancel(screen)
+    place(screen, world)
+  }
+
+  /** Stops [screen]'s Clear path or Bring back glide, leaving it where it is (an edge resize took it). */
+  fun stopGlide(screen: ScreenId) = glide.cancel(screen)
+
+  /**
+   * The left palm menu's Clear path: glides the windows in front of the user out to either side
+   * ([PathClearing]), leaving fullscreen first, and remembers where each was. Once they are aside,
+   * the same item (Bring back) glides each one still open back to where it was, even if it was
+   * dragged in the meantime. Arrange forgets them.
+   */
+  fun togglePath() = if (pathCleared) bringBack() else clearPath()
+
+  private fun clearPath() {
+    val head = head() ?: return
+    sync.edit { it.exitFullscreen() }
+    applyVisibility()
+    aside.clear()
+    // From each window's placement, not its pose this frame: a window that just left fullscreen
+    // is still drawn head-locked.
+    val shown = xmux.windows.filter { it.visible }.mapNotNull { window ->
+      val screen = window.screen ?: return@mapNotNull null
+      val id = idOf(window) ?: return@mapNotNull null
+      val pose = sync.layout.renderPose(id, head, user, window.widthM, window.heightM) ?: window.pose() ?: return@mapNotNull null
+      PathClearing.Window(screen, pose, window.widthM / 2f)
+    }
+    val now = frameMs()
+    for ((screen, target) in PathClearing.aside(head.t, head.forward(), shown)) {
+      val window = windowOf(screen) ?: continue
+      val id = idOf(window) ?: continue
+      val placement = sync.layout.windows[id] ?: continue
+      val from = shown.firstOrNull { it.key == screen }?.pose ?: continue
+      aside[id] = placement
+      glide.start(screen, from, target, head.t, now)
+    }
+    Log.i(TAG, "clear path: ${aside.size} of ${shown.size} shown windows moved aside" +
+      if (aside.isEmpty()) ", none was in the way" else "")
+  }
+
+  private fun bringBack() {
+    val head = head()
+    val now = frameMs()
+    var back = 0
+    for ((id, placement) in aside) {
+      val window = xmux.windows.firstOrNull { idOf(it) == id } ?: continue
+      val screen = window.screen ?: continue
+      val target = placement.worldPose(user ?: head?.t) ?: continue
+      val from = window.pose()
+      if (window.visible && from != null && head != null) glide.start(screen, from, target, head.t, now) else place(screen, target)
+      back++
+    }
+    aside.clear()
+    Log.i(TAG, "bring back: $back windows returned")
+  }
+
+  private fun place(screen: ScreenId, world: Pose) {
     val window = windowOf(screen) ?: return
     val id = idOf(window) ?: return
     sync.edit { it.moved(id, world, user ?: head()?.t) }
@@ -138,6 +248,7 @@ class TerminalWindows(
   /** Lays every shown window out on an arc in front of the user, leaving fullscreen. */
   fun arrange() {
     val head = head() ?: return
+    aside.clear()
     sync.edit { it.exitFullscreen() }
     applyVisibility()
     val windows = xmux.windows.filter { it.visible }
@@ -186,17 +297,20 @@ class TerminalWindows(
       resetUser()
       return null
     }
-    val now = SystemClock.uptimeMillis()
-    val dtS = lastTickMs?.let { (now - it) / 1000f } ?: 0f
-    lastTickMs = now
+    val now = frameTimeNs()
+    val dtS = lastFrameNs?.let { (now - it) / 1e9f } ?: 0f
+    lastFrameNs = now
     return userFollow.update(head.t, dtS).also { user = it }
   }
 
   private fun resetUser() {
     userFollow.reset()
     user = null
-    lastTickMs = null
+    lastFrameNs = null
   }
+
+  /** [frameTimeNs] in milliseconds, the clock glides run on. */
+  private fun frameMs(): Long = frameTimeNs() / 1_000_000L
 
   private fun change(screen: ScreenId, block: (SceneLayout, String) -> SceneLayout) {
     val id = idOf(screen) ?: return
@@ -227,7 +341,7 @@ class TerminalWindows(
   }
 
   /**
-   * New cmux screens get their saved placement, else the next free slot on the arc. Mounting waits
+   * Quick-action screens open in front; other screens get their saved placement or next arc slot. Mounting waits
    * (up to [LOAD_WAIT_MS]) for cmux's layout, so restored windows appear in place rather than jump.
    */
   private fun mountNewScreens(session: XmuxSession, head: Pose?, user: Vector3?) {
@@ -243,13 +357,19 @@ class TerminalWindows(
       val height = xmux.spec.heightM
       val saved = sync.layout.renderPose(screen.cmuxId, head, user, width, height)
       val placement = when {
+        screen.cmuxId in openingInFront && head != null -> Placement.Fixed(WindowLayout.inFrontOfHead(head, distanceM()))
         saved != null -> Placement.Fixed(saved)
         head != null -> Placement.Fixed(WindowLayout.arc(head, shown.size + index, screens.size, width, height,
           distanceM().coerceAtLeast(width / 2f + 0.1f)))
         else -> Placement.InFrontOfHead
       }
       xmux.mount(session, screen.id, placement, chrome(screen.id))
-      Log.i(TAG, "mounted screen ${screen.cmuxId} ${if (saved != null) "at its cmux placement" else "in a new slot"}")
+      val location = when {
+        screen.cmuxId in openingInFront -> "in front of the current head pose"
+        saved != null -> "at its cmux placement"
+        else -> "in a new slot"
+      }
+      Log.i(TAG, "mounted screen ${screen.cmuxId} $location")
     }
   }
 

@@ -58,6 +58,17 @@ class SettingsSyncTest {
     assertTrue(AiThinking.Below.agent)
   }
 
+  @Test fun pinchDragIsOnThePointerTabAndScrollsByDefault() {
+    assertEquals("scroll", SettingsSync.values(AppSettings())["pinch_drag"])
+    val customization = (SettingsSync.schema()["pages"] as List<*>).map { it as Map<*, *> }.single { it["title"] == SettingsPage.Customization.title }
+    val section = (customization["sections"] as List<*>).map { it as Map<*, *> }.single { it["title"] == PINCH_DRAG_TITLE }
+    assertEquals(CustomizationTab.Pointer.name, section["tab"])
+    val choice = (section["items"] as List<*>).map { it as Map<*, *> }.single { it["key"] == "pinch_drag" }
+    assertEquals(listOf("scroll", "select"), (choice["options"] as List<*>).map { (it as Map<*, *>)["value"] })
+    assertEquals(PinchDrag.Select, SettingsSync.apply(AppSettings(), mapOf("pinch_drag" to "select")).pinchDrag)
+    assertEquals(PinchDrag.Scroll, SettingsSync.apply(AppSettings(), mapOf("pinch_drag" to "swipe")).pinchDrag)
+  }
+
   @Test fun everyOfferedValueAppliesAndRoundTrips() {
     val base = AppSettings()
     for (item in items()) {
@@ -76,7 +87,7 @@ class SettingsSyncTest {
     }
     val custom = AppSettings(passthrough = false, terminalTheme = TerminalTheme.Nord, aiProvider = AiProvider.Gemini,
       claudeModel = AiModel.ClaudeFable, geminiModel = AiModel.GeminiFlashLite,
-      defaultTerminalSize = TerminalSize(100, 48), pointerCursorSize = 1.5f, windowOpacity = 0.55f)
+      defaultTerminalSize = TerminalSize(100, 48), pointerCursorSize = 1.5f, windowOpacity = 0.55f, pinchDrag = PinchDrag.Select)
     assertEquals(custom, SettingsSync.apply(AppSettings(), SettingsSync.values(custom)))
   }
 
