@@ -1,10 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(vrcode_hand_menu LANGUAGES CXX)
 find_package(OpenXR REQUIRED CONFIG)
-add_library(vrcode-hand-menu SHARED left_palm_menu.cpp)
-target_compile_definitions(vrcode-hand-menu PRIVATE XR_NO_PROTOTYPES)
-target_compile_options(vrcode-hand-menu PRIVATE -Wall -Wextra -Werror)
-target_link_libraries(vrcode-hand-menu PRIVATE OpenXR::headers log)
 
 add_library(vrcode-boundary SHARED boundary_visibility.cpp)
 target_compile_definitions(vrcode-boundary PRIVATE XR_NO_PROTOTYPES)

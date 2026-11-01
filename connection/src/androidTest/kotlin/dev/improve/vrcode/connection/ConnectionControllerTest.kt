@@ -58,6 +58,42 @@ class ConnectionControllerTest {
     }
   }
 
+  @Test fun unreachableMacAsksForTheMacAppAndKeepsRetrying() {
+    // A paired profile whose route has nothing listening (no USB reverse mapping on this device).
+    val profile = ConnectionProfile(mode = ConnectionMode.USB, fingerprint = "0".repeat(64),
+      token = android.util.Base64.encodeToString(ByteArray(32), android.util.Base64.NO_WRAP), name = "Test Mac")
+    var connected = false
+    compose.runOnUiThread {
+      controller = ConnectionController(compose.activity, scope, { _, _ -> connected = true }, { })
+      controller!!.update(profile)
+      controller!!.connect()
+    }
+    compose.waitUntil(15000) { controller!!.status.value.attention }
+    compose.runOnIdle {
+      val status = controller!!.status.value
+      assertFalse(connected)
+      assertEquals("Make sure the VRcode Mac app is running", status.title)
+      assertTrue(status.detail.contains("Open VRcode Mac on Test Mac"))
+      assertTrue("Retries continue so the Quest connects when the app starts", status.busy)
+    }
+    // The message stays on screen through the next retry instead of flickering to "Connecting…".
+    Thread.sleep(2500)
+    compose.runOnIdle { assertEquals("Make sure the VRcode Mac app is running", controller!!.status.value.title) }
+  }
+
+  @Test fun failureMessagesNameTheFix() {
+    val wrongKey = failureStatus("Mac", automatic = true, failures = listOf("Local Wi-Fi: Mac did not authorize this connection key."),
+      identity = true, missingWifi = false, missingNetwork = false)
+    assertEquals("Your Mac's connection key has changed", wrongKey.title)
+    val noWifi = failureStatus("Mac", automatic = true, failures = listOf("Local Wi-Fi: Join the selected Wi-Fi network on the Quest first.", "USB: refused"),
+      identity = false, missingWifi = true, missingNetwork = true)
+    assertEquals("Connect the Quest to Wi-Fi", noWifi.title)
+    val down = failureStatus("Mac", automatic = true, failures = listOf("Local Wi-Fi: 10.0.0.2: ECONNREFUSED"),
+      identity = false, missingWifi = false, missingNetwork = false)
+    assertEquals("Make sure the VRcode Mac app is running", down.title)
+    assertTrue(listOf(wrongKey, noWifi, down).all { it.attention && it.busy })
+  }
+
   @Test fun panDoesNotClaimWifiAsBluetooth() {
     val profile = profile().copy(mode = ConnectionMode.BluetoothPAN)
     var connected = false

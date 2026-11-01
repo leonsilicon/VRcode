@@ -30,7 +30,8 @@ android {
 // Package only runtime GLBs; keep source .blend files and review renders out of the APK.
 val prepareVoicePropAssets by tasks.registering(Sync::class) {
   from(rootProject.file("assets/microphone")) { include("microphone.glb") }
-  from(rootProject.file("assets/voice-props")) { include("news-microphone.glb", "megaphone.glb", "banana.glb") }
+  // One news microphone per AI provider's logo (see scripts/brand-news-mic.ts).
+  from(rootProject.file("assets/voice-props")) { include("news-microphone-*.glb", "megaphone.glb", "banana.glb") }
   into(layout.buildDirectory.dir("generated/voice-prop-assets/voice-props"))
 }
 android.sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/voice-prop-assets"))
@@ -48,5 +49,7 @@ dependencies {
   // Headers only: the Spatial SDK owns the OpenXR loader and instance.
   compileOnly("org.khronos.openxr:openxr_loader_for_android:1.1.65")
   testImplementation("junit:junit:4.13.2")
+  // The real org.json, in place of android.jar's stubs, for the cmux layout codec tests.
+  testImplementation("org.json:json:20240303")
 }
 

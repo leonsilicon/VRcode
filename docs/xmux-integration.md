@@ -117,6 +117,64 @@ the additional `patches/xmux-terminal-appearance.patch` for render-only color ov
 font sizing. See [terminal appearance](terminal-appearance.md) for patch setup, bundled theme
 sources, behavior, and verification.
 
+## Window visibility (2026-11-01)
+
+Working minimize and fullscreen controls also require `patches/xmux-window-visibility.patch`,
+applied after the header and terminal-appearance patches:
+
+```sh
+git -C ../../leonsilicon/xmux apply "$(pwd)/patches/xmux-window-visibility.patch"
+```
+
+`ScreenWindow.setVisible(false)` retains the mounted screen and stream while disabling its scene
+visibility, SDK hit target, geometric ray hits, focus and terminal input (including stale Android
+keyboard/IME callbacks). Visibility survives a panel respawn after topology or font changes.
+VRcode uses it for minimized windows and for the other windows while one is fullscreen. The dock
+continues listing all mounted screens. Close uses the Mac control service's explicit `screen.close`
+operation instead; see [window controls](settings.md).
+
+## Window resize (2026-11-01)
+
+Pulling a terminal window's corner changes how many columns and rows its terminals have in cmux.
+The panel doesn't stretch. Widen a window running Claude Code and Claude Code gets more columns;
+make it taller and it gets more rows. The window side is in xmux itself, since
+[`f8a216b`](https://github.com/ImproveLabs/xmux/commit/f8a216b) on `main`, so no patch is needed.
+The other patches in `patches/` are based on that commit.
+
+How it works:
+
+1. With `SpatialConfig(resizeGrids = true)`, cmux screen windows use ISDK `ResizeMode.Relayout`
+   with a free aspect ratio. While dragging, the corner reveals or crops the panel; on release, ISDK
+   gives the panel new pixels at the same density.
+2. xmux sees the screen view laid out at the new size and fits the screen's panes to it
+   (`ScreenLayoutEngine.fit`: split panes keep their share, every pane is rounded down to whole
+   cells, minimum 10×3). Every tab of a pane gets the pane's size.
+3. `XmuxSpatial.onGridResize(window, sizes)` gets the grids that change. VRcode
+   (`cmux/TerminalGridSizing.kt`) pins each one in cmux through the Mac service
+   (`vrcode.terminal.size.set`, see the [protocol](vrcode-protocol.md)). The fixed policy holds the
+   size against other viewers, such as the Mac's cmux TUI, which crops or pans instead. Without
+   the service, VRcode falls back to xmux's viewer report (`TerminalHandle.resize`), which an
+   attached Mac frontend can outvote under cmux's default "fit everyone" policy.
+4. When the new grids arrive, xmux re-creates the panel at their size, keeping its pose. If no
+   grid changes within 3 s, or the drag was less than a cell, the panel snaps back to its grids.
+
+The size lives in cmux, not on the Quest, so it persists across Quest restarts and isn't saved
+with the layout. It lasts until the cmux daemon restarts, or until
+`vrcode.terminal.size.set {"terminal": …}` clears it. Debug builds can resize without hands:
+`adb shell am broadcast -a dev.improve.vrcode.RESIZE --ef sw 1.5 --ef sh 1` resizes the focused
+window (`--es screen <cmux screen id>` picks another). Add `--ez panel true` to resize the panel's
+pixels the way ISDK does at the end of a drag.
+
+Verified 2026-11-01 on the Quest 3 against cmux `main`, using a temporary screen:
+
+- Through the viewer fallback, a resize to 2×0.6 of the window took the terminal from 40×50 to
+  81×29, and the window re-spawned at 1.012×0.848 m.
+- Through the Mac service, a resize to 1.3×1.25 pinned 105×36, and cmux's size state followed.
+
+`bun test scripts/tests/cmux-integration.test.ts` checks that the pin outlasts a competing viewer's
+report and that clearing it returns the grid to that viewer. A corner drag by hand has not been
+tested yet.
+
 ## Notes for the day
 
 - cmux was not running on the Mac on 2026-10-31; start it (session `main`) before `vpr bridge:serve`,

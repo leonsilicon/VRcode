@@ -23,6 +23,27 @@ import java.io.File
 class SettingsPanelTest {
   @get:Rule val compose = createComposeRule()
 
+  @Test fun micPreferencesMigrateAndRejectUnknownPropsPerMode() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val preferences = context.getSharedPreferences("mic-migration-test", Context.MODE_PRIVATE)
+    val store = SettingsStore(preferences)
+    for (legacy in listOf(null, "microphone", "boombox", "banana", "removed-prop")) {
+      preferences.edit().clear().putString("voice_prop", legacy).commit()
+      val settings = store.load()
+      assertEquals(VoiceProp.Microphone, settings.textMicProp)
+      assertEquals(if (legacy == "banana") VoiceProp.Banana else VoiceProp.NewsMicrophone, settings.aiMicProp)
+    }
+    preferences.edit().clear().putString("voice_prop", "banana")
+      .putString("text_mic_prop", "removed-prop").putString("ai_mic_prop", "removed-prop").commit()
+    assertEquals(VoiceProp.Microphone, store.load().textMicProp)
+    assertEquals(VoiceProp.NewsMicrophone, store.load().aiMicProp)
+    store.save(AppSettings(textMicProp = VoiceProp.Megaphone, aiMicProp = VoiceProp.Microphone))
+    assertFalse(preferences.contains("voice_prop"))
+    assertEquals(VoiceProp.Megaphone, store.load().textMicProp)
+    assertEquals(VoiceProp.Microphone, store.load().aiMicProp)
+    preferences.edit().clear().commit()
+  }
+
   @Test fun newWindowModeSelectsPersistsReloadsAndRestores() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     val preferences = context.getSharedPreferences("window-mode-settings-test", Context.MODE_PRIVATE)
@@ -78,39 +99,70 @@ class SettingsPanelTest {
     compose.onNodeWithTag("settings-customization-tab-Pointer").assertIsSelected()
     compose.onNodeWithTag("settings-pointer-arrow").assertIsDisplayed()
     compose.onNodeWithTag("settings-voice-prop-microphone").assertDoesNotExist()
-    compose.onNodeWithTag("settings-customization-tab-Microphone").performClick().assertIsSelected()
-    compose.onNodeWithTag("settings-pointer-arrow").assertDoesNotExist()
-    for (prop in VoiceProp.entries) {
-      compose.onNodeWithTag("settings-voice-prop-${prop.storageValue}")
-        .performScrollTo().assertIsDisplayed().performClick().assertIsSelected()
-      compose.runOnIdle { assertEquals(prop, SettingsStore(preferences).load().voiceProp) }
-      for (other in VoiceProp.entries.filter { it != prop }) {
-        compose.onNodeWithTag("settings-voice-prop-${other.storageValue}").assertIsNotSelected()
+    compose.onNodeWithTag("settings-customization-tab-TextMic").performClick().assertIsSelected()
+    compose.onNodeWithTag("settings-voice-prop-microphone").assertIsSelected()
+    compose.onNodeWithText("Text mic · Right hand").assertIsDisplayed()
+    compose.onNodeWithTag("settings-customization-tab-AiMic").performClick().assertIsSelected()
+    compose.onNodeWithTag("settings-voice-prop-news-microphone").assertIsSelected()
+    compose.onNodeWithText("AI mic · Left hand").assertIsDisplayed()
+    for (mic in VoiceMic.entries) {
+      val tab = if (mic == VoiceMic.Text) "TextMic" else "AiMic"
+      compose.onNodeWithTag("settings-customization-tab-$tab").performClick()
+      for (prop in VoiceProp.entries) {
+        compose.onNodeWithTag("settings-voice-prop-${prop.storageValue}")
+          .performScrollTo().assertIsDisplayed().performClick().assertIsSelected()
+        compose.runOnIdle { assertEquals(prop, mic.prop(SettingsStore(preferences).load())) }
+        for (other in VoiceProp.entries.filter { it != prop }) {
+          compose.onNodeWithTag("settings-voice-prop-${other.storageValue}").assertIsNotSelected()
+        }
       }
     }
+    // Choose different props and verify independence across tabs, pages and recreation.
     compose.onNodeWithTag("settings-voice-prop-news-microphone").performScrollTo().performClick()
+    compose.onNodeWithTag("settings-customization-tab-TextMic").performClick()
+    compose.onNodeWithTag("settings-voice-prop-banana").performScrollTo().assertIsSelected()
+    compose.onNodeWithTag("settings-voice-prop-megaphone").performScrollTo().performClick()
     compose.onNodeWithTag("settings-page-Workspace").performClick()
     compose.onNodeWithTag("settings-customization-tabs").assertDoesNotExist()
     compose.onNodeWithTag("settings-page-Customization").performClick()
-    compose.onNodeWithTag("settings-customization-tab-Microphone").assertIsSelected()
-    compose.onNodeWithTag("settings-voice-prop-news-microphone").assertIsSelected()
-    // Recreate all remembered UI state and reload from a fresh SettingsStore.
+    compose.onNodeWithTag("settings-customization-tab-TextMic").assertIsSelected()
+    compose.onNodeWithTag("settings-voice-prop-megaphone").performScrollTo().assertIsSelected()
     compose.runOnIdle { generation++ }
-    compose.onNodeWithTag("settings-customization-tab-Microphone").performClick()
+    compose.onNodeWithTag("settings-customization-tab-TextMic").performClick()
+    compose.onNodeWithTag("settings-voice-prop-megaphone").performScrollTo().assertIsSelected()
+    capture(context, "settings-text-mic.png")
+    compose.onNodeWithTag("settings-ai-provider-claude").assertDoesNotExist() // only the AI mic has a provider
+    compose.onNodeWithTag("settings-customization-tab-AiMic").assertIsDisplayed().performClick()
     compose.onNodeWithTag("settings-voice-prop-news-microphone").assertIsSelected()
-    compose.onNodeWithTag("settings-voice-prop-banana").performScrollTo()
+    // The AI provider defaults to Claude; each choice saves and is exclusive.
+    compose.onNodeWithTag("settings-ai-provider-claude").performScrollTo().assertIsSelected()
+    for (provider in AiProvider.entries.reversed()) {
+      compose.onNodeWithTag("settings-ai-provider-${provider.storageValue}").performScrollTo().performClick().assertIsSelected()
+      compose.runOnIdle { assertEquals(provider, SettingsStore(preferences).load().aiProvider) }
+      for (other in AiProvider.entries.filter { it != provider }) {
+        compose.onNodeWithTag("settings-ai-provider-${other.storageValue}").assertIsNotSelected()
+      }
+    }
+    compose.onNodeWithTag("settings-ai-provider-gemini").performScrollTo().performClick()
+    compose.onNodeWithText("Your Mac sends what you say to Gemini", substring = true).assertExists()
+    capture(context, "settings-ai-provider-gemini.png")
+    compose.onNodeWithTag("settings-ai-provider-claude").performScrollTo().performClick()
+    compose.onNodeWithTag("settings-voice-prop-news-microphone").performScrollTo()
     capture(context, "settings-customization.png")
-    // The tab bar stays reachable after scrolling the content. Switching resets the new view.
-    compose.onNodeWithTag("settings-customization-tab-Pointer").assertIsDisplayed().performClick()
+    compose.onNodeWithTag("settings-customization-tab-Pointer").performClick()
     compose.onNodeWithTag("settings-pointer-arrow").assertIsDisplayed()
     compose.onNodeWithTag("settings-voice-prop-news-microphone").assertDoesNotExist()
-    compose.onNodeWithTag("settings-customization-tab-Microphone").performClick()
-    compose.onAllNodesWithText("Microphone").assertCountEquals(2)
     compose.onNodeWithTag("settings-page-Workspace").performClick()
     compose.onNodeWithTag("settings-defaults").performScrollTo().performClick()
-    compose.runOnIdle { assertEquals(VoiceProp.Microphone, SettingsStore(preferences).load().voiceProp) }
+    compose.runOnIdle {
+      assertEquals(VoiceProp.Microphone, SettingsStore(preferences).load().textMicProp)
+      assertEquals(VoiceProp.NewsMicrophone, SettingsStore(preferences).load().aiMicProp)
+    }
     compose.onNodeWithTag("settings-page-Customization").performClick()
+    compose.onNodeWithTag("settings-customization-tab-TextMic").performClick()
     compose.onNodeWithTag("settings-voice-prop-microphone").assertIsSelected()
+    compose.onNodeWithTag("settings-customization-tab-AiMic").performClick()
+    compose.onNodeWithTag("settings-voice-prop-news-microphone").assertIsSelected()
     preferences.edit().clear().commit()
   }
 

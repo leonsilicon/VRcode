@@ -121,6 +121,8 @@ fun SettingsPanel(
                     Text("Your space", style = MaterialTheme.typography.headlineSmall)
                     SettingSwitch("Passthrough", "See your room behind the windows.", settings.passthrough, "settings-passthrough") { onChange(settings.copy(passthrough = it)) }
                     HorizontalDivider()
+                    TerminalSizeControls(settings.defaultTerminalSize) { onChange(settings.copy(defaultTerminalSize = it)) }
+                    HorizontalDivider()
                     Text("Terminal placement", style = MaterialTheme.typography.titleLarge)
                     Text("New window behavior", style = MaterialTheme.typography.titleMedium)
                     Column(Modifier.fillMaxWidth().selectableGroup()) {
@@ -202,12 +204,22 @@ private fun MicrophoneControls(mic: VoiceMic, settings: AppSettings, onChange: (
   Text("${mic.label} · ${mic.hand.replaceFirstChar { it.uppercase() }} hand", style = MaterialTheme.typography.headlineSmall)
   Text(mic.detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
   Text("Hold up your ${mic.hand} hand to preview. Previewing does not record audio.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+  if (mic == VoiceMic.Ai) {
+    Text("AI provider", style = MaterialTheme.typography.titleLarge)
+    Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+      for (provider in AiProvider.entries) {
+        AiProviderOption(provider, settings.aiProvider == provider, Modifier.weight(1f)) { onChange(settings.copy(aiProvider = provider)) }
+      }
+    }
+    Text("Your Mac sends what you say to ${settings.aiProvider.label}. Add its API key in VRcode Mac on the Mac. The news microphone shows its logo.",
+      style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+  }
   Text("Mic appearance", style = MaterialTheme.typography.titleLarge)
   Column(Modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
     for (row in VoiceProp.entries.chunked(2)) {
       Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         for (prop in row) {
-          VoicePropOption(prop, mic.prop(settings) == prop, Modifier.weight(1f)) {
+          VoicePropOption(prop, settings.aiProvider, mic.prop(settings) == prop, Modifier.weight(1f)) {
             onChange(mic.withProp(settings, prop))
           }
         }
@@ -218,7 +230,30 @@ private fun MicrophoneControls(mic: VoiceMic, settings: AppSettings, onChange: (
 }
 
 @Composable
-private fun VoicePropOption(prop: VoiceProp, selected: Boolean, modifier: Modifier, onSelect: () -> Unit) {
+private fun AiProviderOption(provider: AiProvider, selected: Boolean, modifier: Modifier, onSelect: () -> Unit) {
+  Surface(
+    modifier,
+    shape = RoundedCornerShape(16.dp),
+    color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+    border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+  ) {
+    Row(
+      Modifier.testTag("settings-ai-provider-${provider.storageValue}")
+        .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect).padding(12.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Image(painterResource(provider.logo), contentDescription = null, modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)))
+      Column(Modifier.padding(start = 12.dp).weight(1f)) {
+        Text(provider.label, style = MaterialTheme.typography.titleMedium)
+        Text(provider.company, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      }
+      RadioButton(selected, onClick = null)
+    }
+  }
+}
+
+@Composable
+private fun VoicePropOption(prop: VoiceProp, provider: AiProvider, selected: Boolean, modifier: Modifier, onSelect: () -> Unit) {
   Surface(
     modifier,
     shape = RoundedCornerShape(16.dp),
@@ -230,7 +265,7 @@ private fun VoicePropOption(prop: VoiceProp, selected: Boolean, modifier: Modifi
         .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect).padding(14.dp),
       verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-      Image(painterResource(prop.preview), contentDescription = null,
+      Image(painterResource(prop.preview(provider)), contentDescription = null,
         modifier = Modifier.fillMaxWidth().height(100.dp), contentScale = ContentScale.Fit)
       Row(verticalAlignment = Alignment.CenterVertically) {
         RadioButton(selected, onClick = null)

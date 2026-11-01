@@ -28,6 +28,16 @@ class PieSelectionTest {
   }
 
   @Test
+  fun alongMeasuresHowFarTheHandGoesInAnItemsDirection() {
+    val menu = RadialMenu(4)
+    assertEquals(0.1f, menu.along(0, 0.03f, 0.1f), 1e-6f) // top: up
+    assertEquals(0.03f, menu.along(1, 0.03f, 0.1f), 1e-6f) // right
+    assertEquals(-0.1f, menu.along(2, 0.03f, 0.1f), 1e-6f) // bottom
+    assertEquals(-0.03f, menu.along(3, 0.03f, 0.1f), 1e-6f) // left
+    assertEquals(0.05f * kotlin.math.sqrt(2f), RadialMenu(8).along(1, 0.05f, 0.05f), 1e-6f)
+  }
+
+  @Test
   fun aViewSpacePointAheadLandsInFrontOfTheHeadNotBehindIt() {
     // OpenXR VIEW space looks down -Z; Spatial's scene looks down +Z.
     for (yaw in listOf(0f, 90f, -135f)) {
@@ -54,6 +64,10 @@ class PieSelectionTest {
     assertNull(s.reached)
     s.update(viewToScene(head, floatArrayOf(0.08f, -0.2f, -0.4f)))
     assertEquals(1, s.reached)
+    // A swipe on through the right item is measured along it, not along the others.
+    assertEquals(0.08f, s.along(1), 1e-4f)
+    assertEquals(0f, s.along(0), 1e-4f)
+    assertEquals(-0.08f, s.along(3), 1e-4f)
     s.update(viewToScene(head, floatArrayOf(-0.05f, -0.2f, -0.4f)))
     assertEquals(3, s.highlighted)
     s.update(viewToScene(head, floatArrayOf(0f, -0.15f, -0.4f)))

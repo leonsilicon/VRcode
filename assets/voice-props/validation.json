@@ -24,20 +24,75 @@
     {
       "id": "news-microphone",
       "status": "passed",
-      "bytes": 320908,
-      "triangles": 6800,
-      "primitives": 10,
-      "alphaModes": [
-        "OPAQUE",
-        "OPAQUE",
-        "OPAQUE",
-        "OPAQUE",
-        "OPAQUE"
-      ],
-      "dimensionsM": [
-        0.062300000339746475,
-        0.2800000011920929,
-        0.06199999898672104
+      "base": {
+        "file": "news-microphone.glb",
+        "bytes": 284692,
+        "checks": "GLB structure and size only"
+      },
+      "logos": [
+        {
+          "id": "claude",
+          "file": "news-microphone-claude.glb",
+          "flag": "claude-flag.png",
+          "status": "passed",
+          "bytes": 297160,
+          "triangles": 6216,
+          "primitives": 10,
+          "alphaModes": [
+            "OPAQUE",
+            "OPAQUE",
+            "OPAQUE",
+            "OPAQUE",
+            "OPAQUE"
+          ],
+          "dimensionsM": [
+            0.062300000339746475,
+            0.2800000011920929,
+            0.06199999898672104
+          ]
+        },
+        {
+          "id": "openai",
+          "file": "news-microphone-openai.glb",
+          "flag": "openai-flag.png",
+          "status": "passed",
+          "bytes": 284684,
+          "triangles": 6216,
+          "primitives": 10,
+          "alphaModes": [
+            "OPAQUE",
+            "OPAQUE",
+            "OPAQUE",
+            "OPAQUE",
+            "OPAQUE"
+          ],
+          "dimensionsM": [
+            0.062300000339746475,
+            0.2800000011920929,
+            0.06199999898672104
+          ]
+        },
+        {
+          "id": "gemini",
+          "file": "news-microphone-gemini.glb",
+          "flag": "gemini-flag.png",
+          "status": "passed",
+          "bytes": 300060,
+          "triangles": 6216,
+          "primitives": 10,
+          "alphaModes": [
+            "OPAQUE",
+            "OPAQUE",
+            "OPAQUE",
+            "OPAQUE",
+            "OPAQUE"
+          ],
+          "dimensionsM": [
+            0.062300000339746475,
+            0.2800000011920929,
+            0.06199999898672104
+          ]
+        }
       ]
     },
     {
@@ -77,7 +132,8 @@
     "Normals, UVs and tangents",
     "Grip origin and speech anchors",
     "Dimensions from actual transformed vertices",
-    "Source alpha modes"
+    "Source alpha modes",
+    "Provider logo variants embed their declared flag"
   ],
   "notVerified": [
     "Blender GLB re-import/render",

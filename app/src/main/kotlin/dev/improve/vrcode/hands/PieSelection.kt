@@ -24,13 +24,17 @@ class PieSelection(val menu: RadialMenu) {
   var highlighted: Int? = null
     private set
 
-  /** The highlighted item once the hand reaches it; eligible for hover dwell. */
+  /** The highlighted item once the hand reaches it: its hover begins ([MenuDwell]). */
   var reached: Int? = null
     private set
 
   /** How far the hand has moved from [center] in the menu's plane, in metres. */
   var distanceM = 0f
     private set
+
+  /** The hand's last displacement from [center] in the menu's plane, in metres. */
+  private var rightM = 0f
+  private var upM = 0f
 
   fun open(at: Vector3, head: Pose) {
     val toward = at - head.t
@@ -48,6 +52,8 @@ class PieSelection(val menu: RadialMenu) {
     highlighted = null
     reached = null
     distanceM = 0f
+    rightM = 0f
+    upM = 0f
   }
 
   /** Feeds the pinch point's scene position while the menu is open. */
@@ -56,16 +62,23 @@ class PieSelection(val menu: RadialMenu) {
     val d = point - c
     val r = d.dot(right)
     val u = d.dot(up)
+    rightM = r
+    upM = u
     distanceM = kotlin.math.sqrt(r * r + u * u)
     highlighted = menu.pick(r, u)
     reached = highlighted?.takeIf { menu.reached(r, u) }
   }
+
+  /** How far the hand has gone in [item]'s direction from [center], in metres: a swipe through it. */
+  fun along(item: Int): Float = menu.along(item, rightM, upM)
 
   fun close() {
     center = null
     highlighted = null
     reached = null
     distanceM = 0f
+    rightM = 0f
+    upM = 0f
   }
 }
 

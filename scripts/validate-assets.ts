@@ -8,13 +8,15 @@ type Vec3 = [number, number, number];
 type Prop = {
   id: string; file: string; gripNode: string; speechAnchorNode: string; speechAnchorM: number[];
   dimensionsM: number[]; triangles: number; materials: number; bytes: number;
+  /** Per-AI-provider copies of this prop that differ only by their embedded flag image. */
+  logos?: Record<string, { file: string; flag: string; bytes: number }>;
 };
 type Accessor = { bufferView: number; byteOffset?: number; componentType: number; count: number; type: string; sparse?: unknown };
 type Node = { name?: string; mesh?: number; children?: number[]; matrix?: number[]; translation?: number[]; rotation?: number[]; scale?: number[] };
 type GLTF = {
   asset: { version: string }; scene?: number; scenes: { nodes: number[] }[]; nodes: Node[];
   buffers: { byteLength: number; uri?: string }[]; bufferViews: { buffer: number; byteOffset?: number; byteLength: number; byteStride?: number }[];
-  images?: { uri?: string; bufferView?: number; mimeType?: string }[]; accessors: Accessor[];
+  images?: { uri?: string; bufferView?: number; mimeType?: string; name?: string }[]; accessors: Accessor[];
   meshes: { primitives: { indices: number; attributes: Record<string, number>; mode?: number; material?: number }[] }[];
   materials: { alphaMode?: string }[]; extensionsRequired?: string[]; cameras?: unknown[]; animations?: unknown[]; skins?: unknown[];
 };
@@ -144,12 +146,46 @@ export async function validateProp(item: Prop, directory = resolve(repoRoot, "as
   return { id: item.id, status: "passed", bytes: raw.length, triangles, primitives, alphaModes, dimensionsM: dimensions };
 }
 
+/** Validates each logo file against its parent's contract, with the logo's own size, and checks it embeds its flag. */
+export async function validateLogos(item: Prop, directory = resolve(repoRoot, "assets/voice-props")) {
+  return Promise.all(Object.entries(item.logos ?? {}).map(async ([id, logo]) => {
+    try {
+      const result = await validateProp({ ...item, id, file: logo.file, bytes: logo.bytes }, directory);
+      const { data, binary } = parseGLB(Buffer.from(await Bun.file(resolve(directory, logo.file)).arrayBuffer()));
+      const flags = (data.images ?? []).filter((image) => image.name === "Provider flag");
+      assert.equal(flags.length, 1, "One provider flag image");
+      const view = data.bufferViews[flags[0].bufferView!];
+      const embedded = binary.subarray(view.byteOffset ?? 0, (view.byteOffset ?? 0) + view.byteLength);
+      assert(embedded.equals(Buffer.from(await Bun.file(resolve(directory, logo.flag)).arrayBuffer())), "Embedded flag matches its PNG");
+      return { id, file: logo.file, flag: logo.flag, ...result };
+    } catch (error) {
+      throw new Error(`${item.id} logo ${id}: ${(error as Error).message}`);
+    }
+  }));
+}
+
+/**
+ * Validates a catalog entry. An entry with `logos` ships only its logo variants: its own file is the
+ * branding input (possibly a fresh Blender export with NEWS lettering), so it gets a structural check only.
+ */
+export async function validateVariant(item: Prop, directory = resolve(repoRoot, "assets/voice-props")) {
+  if (!item.logos) return validateProp(item, directory);
+  const raw = Buffer.from(await Bun.file(resolve(directory, item.file)).arrayBuffer());
+  try {
+    parseGLB(raw);
+    assert.equal(raw.length, item.bytes, "Catalog file size");
+  } catch (error) {
+    throw new Error(`${item.id} base ${item.file}: ${(error as Error).message}`);
+  }
+  return { id: item.id, status: "passed", base: { file: item.file, bytes: raw.length, checks: "GLB structure and size only" }, logos: await validateLogos(item, directory) };
+}
+
 export async function validateAssets() {
   const catalog = await Bun.file(resolve(repoRoot, "assets/voice-props/catalog.json")).json() as { variants: Prop[] };
   return {
     status: "passed", runtime: `Bun ${Bun.version}`,
-    variants: await Promise.all(catalog.variants.map((item) => validateProp(item))),
-    checks: ["GLB structure and embedded buffers/textures", "Triangle and material counts", "Normals, UVs and tangents", "Grip origin and speech anchors", "Dimensions from actual transformed vertices", "Source alpha modes"],
+    variants: await Promise.all(catalog.variants.map((item) => validateVariant(item))),
+    checks: ["GLB structure and embedded buffers/textures", "Triangle and material counts", "Normals, UVs and tangents", "Grip origin and speech anchors", "Dimensions from actual transformed vertices", "Source alpha modes", "Provider logo variants embed their declared flag"],
     notVerified: ["Blender GLB re-import/render", "Mesh manifoldness and winding", "Quest runtime, hand fit and frame time"],
   };
 }

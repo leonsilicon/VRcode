@@ -1,0 +1,172 @@
+diff --git a/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api b/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
+index 4e984ee..14d0b8b 100644
+--- a/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
++++ b/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
+@@ -86,10 +86,12 @@ public final class dev/improve/xmux/spatial/ScreenWindow {
+ 	public final fun getSession ()Ldev/improve/xmux/client/XmuxSession;
+ 	public final fun getState ()Ldev/improve/xmux/window/frame/TerminalWindowState;
+ 	public final fun getView ()Ldev/improve/xmux/terminal/grid/TerminalGridView;
++	public final fun getVisible ()Z
+ 	public final fun isLayer ()Z
+ 	public final fun pose ()Lcom/meta/spatial/core/Pose;
+ 	public final fun refreshIfDirty ()V
+ 	public final fun setPose (Lcom/meta/spatial/core/Pose;)V
++	public final fun setVisible (Z)V
+ }
+ 
+ public final class dev/improve/xmux/spatial/SpatialConfig {
+diff --git a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt
+index 86f92a6..f6fe403 100644
+--- a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt
++++ b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt
+@@ -30,6 +30,7 @@ internal class ScreenBinding(
+   private val onFocus: () -> Unit,
+ ) : ScreenView.Listener {
+   val state = TerminalWindowState("")
++  var inputEnabled = true
+   var view: ScreenView? = null
+     set(value) {
+       field = value
+@@ -130,7 +131,7 @@ internal class ScreenBinding(
+     session.focusPane(pane)
+   }
+ 
+-  private fun focusedTerminal(): TerminalHandle? = focusedTerminalId()?.let { session.terminal(it) }
++  private fun focusedTerminal(): TerminalHandle? = if (inputEnabled) focusedTerminalId()?.let { session.terminal(it) } else null
+ 
+   fun key(event: KeyEvent): Boolean {
+     val input = KeyEncoder.encode(event) ?: return false
+@@ -140,6 +141,7 @@ internal class ScreenBinding(
+   }
+ 
+   override fun onPointer(hit: ScreenView.Hit, action: Int) {
++    if (!inputEnabled) return
+     if (action == MotionEvent.ACTION_DOWN) {
+       onFocus()
+       focusPane(PaneId(hit.pane))
+@@ -162,11 +164,13 @@ internal class ScreenBinding(
+   override fun onKey(event: KeyEvent): Boolean = key(event)
+ 
+   private fun paneTerminal(pane: Int): TerminalHandle? {
++    if (!inputEnabled) return null
+     val s = session.topology.value.screen(screen) ?: return null
+     return s.panes.firstOrNull { it.id.value == pane }?.activeTerminal?.let { session.terminal(it) }
+   }
+ 
+   override fun onTab(pane: Int, index: Int) {
++    if (!inputEnabled) return
+     onFocus()
+     val tab = session.topology.value.screen(screen)?.panes?.firstOrNull { it.id.value == pane }?.tabs?.getOrNull(index) ?: return
+     session.focusTab(tab.id)
+diff --git a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
+index 749bb56..a30e6b7 100644
+--- a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
++++ b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
+@@ -33,6 +33,9 @@ import com.meta.spatial.toolkit.PanelRenderMode
+ import com.meta.spatial.toolkit.PanelStyleOptions
+ import com.meta.spatial.toolkit.QuadShapeOptions
+ import com.meta.spatial.toolkit.Transform
++import com.meta.spatial.toolkit.Visible
++import com.meta.spatial.toolkit.Hittable
++import com.meta.spatial.toolkit.MeshCollision
+ import com.meta.spatial.toolkit.UIPanelRenderOptions
+ import com.meta.spatial.toolkit.UIPanelSettings
+ import com.meta.spatial.vr.VRFeature
+@@ -92,6 +95,19 @@ public class ScreenWindow internal constructor(
+   /** The body a snap-back already answered, so a layout quirk cannot respawn the panel forever. */
+   internal var snappedBody: PxSize? = null
+ 
++  /** Hidden windows stay mounted and subscribed, but cannot receive focus, rays or keys. */
++  public var visible: Boolean = true
++    private set
++
++  public fun setVisible(value: Boolean) {
++    if (visible == value) return
++    visible = value
++    binding?.inputEnabled = value
++    if (!value) screenView?.clearFocus()
++    entity?.setComponent(Visible(value))
++    entity?.setComponent(Hittable(if (value) MeshCollision.LineTest else MeshCollision.NoCollision))
++  }
++
+   public val state: TerminalWindowState get() = content?.state ?: binding!!.state
+   public val session: XmuxSession? get() = binding?.session
+ 
+@@ -189,6 +205,7 @@ public class XmuxSpatial(
+ 
+   /** The window that last got a tap; keyboard input goes to its focused pane. */
+   public var focused: ScreenWindow? = null
++    get() = field?.takeIf { it.visible && it in mounted }
+     private set
+ 
+   /** Default features; a host that already supplies VRFeature/ComposeFeature can skip this. */
+@@ -256,7 +273,7 @@ public class XmuxSpatial(
+   ): ScreenWindow {
+     val index = mounted.size
+     lateinit var window: ScreenWindow
+-    val binding = ScreenBinding(session, screen, font, terminals) { focused = window }
++    val binding = ScreenBinding(session, screen, font, terminals) { if (window.visible) focused = window }
+     binding.tick()
+     window = ScreenWindow(index, null, screen, index < config.maxLayers, binding, specFor(binding, chrome), chrome)
+     window.pending = placement
+@@ -300,6 +317,7 @@ public class XmuxSpatial(
+     var best: WindowHit? = null
+     var bestDistance = maxDistanceM
+     for (w in mounted) {
++      if (!w.visible) continue
+       val entity = w.entity ?: continue
+       val pose = entity.tryGetComponent<Transform>()?.transform ?: continue
+       val size = entity.tryGetComponent<IsdkPanelDimensions>()?.dimensions
+@@ -313,7 +331,7 @@ public class XmuxSpatial(
+ 
+   /** The window and cell for a [HitInfo] from your own raycast or panel input listener, if it is on an xmux window. */
+   public fun hitTest(hit: HitInfo): WindowHit? {
+-    val window = mounted.firstOrNull { it.entity != null && it.entity == hit.entity } ?: return null
++    val window = mounted.firstOrNull { it.visible && it.entity != null && it.entity == hit.entity } ?: return null
+     val uv = hit.textureCoordinate
+     return window.hitAt(uv.x, uv.y, hit.point)
+   }
+@@ -324,6 +342,7 @@ public class XmuxSpatial(
+    */
+   public fun focus(window: ScreenWindow, pane: PaneId? = null) {
+     require(window in mounted) { "window is not mounted" }
++    if (!window.visible) return
+     focused = window
+     if (pane != null) window.binding?.focusPane(pane)
+   }
+@@ -333,7 +352,7 @@ public class XmuxSpatial(
+    * screen window when nothing has been focused yet. Write text or keys to it directly.
+    */
+   public fun focusedTerminal(): TerminalHandle? {
+-    val window = focused?.takeIf { it.binding != null } ?: mounted.firstOrNull { it.binding != null } ?: return null
++    val window = focused?.takeIf { it.visible && it.binding != null } ?: mounted.firstOrNull { it.visible && it.binding != null } ?: return null
+     val id = window.focusedTerminal ?: return null
+     return window.session?.terminal(id)
+   }
+@@ -342,7 +361,7 @@ public class XmuxSpatial(
+     window.entity?.destroy()
+     window.entity = null
+     window.binding?.dispose()
+-    if (focused === window) focused = null
++    if (focused === window || focused == null) focused = null
+     mounted.remove(window)
+   }
+ 
+@@ -352,7 +371,7 @@ public class XmuxSpatial(
+    */
+   public fun dispatchKeyEvent(event: KeyEvent): Boolean {
+     if (event.action != KeyEvent.ACTION_DOWN) return false
+-    val window = focused ?: mounted.firstOrNull { it.binding != null } ?: return false
++    val window = focused?.takeIf { it.visible } ?: mounted.firstOrNull { it.visible && it.binding != null } ?: return false
+     return window.binding?.key(event) ?: false
+   }
+ 
+@@ -441,6 +460,8 @@ public class XmuxSpatial(
+       Entity.create(
+         listOf(
+           Panel(registrationId),
++          Visible(window.visible),
++          Hittable(if (window.visible) MeshCollision.LineTest else MeshCollision.NoCollision),
+           // Fallback pose until the head pose is known: +Z in front of the origin, identity
+           // rotation faces a viewer at the origin.
+           Transform(Pose(Vector3(0f, 1.3f, config.spawnDistanceM), Quaternion(0f, 0f, 0f))),

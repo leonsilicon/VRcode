@@ -1,23 +1,24 @@
 package dev.improve.vrcode.hands
 
 /**
- * One hand's palm menu gesture: with the palm toward the user, a middle-finger pinch (index still
- * up) opens the menu at the pinch point; moving the hand while pinched picks an item ([PieSelection]);
+ * One hand's palm menu gesture: with the palm toward the user, a pinch of [finger] to the thumb
+ * opens the menu at the pinch point; moving the hand while pinched picks an item ([PieSelection]);
  * releasing ends it. Tracking loss (longer than [TRACKING_GAP_MS]: the runtime drops single frames),
- * the index pinch taking over, or a fist cancels, and a cancelled pinch needs a fresh one. Works for
- * either hand.
+ * the other finger's pinch taking over, or a fist cancels, and a cancelled pinch needs a fresh one.
+ * Works for either hand. [MiddlePinch] (index still up) drives the palm menus on both hands;
+ * [IndexPinch] drives the left hand's quick inputs.
  *
  * Palm-facing is the runtime's SYSTEM_GESTURE flag (its own palm-toward-the-headset detection) or
  * the palm joint's normal within [OPEN_FACING_DEGREES] of the head ([PalmShape]); it only gates the
  * start, so turning the hand during a selection does not close the menu. The pinch is the runtime's
- * ([MiddlePinch]). Moving the hand makes the runtime's pinch readings flicker for a frame or two, so
+ * ([FingerPinch]). Moving the hand makes the runtime's pinch readings flicker for a frame or two, so
  * a held pinch only ends after [RELEASE_GRACE_MS] of readings that say so.
  */
-class HandMenuGesture {
+class HandMenuGesture(val finger: FingerPinch = MiddlePinch) {
   enum class Event { None, Opened, Released, Cancelled }
 
   /** Why the last [Event.Cancelled] happened, for the log. */
-  enum class CancelReason { None, Fist, IndexPinch, TrackingLost }
+  enum class CancelReason { None, Fist, OtherFinger, TrackingLost }
 
   var open = false
     private set
@@ -31,8 +32,8 @@ class HandMenuGesture {
     private set
 
   /**
-   * Show the hint above the middle fingertip: the palm faces the user closely enough for a middle
-   * pinch to open the menu, the menu is not open, and no pinch is still held from the last one.
+   * Show the hint above the pinching fingertip: the palm faces the user closely enough for a pinch
+   * to open the menu, the menu is not open, and no pinch is still held from the last one.
    */
   var hint = false
     private set
@@ -41,14 +42,14 @@ class HandMenuGesture {
   var hintPoint: FloatArray? = null
     private set
 
-  /** 0 with the thumb and middle finger apart, rising to 1 at a pinch. */
+  /** 0 with the thumb and [finger] apart, rising to 1 at a pinch. */
   var progress = 0f
     private set
 
   /** The last frame's measurements, for diagnostics. */
   var facingDegrees = 0f
     private set
-  var source = MiddlePinch.Source.None
+  var source = FingerPinch.Source.None
     private set
   var fist = false
     private set
@@ -79,7 +80,7 @@ class HandMenuGesture {
       hint = false
       progress = 0f
       palmFacing = false
-      source = MiddlePinch.Source.None
+      source = FingerPinch.Source.None
       if (down) needsRelease = true
       down = false
       pinchReading = false
@@ -92,25 +93,25 @@ class HandMenuGesture {
     }
     lastTrackedMs = nowMs
     val joints = frame.joints
-    point = PalmShape.middlePinchPoint(joints)
+    point = finger.point(joints)
     facingDegrees = PalmShape.facingDegrees(joints, frame.palm)
-    source = MiddlePinch.source(frame)
+    source = finger.source(frame)
     val systemPose = frame.has(HandAim.SYSTEM_GESTURE)
     val canOpen = facingDegrees <= OPEN_FACING_DEGREES || systemPose
     palmFacing = facingDegrees <= KEEP_FACING_DEGREES || systemPose
-    // A fist rolls the middle finger onto the thumb too; it belongs to voice, not to the menu.
+    // A fist rolls the fingers onto the thumb too; it belongs to voice, not to the menu.
     fist = FistShape.isFist(joints, wasFist = fist)
-    val indexPinch = MiddlePinch.indexDominant(frame)
-    val indexTakesOver = MiddlePinch.indexTakesOver(frame)
+    val otherPinch = finger.otherDominant(frame)
+    val otherTakesOver = finger.otherTakesOver(frame)
     val wasDown = down
-    // A new pinch must not be an index pinch; a held one only yields once the index takes over.
-    val reading = !fist && MiddlePinch.down(frame, wasDown) && !(if (wasDown) indexTakesOver else indexPinch)
+    // A new pinch must not be the other finger's; a held one only yields once the other takes over.
+    val reading = !fist && finger.down(frame, wasDown) && !(if (wasDown) otherTakesOver else otherPinch)
     pinchReading = reading
     if (reading || !wasDown) upSinceMs = NOT_UP else if (upSinceMs == NOT_UP) upSinceMs = nowMs
     down = reading || (wasDown && nowMs - upSinceMs < RELEASE_GRACE_MS)
-    progress = if (fist) 0f else MiddlePinch.progress(frame)
-    hintPoint = PalmShape.aboveMiddleTip(joints, frame.palm, aboveM = HINT_ABOVE_M, outM = HINT_OUT_M)
-    hint = canOpen && !indexPinch && !fist && !open && !needsRelease
+    progress = if (fist) 0f else finger.progress(frame)
+    hintPoint = finger.hintPoint(joints, frame.palm, aboveM = HINT_ABOVE_M, outM = HINT_OUT_M)
+    hint = canOpen && !otherPinch && !fist && !open && !needsRelease
 
     if (open) {
       if (down) return Event.None
@@ -118,7 +119,7 @@ class HandMenuGesture {
       cancelReason =
         when {
           fist -> CancelReason.Fist
-          indexTakesOver -> CancelReason.IndexPinch
+          otherTakesOver -> CancelReason.OtherFinger
           else -> return Event.Released
         }
       needsRelease = true
@@ -151,8 +152,12 @@ class HandMenuGesture {
     const val HINT_OUT_M = 0.01f
     /** Untracked frames shorter than this keep the menu and pinch as they were. */
     const val TRACKING_GAP_MS = 200L
-    /** A held pinch ends only after its readings say so for this long (6-7 frames at 72-90 Hz). */
-    const val RELEASE_GRACE_MS = 80L
+    /**
+     * A held pinch ends only after its readings say so for this long. On-device (2026-11-01), the
+     * runtime took up to 78 ms after a joint-fallback open to report the pinch; releasing only
+     * cancels, so a longer grace costs little. Stays below [TRACKING_GAP_MS].
+     */
+    const val RELEASE_GRACE_MS = 150L
     private const val NOT_UP = Long.MIN_VALUE
   }
 }

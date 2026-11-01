@@ -41,7 +41,7 @@ internal class TerminalPointerInput(private val xmux: XmuxSpatial) {
           onStart = { bindings.filterKeys { it !== view }.values.forEach { it.clear() } },
         )
       }
-      binding.enabled = allowInput
+      binding.enabled = allowInput && window.visible
       binding.validate()
     }
   }

@@ -9,3 +9,8 @@ local.properties
 .argent/artifacts/
 
 mac/.build/
+
+# Tauri menu-bar app (mac-app/): build output, the copied Swift helper, generated schemas
+mac-app/src-tauri/target/
+mac-app/src-tauri/binaries/
+mac-app/src-tauri/gen/

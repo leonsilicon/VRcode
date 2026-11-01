@@ -1,0 +1,183 @@
+diff --git a/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api b/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
+index 14d0b8b..3b1c12b 100644
+--- a/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
++++ b/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
+@@ -80,6 +80,7 @@ public final class dev/improve/xmux/spatial/ScreenWindow {
+ 	public final fun getFocusedPane-TkCTjq8 ()Ldev/improve/xmux/client/PaneId;
+ 	public final fun getFocusedTerminal-ZCD1cu4 ()Ldev/improve/xmux/client/TerminalId;
+ 	public final fun getIndex ()I
++	public final fun getInputEnabled ()Z
+ 	public final fun getPanelSize ()Ldev/improve/xmux/spatial/PanelSpec;
+ 	public final fun getScreen-Z_4NEhc ()Ldev/improve/xmux/client/ScreenId;
+ 	public final fun getScreenView ()Ldev/improve/xmux/screen/view/ScreenView;
+@@ -90,6 +91,7 @@ public final class dev/improve/xmux/spatial/ScreenWindow {
+ 	public final fun isLayer ()Z
+ 	public final fun pose ()Lcom/meta/spatial/core/Pose;
+ 	public final fun refreshIfDirty ()V
++	public final fun setInputEnabled (Z)V
+ 	public final fun setPose (Lcom/meta/spatial/core/Pose;)V
+ 	public final fun setVisible (Z)V
+ }
+@@ -207,6 +209,7 @@ public final class dev/improve/xmux/spatial/XmuxSpatial {
+ 	public final fun registerPanels ()Ljava/util/List;
+ 	public final fun resizeWindow (Ldev/improve/xmux/spatial/ScreenWindow;FF)V
+ 	public final fun setFontSize (F)V
++	public final fun setFontSize (Ldev/improve/xmux/spatial/ScreenWindow;Ljava/lang/Float;)V
+ 	public final fun setOnGridResize (Lkotlin/jvm/functions/Function2;)V
+ 	public final fun unmount (Ldev/improve/xmux/spatial/ScreenWindow;)V
+ }
+diff --git a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
+index a30e6b7..6646937 100644
+--- a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
++++ b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
+@@ -86,6 +86,7 @@ public class ScreenWindow internal constructor(
+   /** The screen view of a cmux screen window. */
+   public var screenView: ScreenView? = null
+     internal set
++  internal var fontOverride: TerminalFont? = null
+   internal var pending: Placement? = null
+ 
+   /** The screen view's last laid-out size; differs from the spec's body after a Relayout resize. */
+@@ -99,10 +100,18 @@ public class ScreenWindow internal constructor(
+   public var visible: Boolean = true
+     private set
+ 
++  /** Suspend terminal input while app-owned content covers this window. */
++  public var inputEnabled: Boolean = true
++    set(value) {
++      field = value
++      binding?.inputEnabled = visible && value
++      if (!value) screenView?.clearFocus()
++    }
++
+   public fun setVisible(value: Boolean) {
+     if (visible == value) return
+     visible = value
+-    binding?.inputEnabled = value
++    binding?.inputEnabled = value && inputEnabled
+     if (!value) screenView?.clearFocus()
+     entity?.setComponent(Visible(value))
+     entity?.setComponent(Hittable(if (value) MeshCollision.LineTest else MeshCollision.NoCollision))
+@@ -197,12 +206,25 @@ public class XmuxSpatial(
+     if (font.paint.textSize == sizePx) return
+     displayFont = TerminalFont(activity, sizePx)
+     for (window in mounted.toList()) {
++      if (window.fontOverride != null) continue
+       window.binding?.let { it.font = font; it.tick() }
+       if (window.entity != null) respawn(window)
+       else window.spec = windowSpec(window)
+     }
+   }
+ 
++  /** Changes one window's local text size; null restores the shared default. Keeps its pose/session. */
++  public fun setFontSize(window: ScreenWindow, sizePx: Float?) {
++    require(window in mounted) { "window is not mounted" }
++    require(sizePx == null || (sizePx.isFinite() && sizePx > 0f)) { "Font size must be positive and finite" }
++    val previous = window.fontOverride ?: font
++    window.fontOverride = sizePx?.let { if (previous.paint.textSize == it) previous else TerminalFont(activity, it) }
++    val next = window.fontOverride ?: font
++    if (previous === next) return
++    window.binding?.let { it.font = next; it.tick() }
++    if (window.entity != null) respawn(window) else window.spec = windowSpec(window)
++  }
++
+   /** The window that last got a tap; keyboard input goes to its focused pane. */
+   public var focused: ScreenWindow? = null
+     get() = field?.takeIf { it.visible && it in mounted }
+@@ -449,7 +471,7 @@ public class XmuxSpatial(
+   private fun windowSpec(window: ScreenWindow): PanelSpec {
+     window.binding?.let { return specFor(it, window.chrome) }
+     val grid = window.content!!.grid
+-    val pixels = PanelSpec.of(font, grid.cols, grid.rows, config.paddingPx, window.chrome.headerHeightDp, config.windowWidthM)
++    val pixels = PanelSpec.of(window.fontOverride ?: font, grid.cols, grid.rows, config.paddingPx, window.chrome.headerHeightDp, config.windowWidthM)
+     return PanelSpec(pixels.widthPx, pixels.heightPx, pixels.widthPx * metresPerPx)
+   }
+ 
+@@ -496,7 +518,7 @@ public class XmuxSpatial(
+             val content = window.content
+             val binding = window.binding
+             if (content != null) {
+-              TerminalWindow(content.state, content.grid, font, Modifier.fillMaxSize(), content.chrome) {
++              TerminalWindow(content.state, content.grid, window.fontOverride ?: font, Modifier.fillMaxSize(), content.chrome) {
+                 window.view = it
+               }
+             } else if (binding != null) {
+@@ -504,7 +526,7 @@ public class XmuxSpatial(
+                 binding.state,
+                 Modifier.fillMaxSize(),
+                 window.chrome,
+-                body = { c -> ScreenView(c, font) },
++                body = { c -> ScreenView(c, window.fontOverride ?: font) },
+                 onViewCreated = {
+                   val v = it as ScreenView
+                   window.screenView = v
+diff --git a/packages/dev/improve/xmux/components/window-frame/api/xmux-window-frame.api b/packages/dev/improve/xmux/components/window-frame/api/xmux-window-frame.api
+index 2a1a372..f1eaad7 100644
+--- a/packages/dev/improve/xmux/components/window-frame/api/xmux-window-frame.api
++++ b/packages/dev/improve/xmux/components/window-frame/api/xmux-window-frame.api
+@@ -3,6 +3,7 @@ public final class dev/improve/xmux/window/frame/ComposableSingletons$WindowFram
+ 	public fun <init> ()V
+ 	public final fun getLambda-1$xmux_window_frame_release ()Lkotlin/jvm/functions/Function2;
+ 	public final fun getLambda-2$xmux_window_frame_release ()Lkotlin/jvm/functions/Function2;
++	public final fun getLambda-3$xmux_window_frame_release ()Lkotlin/jvm/functions/Function2;
+ }
+ 
+ public final class dev/improve/xmux/window/frame/TerminalWindowState {
+@@ -18,8 +19,8 @@ public final class dev/improve/xmux/window/frame/WindowChrome {
+ 	public static final field $stable I
+ 	public static final field Companion Ldev/improve/xmux/window/frame/WindowChrome$Companion;
+ 	public fun <init> ()V
+-	public fun <init> (IIJJJLkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function4;)V
+-	public synthetic fun <init> (IIJJJLkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function4;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
++	public fun <init> (IIJJJLkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function4;Lkotlin/jvm/functions/Function2;)V
++	public synthetic fun <init> (IIJJJLkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function2;Lkotlin/jvm/functions/Function4;Lkotlin/jvm/functions/Function2;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+ 	public final fun getBodyColor ()J
+ 	public final fun getCornerRadiusDp ()I
+ 	public final fun getHeader ()Lkotlin/jvm/functions/Function4;
+@@ -29,6 +30,7 @@ public final class dev/improve/xmux/window/frame/WindowChrome {
+ 	public final fun getOnClose ()Lkotlin/jvm/functions/Function0;
+ 	public final fun getOnMinimize ()Lkotlin/jvm/functions/Function0;
+ 	public final fun getOnZoom ()Lkotlin/jvm/functions/Function0;
++	public final fun getOverlay ()Lkotlin/jvm/functions/Function2;
+ 	public final fun getTitleColor ()J
+ 	public final fun getTrailingSlot ()Lkotlin/jvm/functions/Function2;
+ }
+diff --git a/packages/dev/improve/xmux/components/window-frame/src/main/kotlin/dev/improve/xmux/window/frame/WindowFrame.kt b/packages/dev/improve/xmux/components/window-frame/src/main/kotlin/dev/improve/xmux/window/frame/WindowFrame.kt
+index 9cde2cb..3641daa 100644
+--- a/packages/dev/improve/xmux/components/window-frame/src/main/kotlin/dev/improve/xmux/window/frame/WindowFrame.kt
++++ b/packages/dev/improve/xmux/components/window-frame/src/main/kotlin/dev/improve/xmux/window/frame/WindowFrame.kt
+@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
+ import androidx.compose.foundation.layout.Column
+ import androidx.compose.foundation.layout.Row
+ import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.fillMaxSize
+ import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.layout.size
+@@ -58,6 +59,8 @@ public class WindowChrome(
+   public val trailingSlot: @Composable () -> Unit = {},
+   /** Optional app-owned header. Keep its height at [headerHeightDp] for panel hit testing. */
+   public val header: (@Composable (TerminalWindowState, WindowChrome) -> Unit)? = null,
++  /** App-owned content above the body, constrained to the terminal viewport. */
++  public val overlay: @Composable () -> Unit = {},
+ ) {
+   public companion object {
+     public val Default: WindowChrome = WindowChrome()
+@@ -83,10 +86,13 @@ public fun WindowFrame(
+     val header = chrome.header
+     if (header == null) WindowHeader(state, chrome) else header(state, chrome)
+     Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF3A3A3A)))
+-    AndroidView(
+-      factory = { ctx -> body(ctx).also(onViewCreated) },
+-      modifier = Modifier.fillMaxWidth().testTag("xmux-grid"),
+-    )
++    Box(Modifier.fillMaxWidth().weight(1f)) {
++      AndroidView(
++        factory = { ctx -> body(ctx).also(onViewCreated) },
++        modifier = Modifier.fillMaxSize().testTag("xmux-grid"),
++      )
++      chrome.overlay()
++    }
+   }
+ }
+ 

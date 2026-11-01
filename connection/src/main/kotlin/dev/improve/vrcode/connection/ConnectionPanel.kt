@@ -19,7 +19,8 @@ fun ConnectionPanel(controller: ConnectionController, bridgeDetail: String? = nu
   var error by remember { mutableStateOf<String?>(null) }
   var paired by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
   Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().testTag("connection-selector")) {
-    Text(status.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("connection-status"))
+    Text(status.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("connection-status"),
+      color = if (status.attention) MaterialTheme.colorScheme.error else androidx.compose.ui.graphics.Color.Unspecified)
     if (status.detail.isNotBlank()) Text(status.detail, style = MaterialTheme.typography.bodyMedium)
     bridgeDetail?.let { Text(it, modifier = Modifier.testTag("connection-bridge-status")) }
     Box {
@@ -31,7 +32,7 @@ fun ConnectionPanel(controller: ConnectionController, bridgeDetail: String? = nu
       }
     }
     Text(profile.mode.detail)
-    if (!profile.paired) Text("On your Mac, run vrcode-mac --link-info and paste its connection key below. Pairing protects both terminal and speech traffic.")
+    if (!profile.paired) Text("Open the VRcode Mac app on your Mac, then pair once: run bun scripts/quest-link.ts pair, or paste the key from vrcode-mac --link-info below. Pairing protects both terminal and speech traffic.")
     else Text("Paired Mac: ${profile.name}")
     OutlinedTextField(importText, { importText = it }, label = { Text(if (profile.paired) "Replace Mac connection key" else "Mac connection key") },
       singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth().testTag("connection-import"))

@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VRcode Mac</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>VRcode Mac<small id="version"></small></h1>
+    <span id="overall" class="pill">starting</span>
+  </header>
+
+  <section>
+    <div class="section-head">
+      <h2>Services</h2>
+      <button id="restart-all">Restart All</button>
+    </div>
+    <div id="services"></div>
+    <p class="note" id="login">—</p>
+  </section>
+
+  <section id="pairing" class="hidden">
+    <h2>Headset pairing</h2>
+    <p class="note" id="pairing-summary">—</p>
+    <div id="waiting"></div>
+    <form id="pair-form" autocomplete="off">
+      <input id="pair-code" inputmode="numeric" maxlength="7" placeholder="Code shown on the headset" aria-label="Pairing code">
+      <button class="primary" type="submit">Approve</button>
+      <button type="button" id="pair-reject">Reject</button>
+    </form>
+    <p class="message" id="pair-message"></p>
+    <h3>Paired headsets</h3>
+    <div id="devices"></div>
+  </section>
+
+  <section>
+    <h2>Permissions</h2>
+    <div class="row">
+      <span class="dot" id="perm-screen-recording"></span>
+      <div class="grow">
+        <div class="title">Screen &amp; System Audio Recording</div>
+        <div class="detail">Mac display and Mac audio in the headset</div>
+      </div>
+      <button data-request="screen-recording">Allow…</button>
+    </div>
+    <div class="row">
+      <span class="dot" id="perm-accessibility"></span>
+      <div class="grow">
+        <div class="title">Accessibility</div>
+        <div class="detail">Clicks and keys from the headset</div>
+      </div>
+      <button data-request="accessibility">Allow…</button>
+    </div>
+    <div class="row">
+      <span class="dot"></span>
+      <div class="grow">
+        <div class="title">Bluetooth</div>
+        <div class="detail">Only for the Bluetooth link; macOS asks when it starts</div>
+      </div>
+      <button data-settings="bluetooth">Settings…</button>
+    </div>
+    <div class="row">
+      <span class="dot"></span>
+      <div class="grow">
+        <div class="title">Local Network</div>
+        <div class="detail">The Quest reaching this Mac over Wi-Fi</div>
+      </div>
+      <button data-settings="local-network">Settings…</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>AI provider keys</h2>
+    <p class="note">For voice-to-command (left fist); the provider is chosen in the Quest's settings. Keys are stored in the login Keychain under <code>dev.improve.vrcode</code>.</p>
+    <div id="api-keys"></div>
+    <p class="message" id="api-key-message"></p>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Log</h2>
+      <button id="clear-log">Clear</button>
+    </div>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script>
+(() => {
+  const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
+  const $ = (id) => document.getElementById(id);
+  let since = 0;
+  let polling = false;
+
+  function el(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+    return element;
+  }
+
+  function duration(seconds) {
+    if (seconds < 60) return `${seconds} s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
+    return `${Math.floor(seconds / 3600)} h ${Math.floor((seconds % 3600) / 60)} min`;
+  }
+
+  function setDot(element, granted) {
+    element.classList.toggle("yes", granted);
+    element.classList.toggle("no", !granted);
+  }
+
+  function message(id, text, isError = false) {
+    $(id).textContent = text;
+    $(id).classList.toggle("error", isError);
+  }
+
+  function renderServices(services) {
+    const list = $("services");
+    list.replaceChildren(...services.map((service) => {
+      const row = el("div", "row service");
+      const body = el("div", "grow");
+      const title = el("div", "title");
+      title.append(el("span", "", service.name), el("span", `pill small ${service.state}`, service.state));
+      const facts = [service.pid ? `pid ${service.pid}, up ${duration(service.uptime_secs ?? 0)}` : "not running"];
+      if (service.restarts) facts.push(`${service.restarts} restart${service.restarts === 1 ? "" : "s"}`);
+      if (service.last_exit) facts.push(`last: ${service.last_exit}`);
+      body.append(title, el("div", "detail", facts.join(" · ")));
+      body.append(el("code", "args", service.args.length ? service.args.join(" ") : "(default arguments)"));
+      const restart = el("button", "", "Restart");
+      restart.addEventListener("click", () => invoke("restart_service", { name: service.name }).then(refresh));
+      row.append(body, restart);
+      return row;
+    }));
+    const states = services.map((service) => service.state);
+    const overall = states.every((state) => state === "running") ? "running"
+      : states.some((state) => state === "restarting" || state === "stopped") ? "restarting" : "starting";
+    $("overall").textContent = overall === "running" ? "running" : overall;
+    $("overall").className = `pill ${overall}`;
+  }
+
+  let waitingBefore = 0;
+  let confirmUnpair = null;
+
+  function renderDevices(devices) {
+    if (!devices.length) {
+      $("devices").replaceChildren(el("p", "note", "None yet. Open vrcode on the Quest and choose this Mac; it shows a code to enter above."));
+      return;
+    }
+    $("devices").replaceChildren(...devices.map((device) => {
+      const row = el("div", "row");
+      const body = el("div", "grow");
+      const when = device.paired_at ? `paired ${new Date(device.paired_at * 1000).toLocaleString()}` : "paired";
+      body.append(el("div", "title", device.name), el("div", "detail", `${device.connected ? "connected · " : ""}${when} · ${device.id}`));
+      const unpair = el("button", "", confirmUnpair === device.id ? "Confirm Unpair" : "Unpair");
+      unpair.addEventListener("click", async () => {
+        if (confirmUnpair !== device.id) {
+          confirmUnpair = device.id;
+          setTimeout(() => { if (confirmUnpair === device.id) confirmUnpair = null; refresh(); }, 4000);
+          return refresh();
+        }
+        confirmUnpair = null;
+        try { message("pair-message", await invoke("unpair_headset", { id: device.id }) || `Unpaired ${device.name}.`); }
+        catch (error) { message("pair-message", String(error), true); }
+        refresh();
+      });
+      row.append(el("span", `dot ${device.connected ? "yes" : ""}`), body, unpair);
+      return row;
+    }));
+  }
+
+  function renderPairing(pairing) {
+    $("pairing").classList.toggle("hidden", !pairing);
+    if (!pairing) return;
+    if (pairing.error) {
+      $("pairing-summary").textContent = `The bridge isn't answering yet (${pairing.error}).`;
+    } else {
+      const where = pairing.listen ? ` on ${pairing.listen}` : "";
+      $("pairing-summary").textContent =
+        `Serving cmux session ${pairing.session ?? "?"}${where} · ${pairing.connected} connected`;
+    }
+    renderDevices(pairing.devices ?? []);
+    const waiting = pairing.waiting ?? [];
+    if (waiting.length > waitingBefore) {
+      $("pairing").scrollIntoView({ block: "start", behavior: "smooth" });
+      $("pair-code").focus();
+    }
+    waitingBefore = waiting.length;
+    $("waiting").replaceChildren(...waiting.map((headset) => {
+      const row = el("div", "row");
+      const dot = el("span", "dot waiting");
+      const body = el("div", "grow");
+      body.append(el("div", "title", `${headset.name} is waiting to pair`),
+        el("div", "detail", headset.peer ? `from ${headset.peer} — enter the code it shows` : "enter the code it shows"));
+      row.append(dot, body);
+      return row;
+    }));
+  }
+
+  function appendLogs(lines) {
+    if (!lines.length) return;
+    const log = $("log");
+    const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+    for (const line of lines) {
+      const span = el("span", line.stream === "app" ? "app" : "");
+      if (line.stream !== "app") span.append(el("span", "source", `${line.source} `));
+      span.append(document.createTextNode(line.text + "\n"));
+      log.append(span);
+      since = line.seq;
+    }
+    while (log.childNodes.length > 2000) log.firstChild.remove();
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+
+  function render(status) {
+    $("version").textContent = `v${status.version}`;
+    renderServices(status.services);
+    renderPairing(status.pairing);
+    $("login").textContent = status.launch_agent
+      ? "Starts at login and restarts if it crashes (LaunchAgent dev.improve.vrcode.mac)."
+      : "To start at login, add VRcode Mac under System Settings → General → Login Items (from a VRcode checkout: bun run mac:install).";
+    setDot($("perm-screen-recording"), status.permissions.screen_recording);
+    setDot($("perm-accessibility"), status.permissions.accessibility);
+    renderApiKeys(status.api_keys ?? {});
+    appendLogs(status.logs);
+  }
+
+  async function refresh() {
+    if (polling || document.visibilityState !== "visible") return;
+    polling = true;
+    try { render(await invoke("status", { since })); }
+    catch (error) { console.error(error); }
+    finally { polling = false; }
+  }
+
+  $("restart-all").addEventListener("click", () => invoke("restart_service", { name: null }).then(refresh));
+  $("clear-log").addEventListener("click", () => { $("log").textContent = ""; });
+  for (const button of document.querySelectorAll("[data-request]")) {
+    button.addEventListener("click", () => invoke("request_permission", { kind: button.dataset.request }).catch(console.error));
+  }
+  for (const button of document.querySelectorAll("[data-settings]")) {
+    button.addEventListener("click", () => invoke("open_settings", { kind: button.dataset.settings }).catch(console.error));
+  }
+
+  $("pair-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      message("pair-message", await invoke("approve_pairing", { code: $("pair-code").value }));
+      $("pair-code").value = "";
+    } catch (error) {
+      message("pair-message", String(error), true);
+    }
+    refresh();
+  });
+  $("pair-reject").addEventListener("click", async () => {
+    try { message("pair-message", await invoke("reject_pairing")); }
+    catch (error) { message("pair-message", String(error), true); }
+    refresh();
+  });
+
+  // One row per provider; built once so typing isn't reset by the 1 s refresh.
+  const providers = [
+    { id: "anthropic", name: "Claude (Anthropic)", account: "anthropic-api-key", placeholder: "sk-ant-…" },
+    { id: "openai", name: "ChatGPT (OpenAI)", account: "openai-api-key", placeholder: "sk-…" },
+    { id: "gemini", name: "Gemini (Google)", account: "gemini-api-key", placeholder: "AIza…" },
+  ];
+  const keyRows = new Map();
+  for (const provider of providers) {
+    const row = el("div", "row key-row");
+    const dot = el("span", "dot");
+    const body = el("div", "grow");
+    const state = el("div", "detail", "Not set");
+    body.append(el("div", "title", provider.name), state);
+    const form = el("form", "inline");
+    form.autocomplete = "off";
+    const input = el("input");
+    input.type = "password";
+    input.placeholder = provider.placeholder;
+    input.spellcheck = false;
+    input.setAttribute("aria-label", `${provider.name} API key`);
+    const save = el("button", "primary", "Save");
+    save.type = "submit";
+    const remove = el("button", "hidden", "Remove");
+    remove.type = "button";
+    form.append(input, save, remove);
+    body.append(form);
+    row.append(dot, body);
+    $("api-keys").append(row);
+    keyRows.set(provider.id, { dot, state, remove });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!input.value.trim()) return message("api-key-message", `Paste the ${provider.name} key first.`, true);
+      try {
+        await invoke("set_api_key", { provider: provider.id, key: input.value });
+        input.value = "";
+        message("api-key-message", `${provider.name} key saved. The service uses it on the next request.`);
+      } catch (error) {
+        message("api-key-message", String(error), true);
+      }
+      refresh();
+    });
+    remove.addEventListener("click", async () => {
+      try { await invoke("delete_api_key", { provider: provider.id }); message("api-key-message", `${provider.name} key removed.`); }
+      catch (error) { message("api-key-message", String(error), true); }
+      refresh();
+    });
+  }
+
+  function renderApiKeys(saved) {
+    for (const provider of providers) {
+      const { dot, state, remove } = keyRows.get(provider.id);
+      const has = Boolean(saved[provider.id]);
+      setDot(dot, has);
+      state.textContent = has ? `Saved (${provider.account})` : "Not set";
+      remove.classList.toggle("hidden", !has);
+    }
+  }
+
+  document.addEventListener("visibilitychange", refresh);
+  setInterval(refresh, 1000);
+  refresh();
+})();
+</script>
+</body>
+</html>

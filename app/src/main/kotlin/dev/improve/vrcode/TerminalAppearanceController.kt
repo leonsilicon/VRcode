@@ -2,24 +2,20 @@ package dev.improve.vrcode
 
 import dev.improve.xmux.screen.view.ScreenView
 import dev.improve.xmux.spatial.ScreenWindow
+import dev.improve.xmux.terminal.grid.GridAppearance
 import dev.improve.xmux.terminal.grid.TerminalGridView
 import java.util.WeakHashMap
 
 /** Apply local display overrides after topology updates, including newly created panes/views. */
 class TerminalAppearanceController {
   private val styledScreens = WeakHashMap<ScreenView, TerminalTheme>()
-  private var currentTheme = TerminalTheme.Mac
-  private var currentCursor = TerminalCursor.Terminal
-  private var appearance = AppSettings().gridAppearance()
+  private val appearances = mutableMapOf<Pair<TerminalTheme, TerminalCursor>, GridAppearance>()
 
-  fun update(windows: List<ScreenWindow>, settings: AppSettings) {
-    val theme = settings.terminalTheme
-    if (currentTheme != theme || currentCursor != settings.terminalCursor) {
-      currentTheme = theme
-      currentCursor = settings.terminalCursor
-      appearance = settings.gridAppearance()
-    }
+  fun update(windows: List<ScreenWindow>, settingsFor: (ScreenWindow) -> AppSettings) {
     for (window in windows) {
+      val settings = settingsFor(window)
+      val theme = settings.terminalTheme
+      val appearance = appearances.getOrPut(theme to settings.terminalCursor) { settings.gridAppearance() }
       window.view?.let { it.appearance = appearance }
       val screen = window.screenView ?: continue
       if (styledScreens[screen] != theme) {

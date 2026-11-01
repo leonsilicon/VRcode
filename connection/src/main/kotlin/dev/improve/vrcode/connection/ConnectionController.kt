@@ -27,7 +27,35 @@ import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
-data class LinkStatus(val title: String = "Not connected", val detail: String = "", val connected: Boolean = false, val busy: Boolean = false)
+/** [attention] marks a problem the user must fix on a device; the app shows the Connection page for it. */
+data class LinkStatus(val title: String = "Not connected", val detail: String = "", val connected: Boolean = false, val busy: Boolean = false,
+                      val attention: Boolean = false)
+
+/** No network of the kind the route needs (Wi-Fi, Bluetooth PAN) is connected on the Quest. */
+private class MissingNetwork(message: String) : IllegalStateException(message)
+/** Every address of one route failed. [identity] is set when a Mac answered but was not the paired one or refused the key. */
+private class RouteFailure(message: String, val identity: Boolean) : java.io.IOException(message)
+
+/** A Mac answered but its certificate or our key did not match: retrying will not fix it. */
+private fun Throwable.isIdentityFailure(): Boolean = this is RouteFailure && identity ||
+  generateSequence(this) { it.cause }.any { it is java.security.cert.CertificateException || it is javax.net.ssl.SSLPeerUnverifiedException ||
+    it.message?.let { text -> "did not authorize" in text || "not your paired Mac" in text } == true }
+
+/** The status after a full round of failed routes. */
+internal fun failureStatus(macName: String, automatic: Boolean, failures: List<String>, identity: Boolean, missingWifi: Boolean, missingNetwork: Boolean): LinkStatus {
+  val details = failures.joinToString("\n")
+  return when {
+    identity -> LinkStatus("Your Mac's connection key has changed",
+      "A Mac answered but did not accept this Quest's key. Pair again: paste the Mac's current connection key below, " +
+        "or run bun scripts/quest-link.ts pair.\n\n$details", busy = true, attention = true)
+    automatic && missingWifi -> LinkStatus("Connect the Quest to Wi-Fi",
+      "VRcode reaches $macName over Wi-Fi and connects automatically once the Quest joins a network.\n\n$details", busy = true, attention = true)
+    !automatic && missingNetwork -> LinkStatus("Could not connect", details, busy = true, attention = true)
+    else -> LinkStatus("Make sure the VRcode Mac app is running",
+      "Open VRcode Mac on $macName. The Quest connects automatically as soon as it starts. " +
+        "If it is already running, check that both devices are on the same network.\n\n$details", busy = true, attention = true)
+  }
+}
 /** A Bonjour `_vrcode._tcp` advert. [fingerprint] comes from its TXT record (absent on older Macs). */
 data class FoundMac(val name: String, val host: String, val port: Int, val fingerprint: String? = null)
 
@@ -95,7 +123,7 @@ class ConnectionController(
           val before = profile.value
           val error = importFromConnectedMac()
           val after = profile.value
-          if (error != null) { rejected = stamp; mutableStatus.value = LinkStatus("Could not import the Mac connection key", error) }
+          if (error != null) { rejected = stamp; mutableStatus.value = LinkStatus("Could not import the Mac connection key", error, attention = true) }
           else if (!(status.value.connected && before.fingerprint == after.fingerprint && before.token == after.token)) connect()
         }
         delay(2000)
@@ -138,6 +166,7 @@ class ConnectionController(
     }
     pool.shutdown()
     val errors = mutableListOf<String>()
+    var identity = false
     for (remaining in endpoints.size downTo 1) {
       val result = runCatching { attempts.take().get() }
       result.getOrNull()?.let { winner ->
@@ -145,9 +174,12 @@ class ConnectionController(
         if (remaining > 1) thread(isDaemon = true, name = "vrcode-relay-losers") { repeat(remaining - 1) { runCatching { attempts.take().get().first.close() } } }
         return winner
       }
-      result.exceptionOrNull()?.let { errors += ((it as? ExecutionException)?.cause ?: it).message ?: "unavailable" }
+      result.exceptionOrNull()?.let { (it as? ExecutionException)?.cause ?: it }?.let { error ->
+        errors += error.message ?: "unavailable"
+        identity = identity || error.isIdentityFailure()
+      }
     }
-    throw IOException(errors.joinToString("; "))
+    throw RouteFailure(errors.joinToString("; "), identity)
   }
 
   fun connect() {
@@ -171,11 +203,15 @@ class ConnectionController(
         } else listOf(selected.mode)
         var connected = false
         val failures = mutableListOf<String>()
+        var identity = false
+        var missingWifi = false
+        var missingNetwork = false
         for (mode in attempts) {
           ensureActive()
           var tunnel: RelayTunnel? = null
           try {
-            mutableStatus.value = LinkStatus("Connecting via ${mode.title}", "${selected.name} · attempt ${retry + 1}", busy = true)
+            // Keep an actionable message (e.g. "Make sure the VRcode Mac app is running") on screen while retrying.
+            if (!mutableStatus.value.attention) mutableStatus.value = LinkStatus("Connecting via ${mode.title}", "${selected.name} · attempt ${retry + 1}", busy = true)
             val ended = CompletableDeferred<String>()
             // Native Bluetooth calls are bounded. Always reclaim a result even if cancelled
             // while a platform connect call was in progress.
@@ -185,10 +221,10 @@ class ConnectionController(
                 val connectivity = activity.getSystemService(ConnectivityManager::class.java)
                 val network = when (mode) {
                   ConnectionMode.BluetoothPAN -> connectivity.allNetworks.firstOrNull { connectivity.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) == true }
-                    ?: error("No Bluetooth network is connected. Horizon OS must expose PAN in its system settings; otherwise choose Bluetooth instead.")
+                    ?: throw MissingNetwork("No Bluetooth network is connected. Horizon OS must expose PAN in its system settings; otherwise choose Bluetooth instead.")
                   ConnectionMode.LocalWiFi, ConnectionMode.MacHotspot, ConnectionMode.PhoneHotspot -> connectivity.allNetworks.firstOrNull {
                     connectivity.getNetworkCapabilities(it)?.let { caps -> caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) } == true
-                  } ?: error("Join the selected Wi-Fi network on the Quest first.")
+                  } ?: throw MissingNetwork("Join the selected Wi-Fi network on the Quest first.")
                   ConnectionMode.WiFiDirect -> { check(ownsGroup) { "Create the Quest network and join it from your Mac first." }; null }
                   else -> null
                 }
@@ -227,11 +263,16 @@ class ConnectionController(
             if (thisGeneration == generation) { onDisconnected(); mutableStatus.value = LinkStatus("Connection lost", reason, busy = true) }
             break
           } catch (error: CancellationException) { throw error }
-          catch (error: Exception) { failures += "${mode.title}: ${error.cause?.message ?: error.message ?: "unavailable"}" }
+          catch (error: Exception) {
+            val text = if (error is RouteFailure || error is MissingNetwork) error.message else error.cause?.message ?: error.message
+            failures += "${mode.title}: ${text ?: "unavailable"}"
+            identity = identity || error.isIdentityFailure()
+            if (error is MissingNetwork) { missingNetwork = true; if (mode == ConnectionMode.LocalWiFi) missingWifi = true }
+          }
           finally { tunnel?.close(); if (live === tunnel) live = null }
         }
         ensureActive()
-        if (!connected) mutableStatus.value = LinkStatus("Could not connect", failures.joinToString("\n"), busy = true)
+        if (!connected) mutableStatus.value = failureStatus(selected.name, selected.mode == ConnectionMode.Auto, failures, identity, missingWifi, missingNetwork)
         retry++
         withTimeoutOrNull(minOf(5000L, retry * 1000L)) { wake.receive() }
       }

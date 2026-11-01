@@ -9,7 +9,9 @@ import com.meta.spatial.toolkit.AppSystemActivity
 import com.meta.spatial.toolkit.Visible
 import dev.improve.vrcode.CmuxActionsPanel
 import dev.improve.vrcode.CmuxCatalog
+import dev.improve.vrcode.TerminalSize
 import dev.improve.vrcode.cmuxResources
+import dev.improve.xmux.client.AttachStatus
 import dev.improve.xmux.client.PaneId
 import dev.improve.xmux.client.MouseAction
 import dev.improve.xmux.client.MouseEvent
@@ -21,10 +23,17 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 /** Quest-owned controls for the daemon. Every operation retains an explicit target. */
-class CmuxFeature(private val activity: AppSystemActivity, private val xmux: XmuxSpatial, private val scope: CoroutineScope) {
+class CmuxFeature(
+  private val activity: AppSystemActivity,
+  private val xmux: XmuxSpatial,
+  private val scope: CoroutineScope,
+  private val defaultTerminalSize: () -> TerminalSize,
+) {
   private val catalog = CmuxCatalog(activity)
   private val link = CmuxLink(scope, { refresh() }, ::stream)
   private var panel: Entity? = null
@@ -36,6 +45,7 @@ class CmuxFeature(private val activity: AppSystemActivity, private val xmux: Xmu
   private var streams by mutableStateOf<List<String>>(emptyList())
   private var task: Job? = null
   private var generation = 0
+  private val closingScreens = mutableSetOf<String>()
   private var clickTarget: WindowHit? = null
   var isOpen by mutableStateOf(false)
     private set
@@ -45,8 +55,16 @@ class CmuxFeature(private val activity: AppSystemActivity, private val xmux: Xmu
     link.connect(host, port)
   }
 
+  /** Whether the Mac service's cmux control connection is up. */
+  val controlConnected: Boolean get() = link.connected
+
+  /** Pins [cmuxTerminal]'s grid in cmux, over any other viewer's size (the Mac service's `vrcode.terminal.size.set`). */
+  suspend fun pinTerminalSize(cmuxTerminal: String, cols: Int, rows: Int): JSONObject =
+    link.call("vrcode.terminal.size.set", JSONObject().put("terminal", cmuxTerminal).put("cols", cols).put("rows", rows)).getJSONObject("result")
+
   fun disconnect() {
     generation++
+    closingScreens.clear()
     task?.cancel(); task = null
     link.close()
     snapshot = null
@@ -119,6 +137,27 @@ class CmuxFeature(private val activity: AppSystemActivity, private val xmux: Xmu
 
   fun refresh() = action { updateSnapshot(); status = "Session updated" }
 
+  /** Close this exact cmux screen, even if another screen/pane has focus when the reply arrives. */
+  fun closeScreen(window: ScreenWindow) {
+    val screen = window.screen?.let { window.session?.topology?.value?.screen(it) }?.cmuxId ?: return
+    if (!closingScreens.add(screen)) return
+    val current = generation
+    scope.launch {
+      try {
+        link.call("screen.close", JSONObject().put("screen", screen), mutation = true)
+        android.util.Log.i("VrcodeWindow", "closed cmux screen $screen")
+        // xmux's topology stream removes the window and dock entry; do not hide it optimistically.
+      } catch (cancelled: CancellationException) { throw cancelled }
+      catch (error: Exception) {
+        android.util.Log.w("VrcodeWindow", "could not close cmux screen $screen", error)
+        if (current != generation) return@launch
+        open(window)
+        task?.join()
+        if (current == generation) status = "Could not close the screen: ${error.message ?: "the action failed"}"
+      } finally { if (current == generation) closingScreens.remove(screen) }
+    }
+  }
+
   /**
    * Opens a new cmux screen, which xmux mounts as a new floating window, focuses it once mounted,
    * and types [command] (if any) into its fresh login shell, so the shell remains when the command
@@ -127,13 +166,15 @@ class CmuxFeature(private val activity: AppSystemActivity, private val xmux: Xmu
    */
   fun newTerminal(command: String? = null, name: String? = null) {
     val current = generation
+    val size = defaultTerminalSize().sanitized()
     scope.launch {
       try {
         val params = JSONObject().apply { if (name != null) put("name", name) }
         val created = link.call("screen.create", params, mutation = true).getJSONObject("result").let { it.optJSONObject("value") ?: it }
+        configureCreatedTerminal(created, size, current, focus = true)
+        if (current != generation) return@launch
         val terminal = created.getString("terminal_id")
         if (command != null) link.call("terminal.input.write", JSONObject().put("terminal", terminal).put("text", "$command\r"), mutation = true)
-        focusScreen(created.getString("screen_id"))
         android.util.Log.i("vrcode", "new terminal ${name ?: "(shell)"}: screen ${created.getString("screen_id")}")
       } catch (cancelled: CancellationException) { throw cancelled }
       catch (error: Exception) {
@@ -146,20 +187,49 @@ class CmuxFeature(private val activity: AppSystemActivity, private val xmux: Xmu
     }
   }
 
-  /** Focuses the window for cmux screen [cmuxScreen] once xmux mounts it (up to five seconds). */
-  private suspend fun focusScreen(cmuxScreen: String) {
+  /** Screen/workspace creation has no size fields. Size only its returned terminal, once attached. */
+  private suspend fun configureCreatedTerminal(created: JSONObject, size: TerminalSize, current: Int, focus: Boolean = false) {
+    val cmuxScreen = created.getString("screen_id")
+    val cmuxTerminal = created.getString("terminal_id")
     repeat(50) {
+      if (current != generation) return
       val window = xmux.windows.firstOrNull { w ->
         w.screen?.let { w.session?.topology?.value?.screen(it)?.cmuxId } == cmuxScreen
       }
-      if (window != null) { xmux.focus(window); return }
+      val session = window?.session
+      val terminal = session?.topology?.value?.terminals?.values?.firstOrNull { it.cmuxId == cmuxTerminal }
+      if (window != null && session != null && terminal != null) {
+        val handle = session.terminal(terminal.id)
+        val attached = withTimeoutOrNull(5_000) {
+          handle.attach.first { it == AttachStatus.Attached || it == AttachStatus.Error || it == AttachStatus.Detached }
+        }
+        if (current != generation) return
+        check(attached == AttachStatus.Attached) { "Terminal opened, but its viewer did not attach to apply the default size" }
+        handle.resize(size.cols, size.rows)
+        if (focus) xmux.focus(window)
+        android.util.Log.i("VrcodeWindow", "new terminal $cmuxTerminal size ${size.cols}x${size.rows}")
+        return
+      }
       kotlinx.coroutines.delay(100)
     }
+    error("Terminal opened, but its window did not mount to apply the default size")
   }
 
   private fun run(name: String, params: JSONObject) = action {
     val operation = catalog.operation(name)
-    val result = link.call(name, params, operation.mutation)
+    val current = generation
+    val size = defaultTerminalSize().sanitized()
+    val request = JSONObject(params.toString())
+    // Preserve dimensions entered explicitly in Actions; paired fields are validated by cmux.
+    if (name in setOf("workspace.run", "pane.run", "pane.create", "tab.create_terminal", "pane.split") && !request.has("cols") && !request.has("rows")) {
+      request.put("cols", size.cols).put("rows", size.rows)
+    }
+    val result = link.call(name, request, operation.mutation)
+    if (name == "screen.create" || (name == "workspace.create" && request.optString("initial_content") == "terminal")) {
+      val created = result.getJSONObject("result").let { it.optJSONObject("value") ?: it }
+      configureCreatedTerminal(created, size, current)
+    }
+    if (current != generation) return@action
     status = "Completed: ${operation.label}"
     result.optJSONObject("result")?.optString("stream_id")?.takeIf { it.isNotEmpty() }?.let { streams = (streams + it).distinct() }
     if (name == "stream.cancel") streams = streams - params.getString("stream")

@@ -86,6 +86,18 @@ class FistGripTest {
     for (hand in poses) assertPose(hand * inHand, FistGrip.pose(transformed(fist, hand)))
   }
 
+  @Test fun mirroredRightFistKeepsTheGrilleAtItsThumbOpening() {
+    val right = leftFist().also { joints ->
+      for (joint in 0 until FistShape.JOINT_COUNT) joints[joint * 3] = -joints[joint * 3]
+    }
+    val grip = FistGrip.pose(right)!!
+    assertVector(Vector3(0f, -0.02f, -0.065f), grip.t)
+    assertVector(Vector3(-1f, 0f, 0f), grip.q * Vector3(0f, 1f, 0f))
+    assertVector(Vector3(0f, 0f, 1f), grip.q * Vector3(0f, 0f, 1f))
+    val hand = Pose(Vector3(0.2f, 1.2f, -0.4f), Quaternion(-70f, 35f, 40f))
+    assertPose(hand * grip, FistGrip.pose(transformed(right, hand)))
+  }
+
   @Test fun fromAxesMatchesTheSdkRotation() {
     for (q in listOf(Quaternion(0f, 0f, 0f), Quaternion(20f, 70f, -35f), Quaternion(179f, -90f, 45f), Quaternion(-60f, 180f, 120f))) {
       val x = q * Vector3(1f, 0f, 0f)

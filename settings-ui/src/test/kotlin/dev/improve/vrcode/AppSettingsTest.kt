@@ -4,6 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AppSettingsTest {
+  @Test fun terminalSizesHaveAUsableDefaultAndClampCustomDimensions() {
+    assertEquals(TerminalSize(120, 36), AppSettings().defaultTerminalSize)
+    assertEquals(TerminalSize(40, 72), AppSettings(defaultTerminalSize = TerminalSize(-1, Int.MAX_VALUE)).sanitized().defaultTerminalSize)
+    assertEquals(TerminalSize(200, 12), TerminalSize(Int.MAX_VALUE, 0).sanitized())
+    assertEquals(TerminalSize(137, 41), AppSettings(defaultTerminalSize = TerminalSize(137, 41)).sanitized().defaultTerminalSize)
+    assertEquals(4, TerminalSizePreset.entries.map { it.size }.distinct().size)
+    for (preset in TerminalSizePreset.entries) assertEquals(preset.size, preset.size.sanitized())
+    assertEquals(AppSettings().defaultTerminalSize, TerminalSizePreset.Standard.size)
+  }
+
   @Test fun invalidSavedDistancesCannotPutWindowsOutOfReach() {
     assertEquals(1.4f, AppSettings(windowDistanceM = Float.NaN).sanitized().windowDistanceM)
     assertEquals(1.4f, AppSettings(windowDistanceM = Float.POSITIVE_INFINITY).sanitized().windowDistanceM)
@@ -40,6 +50,21 @@ class AppSettingsTest {
     for (prop in VoiceProp.entries) assertEquals(prop, VoiceProp.fromStorage(prop.storageValue))
     assertEquals(VoiceProp.NewsMicrophone, VoiceProp.fromStorage(null, VoiceMic.Ai.defaultProp))
     assertEquals(VoiceProp.NewsMicrophone, VoiceProp.fromStorage("removed-prop", VoiceMic.Ai.defaultProp))
+  }
+
+  @Test fun theAiProviderDefaultsToClaudeAndPicksTheNewsMicLogo() {
+    assertEquals(AiProvider.Claude, AppSettings().aiProvider)
+    assertEquals(AiProvider.Claude, AiProvider.fromStorage(null))
+    assertEquals(AiProvider.Claude, AiProvider.fromStorage("removed-provider"))
+    for (provider in AiProvider.entries) assertEquals(provider, AiProvider.fromStorage(provider.storageValue))
+    // The storage values double as the Mac protocol's provider names.
+    assertEquals(listOf("claude", "openai", "gemini"), AiProvider.entries.map { it.storageValue })
+    assertEquals("voice-props/news-microphone-gemini.glb", VoiceProp.NewsMicrophone.assetPath(AiProvider.Gemini))
+    assertEquals("voice-props/news-microphone-openai.glb", VoiceProp.NewsMicrophone.assetPath(AiProvider.ChatGpt))
+    // Other props never change with the provider.
+    assertEquals("voice-props/banana.glb", VoiceProp.Banana.assetPath(AiProvider.Gemini))
+    assertEquals(VoiceProp.Banana.preview, VoiceProp.Banana.preview(AiProvider.Gemini))
+    assertEquals(AiProvider.Gemini.newsMicrophonePreview, VoiceProp.NewsMicrophone.preview(AiProvider.Gemini))
   }
 
   @Test fun savedBoomboxSelectionMigratesToNewsMicrophone() {

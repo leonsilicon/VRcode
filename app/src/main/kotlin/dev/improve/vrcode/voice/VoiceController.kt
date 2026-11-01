@@ -16,9 +16,10 @@ import dev.improve.vrcode.speech.joinText
 import org.json.JSONObject
 
 /**
- * One voice pane: the text of one or more dictations, staged until it is pasted or deleted. A
- * [Mode.Passthrough] pane (right fist) pastes what was said as is; a [Mode.Ai] pane (left fist)
- * pastes what the AI made of it for the target pane.
+ * One voice pane: the text of a dictation, typed into the focused pane as soon as it is ready. A
+ * [Mode.Passthrough] pane (right fist) types what was said as is; a [Mode.Ai] pane (left fist)
+ * types what the AI made of it for the target pane. A pane that could not be typed (no terminal,
+ * the AI failed, the Mac dropped) stays staged with a notice until it is pasted or deleted.
  */
 class VoiceNote(val id: Int, val mode: Mode = Mode.Passthrough) {
   enum class Mode { Passthrough, Ai }
@@ -71,15 +72,24 @@ class VoiceNote(val id: Int, val mode: Mode = Mode.Passthrough) {
 }
 
 /**
- * Voice mode: while the left fist is held the microphone streams to the Mac and the live
- * transcript shows in a voice pane. Every fist makes a new pane unless a pane was picked for
- * editing (a left pinch on it), in which case the dictation is added to that pane. Listening ends
- * only when the fist opens. Nothing reaches a terminal until a pane is pasted. Main thread only.
+ * Voice mode: while a fist is held the microphone streams to the Mac and the live transcript
+ * shows in a voice pane. Every fist makes a new pane unless a pane was picked for editing (a left
+ * pinch on it), in which case the dictation is added to that pane. Listening ends when the fist
+ * opens (or Cancel on the pane); then, like dictation on a Mac, the text goes straight to the
+ * focused pane through [deliver]: a dictation once the Mac finalizes it, an AI pane once the AI
+ * answers. Main thread only.
  */
 class VoiceController(
   private val link: SpeechLink,
-  /** The target pane's screen and title for AI panes, read when the AI is asked. */
-  private val aiContext: () -> AiContext? = { null },
+  /** The target pane's screen and title for [note], an AI pane, read when the AI is asked. */
+  private val aiContext: (note: VoiceNote) -> AiContext? = { null },
+  /**
+   * Types [note]'s ready output into its target pane (taking it with [take]); false when there is
+   * no terminal to type into, which leaves the pane staged with a notice.
+   */
+  private val deliver: (note: VoiceNote) -> Boolean = { false },
+  /** The model provider chosen in Settings (an [dev.improve.vrcode.AiProvider] storage value). */
+  private val aiProvider: () -> String = { "claude" },
   private val micAllowed: () -> Boolean,
 ) {
   val notes = mutableStateListOf<VoiceNote>()
@@ -104,8 +114,18 @@ class VoiceController(
   var serviceReady by mutableStateOf(false)
     private set
 
-  /** Press Enter after pasting. */
-  var enterAfterPaste by mutableStateOf(false)
+  /** Press Enter after typing a dictation: the right (text) mic's toggle on its pane. */
+  var enterAfterDictation by mutableStateOf(false)
+
+  /** Press Enter after typing the AI's text: the left (AI) mic's toggle. Off leaves it at the prompt to review. */
+  var enterAfterAi by mutableStateOf(false)
+
+  /** Whether typing a [mode] pane (delivered or pasted) presses Enter after it. */
+  fun enterAfter(mode: VoiceNote.Mode): Boolean = if (mode == VoiceNote.Mode.Ai) enterAfterAi else enterAfterDictation
+
+  fun setEnterAfter(mode: VoiceNote.Mode, on: Boolean) {
+    if (mode == VoiceNote.Mode.Ai) enterAfterAi = on else enterAfterDictation = on
+  }
 
   private val main = Handler(Looper.getMainLooper())
   private var nextNote = 0
@@ -153,11 +173,7 @@ class VoiceController(
     streamingId = utterance
     loudChunks = 0
     peakLevel = 0f
-    link.send(
-      Kind.AUDIO_START,
-      utterance,
-      JSONObject().put("sampleRate", MicCapture.SAMPLE_RATE).put("channels", 1).put("encoding", "pcm_s16le"),
-    )
+    link.send(Kind.AUDIO_START, utterance, audioFormat())
     mic.start()?.let {
       link.send(Kind.AUDIO_CANCEL, utterance)
       return fail(note, it)
@@ -194,6 +210,46 @@ class VoiceController(
     main.postDelayed({ if (note.phase == VoiceNote.Phase.Finalizing && note.utterance == utterance) finish(note) }, FINALIZE_TIMEOUT_MS)
   }
 
+  /**
+   * Cancel on the live pane: stop listening and drop what this dictation said, so nothing is
+   * typed when the fist opens. A pane being added to keeps the text it already had, staged.
+   */
+  fun cancelListening() {
+    val note = listening ?: return
+    listening = null
+    mic.stop()
+    level = 0f
+    link.send(Kind.AUDIO_CANCEL, note.utterance)
+    note.utterance = -1 // late transcripts are ignored
+    note.liveFinal = ""
+    note.liveVolatile = ""
+    note.placed = true
+    note.phase = VoiceNote.Phase.Ready
+    if (note.text.isBlank()) remove(note)
+    Log.i(TAG, "voice: pane ${note.id} cancelled while listening")
+  }
+
+  /**
+   * Clear on the live pane: drop everything said so far and keep listening into the same pane.
+   * The Mac transcribes one utterance at a time, so this starts a fresh one; chunks still tagged
+   * with the old id are dropped there. The loud-chunk count is left alone (the capture thread
+   * owns it while it runs): at worst a cleared dictation waits for the Mac instead of ending at once.
+   */
+  fun clearListening() {
+    val note = listening ?: return
+    link.send(Kind.AUDIO_CANCEL, note.utterance)
+    val utterance = ++nextUtterance
+    note.committed = ""
+    note.liveFinal = ""
+    note.liveVolatile = ""
+    note.aiText = null
+    note.notice = null
+    note.utterance = utterance
+    link.send(Kind.AUDIO_START, utterance, audioFormat())
+    streamingId = utterance
+    Log.i(TAG, "voice: pane ${note.id} cleared while listening (utterance $utterance)")
+  }
+
   fun onSpeechEvent(event: SpeechEvent) {
     when (event) {
       is SpeechEvent.Connected -> {
@@ -205,6 +261,7 @@ class VoiceController(
         note.aiText = event.text
         note.phase = VoiceNote.Phase.Ready
         Log.i(TAG, "voice: AI answered for pane ${note.id} (${event.text.length} chars)")
+        insert(note)
       }
       is SpeechEvent.Disconnected -> {
         serviceReady = false
@@ -338,7 +395,18 @@ class VoiceController(
       }
     }
     Log.i(TAG, "voice: pane ${note.id} holds ${note.text.length} chars")
+    if (note.notice == null && note.text.isNotBlank() && note in notes) insert(note)
   }
+
+  /** Types a ready pane into the focused pane; with no terminal to type into it stays staged and says so. */
+  private fun insert(note: VoiceNote) {
+    if (deliver(note) || note !in notes) return
+    note.notice = NO_TARGET
+    Log.i(TAG, "voice: pane ${note.id} staged: no terminal to type into")
+  }
+
+  private fun audioFormat(): JSONObject =
+    JSONObject().put("sampleRate", MicCapture.SAMPLE_RATE).put("channels", 1).put("encoding", "pcm_s16le")
 
   /** Sends [note]'s transcript and the target pane's screen to the Mac's AI; the pane shows Thinking. */
   private fun askAi(note: VoiceNote) {
@@ -346,12 +414,13 @@ class VoiceController(
     note.aiRequest = id
     note.aiText = null
     note.phase = VoiceNote.Phase.Thinking
-    val context = aiContext()
+    val context = aiContext(note)
     val sent =
       link.send(
         Kind.AI_REQUEST,
         id,
-        JSONObject().put("transcript", note.text).put("screen", context?.screen ?: "").put("title", context?.title ?: ""),
+        JSONObject().put("transcript", note.text).put("screen", context?.screen ?: "").put("title", context?.title ?: "")
+          .put("provider", aiProvider()),
       )
     if (!sent) return aiFailed(note, "Mac service not connected; the AI didn't answer")
     Log.i(TAG, "voice: asking the AI for pane ${note.id} (${context?.title ?: "no pane focused"})")
@@ -371,6 +440,7 @@ class VoiceController(
     const val AI_TIMEOUT_MS = 30_000L
     const val NOTICE_MS = 4000L
     const val MAX_PANES = 8
+    const val NO_TARGET = "No terminal to type into — pinch a pane to paste"
 
     // Two 50 ms chunks at or above this level (MicCapture's 0..1 RMS, about -43 dBFS) count as
     // having said something. An estimate, not yet measured on the Quest: stopListening logs each

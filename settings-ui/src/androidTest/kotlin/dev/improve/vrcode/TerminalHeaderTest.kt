@@ -121,6 +121,33 @@ class TerminalHeaderTest {
     compose.runOnIdle { assertEquals(listOf("minimize", "zoom", "close"), calls) }
   }
 
+  @Test fun bothStylesTargetTheirOwnScreenAndExposeFullscreenRestore() {
+    val calls = mutableListOf<String>()
+    var style by mutableStateOf(WindowStyle.MacOS)
+    var fullscreen by mutableStateOf(false)
+    compose.setContent {
+      androidx.compose.foundation.layout.Column {
+        for (screen in listOf("first", "second")) {
+          Box(Modifier.testTag(screen)) {
+            VrcodeWindowHeader(TerminalWindowState(screen).apply { loading = false }, style,
+              WindowChrome(onClose = { calls += "$screen close" }, onMinimize = { calls += "$screen minimize" },
+                onZoom = { calls += "$screen zoom"; fullscreen = !fullscreen }), fullscreen = fullscreen)
+          }
+        }
+      }
+    }
+    for (nextStyle in WindowStyle.entries) {
+      compose.runOnIdle { style = nextStyle; fullscreen = false; calls.clear() }
+      fun button(screen: String, label: String) = compose.onNode(hasContentDescription(label) and hasAnyAncestor(hasTestTag(screen)))
+      button("first", "Minimize").performClick()
+      button("second", "Maximize").performClick()
+      button("second", "Restore window").assertIsDisplayed().performClick()
+      button("second", "Close").performClick()
+      button("first", "Close").performClick()
+      compose.runOnIdle { assertEquals(listOf("first minimize", "second zoom", "second zoom", "second close", "first close"), calls) }
+    }
+  }
+
   @Test fun bothTitleBarStylesDragWithoutTakingInputFromButtonsOrTerminalBody() {
     var style by mutableStateOf(WindowStyle.MacOS)
     val moves = mutableListOf<Pair<Offset, Offset>>()
@@ -182,6 +209,104 @@ class TerminalHeaderTest {
       header.performTouchInput { down(center); moveBy(Offset(50f, 0f)); up() }
       compose.runOnIdle { assertEquals(50f, moves.last().second.x - moves.last().first.x, 0.1f) }
     }
+  }
+
+  @OptIn(ExperimentalTestApi::class)
+  @Test fun trafficLightsExpandOnHoverWithoutMovingTargetsAndClickAcrossTheWholePill() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val calls = mutableListOf<String>()
+    val hover = TerminalHeaderHover()
+    compose.setContent {
+      CompositionLocalProvider(LocalDensity provides Density(1f)) {
+        Box(Modifier.requiredSize(900.dp, 180.dp).testTag("test-window")) {
+          VrcodeWindowHeader(TerminalWindowState("main · A long terminal title stays clear of the controls").apply { loading = false },
+            WindowStyle.MacOS, WindowChrome(
+              onClose = { calls += "close" }, onMinimize = { calls += "minimize" }, onZoom = { calls += "zoom" },
+              trailingSlot = { Row { WindowModeButton(WindowMode.Fixed) {}; SettingsButton {} } },
+            ), hoverState = hover)
+        }
+      }
+    }
+    val tags = listOf("xmux-close", "xmux-minimize", "xmux-zoom")
+    val targets = tags.associateWith { compose.onNodeWithTag(it).fetchSemanticsNode().boundsInRoot }
+    val title = compose.onNodeWithTag("xmux-title").fetchSemanticsNode().boundsInRoot
+    for (tag in tags) {
+      compose.onNodeWithTag(tag).assertWidthIsAtLeast(64.dp).assertHeightIsAtLeast(48.dp)
+      compose.onNodeWithTag("$tag-shape", useUnmergedTree = true).assertWidthIsEqualTo(28.dp).assertHeightIsEqualTo(28.dp)
+    }
+    capture(context, "window-lights-resting.png")
+    for (tag in tags) {
+      val target = compose.onNodeWithTag(tag)
+      target.performMouseInput { enter(center) }
+      compose.mainClock.advanceTimeBy(220)
+      compose.onNodeWithTag("$tag-shape", useUnmergedTree = true).assertWidthIsEqualTo(60.dp).assertHeightIsEqualTo(44.dp)
+      assertEquals(title, compose.onNodeWithTag("xmux-title").fetchSemanticsNode().boundsInRoot)
+      for (other in tags) assertEquals(targets[other], compose.onNodeWithTag(other).fetchSemanticsNode().boundsInRoot)
+      if (tag == "xmux-minimize") capture(context, "window-lights-hover.png")
+      // Click the expanded pill's edge, well outside its resting circle.
+      target.performMouseInput { click(Offset(5f, center.y)); exit() }
+      compose.mainClock.advanceTimeBy(220)
+      compose.onNodeWithTag("$tag-shape", useUnmergedTree = true).assertWidthIsEqualTo(28.dp)
+    }
+    compose.runOnIdle { assertEquals(listOf("close", "minimize", "zoom"), calls) }
+    // Quest geometry-driven hover follows the same targets even without Android mouse events.
+    compose.runOnIdle { hover.updatePointer(targets.getValue("xmux-close").center) }
+    compose.mainClock.advanceTimeBy(220)
+    compose.onNodeWithTag("xmux-close-shape", useUnmergedTree = true).assertWidthIsEqualTo(60.dp)
+    compose.runOnIdle { hover.updatePointer(null) }
+    compose.mainClock.advanceTimeBy(220)
+    compose.onNodeWithTag("xmux-close-shape", useUnmergedTree = true).assertWidthIsEqualTo(28.dp)
+  }
+
+  @OptIn(ExperimentalTestApi::class)
+  @Test fun onlyTheFocusedWindowIsOutlinedAndUnfocusedTrafficLightsAreGrayUntilHovered() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val theme = TerminalTheme.Dracula
+    var focused by mutableStateOf(true)
+    val chrome = WindowChrome(
+      onClose = {}, onMinimize = {}, onZoom = {},
+      header = { s, c -> VrcodeWindowHeader(s, WindowStyle.MacOS, c, focused = focused) },
+      outline = { windowOutline(focused, theme) },
+    ).withTerminalTheme(theme)
+    compose.setContent {
+      CompositionLocalProvider(LocalDensity provides Density(1f)) {
+        Box(Modifier.requiredSize(800.dp, 200.dp)) {
+          WindowFrame(TerminalWindowState("main · Terminal").apply { loading = false }, Modifier.testTag("test-window"), chrome,
+            body = { ctx -> TextView(ctx) })
+        }
+      }
+    }
+    val window = compose.onNodeWithTag("test-window").fetchSemanticsNode().boundsInRoot
+    fun shape() = compose.onNodeWithTag("xmux-close-shape", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+    fun pixel(x: Float, y: Float): Int =
+      compose.onNodeWithTag("test-window").captureToImage().asAndroidBitmap().getPixel((x - window.left).toInt(), (y - window.top).toInt())
+    fun Int.r() = (this shr 16) and 255
+    fun Int.g() = (this shr 8) and 255
+    fun Int.b() = this and 255
+    fun Int.isRed() = r() > 200 && g() < 130 && b() < 130
+    fun Int.isGray() = maxOf(r(), g(), b()) - minOf(r(), g(), b()) < 24 && r() in 70..160
+    fun Int.isAccent() = r() in 170..210 && g() in 130..165 && b() > 230
+    // Mid-height on the left edge, inside the focused ring but past the plain 1dp hairline.
+    val edge = Offset(window.left + 1.5f, window.top + 150f)
+
+    val active = shape()
+    assertTrue("focused close light is red", pixel(active.left + 5f, active.center.y).isRed())
+    assertFalse("focused close light shows its glyph", pixel(active.center.x, active.center.y).isRed())
+    assertTrue("focused window has the accent outline", pixel(edge.x, edge.y).isAccent())
+    capture(context, "window-focused.png")
+
+    compose.runOnIdle { focused = false }
+    val resting = shape()
+    assertTrue("unfocused close light is gray", pixel(resting.left + 5f, resting.center.y).isGray())
+    assertTrue("unfocused close light hides its glyph", pixel(resting.center.x, resting.center.y).isGray())
+    assertFalse("unfocused window has no accent outline", pixel(edge.x, edge.y).isAccent())
+    capture(context, "window-unfocused.png")
+
+    compose.onNodeWithTag("xmux-close").performMouseInput { enter(center) }
+    compose.mainClock.advanceTimeBy(220)
+    val hovered = shape()
+    assertTrue("hovering an unfocused light restores its color", pixel(hovered.left + 8f, hovered.center.y).isRed())
+    capture(context, "window-unfocused-hover.png")
   }
 
   private fun capture(context: Context, name: String) {

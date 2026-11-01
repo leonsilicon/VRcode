@@ -146,7 +146,7 @@ internal class DockFeature(
     val run = mutableListOf<() -> Unit>()
     list += DockOption(if (connected) "Connected" else "Connect", DockOptionKind.Connection, enabled = connected)
     run += onConnection
-    val focused = (xmux.focused ?: xmux.windows.firstOrNull())?.screen?.value
+    val focused = (xmux.focused ?: xmux.windows.firstOrNull { it.visible })?.screen?.value
     for ((index, window) in xmux.windows.withIndex()) {
       val id = window.screen?.value ?: continue
       list += DockOption(window.state.title.ifBlank { "Terminal ${index + 1}" }, DockOptionKind.Window, selected = id == focused, enabled = connected)

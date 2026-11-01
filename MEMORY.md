@@ -34,6 +34,12 @@ Build with the toolchain above: `./gradlew :app:assembleDebug`. Run unit tests w
 `./gradlew :app:testDebugUnitTest :settings-ui:testDebugUnitTest`. See
 `docs/settings.md` for settings behavior and device verification.
 
+The Mac side ships as `VRcode Mac.app`, a Developer ID-signed Tauri 2 menu-bar app in `mac-app/`. It
+bundles `vrcode-mac` (from `mac/`) and `xmux-bridge` (from the xmux checkout). Build it with
+`bun run mac:run --package-only` (needs `cargo install tauri-cli --version '^2' --locked`) and
+install it at login with `bun run mac:install`. Rust unit tests: `cargo test` in
+`mac-app/src-tauri`. See `docs/mac-app.md`.
+
 Current environment inspector result (2026-11-01, floating dock task):
 
 ```json

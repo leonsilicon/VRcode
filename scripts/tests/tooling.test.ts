@@ -65,13 +65,31 @@ test("cmux generator preserves catalog metadata, operation classes and external 
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("Mac LaunchAgent restarts the installed app copy with escaped arguments", async () => {
-  const { launchAgentPlist, LABEL } = await import("../run-mac-service");
-  const plist = launchAgentPlist("/Users/x/Library/Application Support/dev.improve.vrcode/VRcode Mac.app/Contents/MacOS/vrcode-mac", ["--cmux-session", "a&b<c>"], "/tmp/vrcode-mac.log");
+test("Mac LaunchAgent relaunches the installed app after a crash, not after Quit", async () => {
+  const { launchAgentPlist, LABEL, appExecutable } = await import("../run-mac-service");
+  const app = "/Users/x/Library/Application Support/dev.improve.vrcode/VRcode Mac.app";
+  const plist = launchAgentPlist(`${app}/${appExecutable}`, ["--cmux-session", "a&b<c>"], "/tmp/vrcode-mac.log");
   expect(plist).toContain(`<key>Label</key><string>${LABEL}</string>`);
   expect(plist).toContain("<key>RunAtLoad</key><true/>");
-  expect(plist).toContain("<key>KeepAlive</key><true/>");
-  expect(plist).toContain("<string>/Users/x/Library/Application Support/dev.improve.vrcode/VRcode Mac.app/Contents/MacOS/vrcode-mac</string>");
+  expect(plist).toContain("<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>");
+  expect(plist).toContain(`<string>${app}/Contents/MacOS/vrcode-mac-app</string>`);
   expect(plist).toContain("<string>a&amp;b&lt;c&gt;</string>");
   expect(plist).not.toContain("mac/.build");
+});
+
+test("Mac app signing prefers Developer ID, then Apple Development, then ad hoc", async () => {
+  const { pickIdentity } = await import("../run-mac-service");
+  const hash = "A".repeat(40);
+  const listing = (...names: string[]) => names.map((name, i) => `  ${i + 1}) ${hash} "${name}"`).join("\n") + `\n     ${names.length} valid identities found`;
+  expect(pickIdentity(listing("Apple Development: A (1)", "Developer ID Application: A (2)"))).toBe("Developer ID Application: A (2)");
+  expect(pickIdentity(listing("Apple Development: A (1)"))).toBe("Apple Development: A (1)");
+  expect(pickIdentity("     0 valid identities found")).toBe("-");
+});
+
+test("CI signing defers to the imported certificate unless an identity is named", async () => {
+  const { buildIdentity } = await import("../run-mac-service");
+  expect(await buildIdentity({ APPLE_CERTIFICATE: "MIIK..." })).toBeUndefined();
+  expect(await buildIdentity({ APPLE_CERTIFICATE: "MIIK...", APPLE_SIGNING_IDENTITY: "Developer ID Application: A (1)" }))
+    .toBe("Developer ID Application: A (1)");
+  expect(await buildIdentity({ APPLE_SIGNING_IDENTITY: "Apple Development: A (2)" })).toBe("Apple Development: A (2)");
 });

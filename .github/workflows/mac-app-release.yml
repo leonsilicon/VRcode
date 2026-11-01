@@ -1,0 +1,210 @@
+# Builds VRcode Mac (mac-app/), signs it with the Developer ID certificate, notarizes and staples
+# it, and publishes a zip to GitHub Releases. See docs/mac-app.md ("Releases") for the secrets.
+#
+# - Push a tag `mac-v<version>` matching mac-app/src-tauri/tauri.conf.json: publishes the release.
+# - Run it by hand (Actions → Release VRcode Mac): creates the tag at the chosen commit and a draft
+#   release by default, so it can be checked before publishing.
+name: Release VRcode Mac
+
+on:
+  push:
+    tags: ["mac-v*"]
+  workflow_dispatch:
+    inputs:
+      xmux_ref:
+        description: xmux branch, tag or commit to bundle as xmux-bridge
+        default: main
+      draft:
+        description: Create the release as a draft
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mac-app-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAURI_CLI_VERSION: 2.12.4
+
+jobs:
+  release:
+    # macOS 27 with Xcode 27: the Swift service builds against the macOS 27 SDK.
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve the version and tag
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRAFT_INPUT: ${{ inputs.draft }}
+        run: |
+          version=$(jq -r .version mac-app/src-tauri/tauri.conf.json)
+          cargo_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' mac-app/src-tauri/Cargo.toml | head -1)
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::error::tauri.conf.json has $version but Cargo.toml has $cargo_version; make them equal."
+            exit 1
+          fi
+          tag="mac-v$version"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME doesn't match the app version $version (expected $tag). Bump the version in mac-app/src-tauri/tauri.conf.json and Cargo.toml."
+              exit 1
+            fi
+            draft=false
+          else
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || gh release view "$tag" >/dev/null 2>&1; then
+              echo "::error::$tag already exists. Bump the version in mac-app/src-tauri/tauri.conf.json and Cargo.toml."
+              exit 1
+            fi
+            draft="$DRAFT_INPUT"
+          fi
+          case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "draft=$draft"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out xmux
+        uses: actions/checkout@v7
+        with:
+          repository: ImproveLabs/xmux
+          ref: ${{ inputs.xmux_ref || 'main' }}
+          path: xmux
+
+      - name: Install xmux's Rust toolchain
+        working-directory: xmux
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install the Tauri CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "tauri-cli-v$TAURI_CLI_VERSION" --repo tauri-apps/tauri \
+            --pattern cargo-tauri-aarch64-apple-darwin.zip --dir "$RUNNER_TEMP"
+          unzip -o -q "$RUNNER_TEMP/cargo-tauri-aarch64-apple-darwin.zip" cargo-tauri -d "$HOME/.cargo/bin"
+          cargo tauri --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            mac-app/src-tauri -> target
+            xmux -> target
+
+      - name: Check the signing and notarization secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=()
+          [ -n "$APPLE_CERTIFICATE" ] || missing+=("APPLE_CERTIFICATE (base64 of the Developer ID Application .p12)")
+          [ -n "$APPLE_CERTIFICATE_PASSWORD" ] || missing+=("APPLE_CERTIFICATE_PASSWORD")
+          api_key=false; apple_id=false
+          [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_PRIVATE_KEY" ] && api_key=true
+          [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ] && apple_id=true
+          if [ "$api_key" = false ] && [ "$apple_id" = false ]; then
+            missing+=("notarization: APPLE_API_KEY + APPLE_API_ISSUER + APPLE_API_PRIVATE_KEY, or APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID")
+          fi
+          if [ ${#missing[@]} -gt 0 ]; then
+            for name in "${missing[@]}"; do echo "::error::Missing secret: $name"; done
+            echo "::error::See docs/mac-app.md, Releases."
+            exit 1
+          fi
+          if [ "$api_key" = true ] && [ "$apple_id" = false ]; then
+            # Tauri reads the App Store Connect key from a file.
+            printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/AuthKey.p8"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build, sign and notarize
+        env:
+          XMUX_DIR: ${{ github.workspace }}/xmux
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Tauri treats a set-but-empty variable as provided; unset secrets arrive empty.
+          for name in APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!name}" ] || unset "$name"
+          done
+          bun scripts/run-mac-service.ts --package-only
+
+      - name: Test
+        working-directory: mac-app/src-tauri
+        run: cargo test
+
+      - name: Verify the signature, hardened runtime and notarization
+        run: |
+          app="mac/.build/VRcode Mac.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          for binary in vrcode-mac-app vrcode-mac xmux-bridge; do
+            codesign -dv "$app/Contents/MacOS/$binary" 2>&1 | grep -q 'flags=0x10000(runtime)' \
+              || { echo "::error::$binary lacks the hardened runtime"; exit 1; }
+          done
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"
+          grep -q 'source=Notarized Developer ID' "$RUNNER_TEMP/spctl.txt" \
+            || { echo "::error::Gatekeeper does not see a notarized Developer ID app"; exit 1; }
+
+      - name: Package
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          XMUX_REF: ${{ inputs.xmux_ref || 'main' }}
+        run: |
+          zip="VRcode-Mac-$VERSION-macos-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "mac/.build/VRcode Mac.app" "$RUNNER_TEMP/$zip"
+          (cd "$RUNNER_TEMP" && shasum -a 256 "$zip" > "$zip.sha256")
+          xmux_sha=$(git -C xmux rev-parse HEAD)
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          **VRcode Mac $VERSION** for Apple silicon Macs with macOS 27 or later, signed with Developer ID and notarized.
+
+          Unzip it, move **VRcode Mac.app** to Applications and open it. It runs from the menu bar and bundles the vrcode Mac service and the xmux bridge, so nothing else needs to run on the Mac. To start it at login, add it under System Settings → General → Login Items. The first launch asks for the permissions it needs; its window lists them.
+
+          Built from $GITHUB_SHA with [ImproveLabs/xmux@${xmux_sha:0:12}](https://github.com/ImproveLabs/xmux/commit/$xmux_sha) ($XMUX_REF). Checksum: \`$zip.sha256\`.
+          EOF
+          echo "zip=$RUNNER_TEMP/$zip" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: VRcode-Mac-${{ steps.version.outputs.version }}
+          path: |
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.zip }}.sha256
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DRAFT: ${{ steps.version.outputs.draft }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          ZIP: ${{ steps.package.outputs.zip }}
+        run: |
+          flags=(--title "VRcode Mac $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --target "$GITHUB_SHA")
+          [ "$DRAFT" = true ] && flags+=(--draft)
+          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+          gh release create "$TAG" "$ZIP" "$ZIP.sha256" "${flags[@]}"

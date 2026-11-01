@@ -16,3 +16,11 @@ core-foundation = "0.10"
 libc = "0.2"
 signal-hook = "0.3"
 security-framework = "3"
+core-foundation-sys = "0.8"
+
+# Release builds strip debug info by default, and the stripped proc-macro dylibs can end up
+# with a LINKEDIT string table that is only 4-byte aligned. macOS 27's dyld refuses to load
+# those ("mis-aligned LINKEDIT string pool"), and rustc then reports "can't find crate".
+# Executables load either way, so only build scripts and proc-macros skip stripping.
+[profile.release.build-override]
+strip = false

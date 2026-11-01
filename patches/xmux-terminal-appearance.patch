@@ -1,33 +1,33 @@
 diff --git a/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api b/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
-index 5aaafd5..9bc445f 100644
+index 51b05df..4e984ee 100644
 --- a/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
 +++ b/packages/dev/improve/xmux/android/xmux-spatial/api/xmux-spatial.api
-@@ -186,6 +186,7 @@ public final class dev/improve/xmux/spatial/XmuxSpatial {
- 	public final fun onSceneTick ()V
+@@ -204,6 +204,7 @@ public final class dev/improve/xmux/spatial/XmuxSpatial {
  	public final fun registerFeatures ()Ljava/util/List;
  	public final fun registerPanels ()Ljava/util/List;
+ 	public final fun resizeWindow (Ldev/improve/xmux/spatial/ScreenWindow;FF)V
 +	public final fun setFontSize (F)V
+ 	public final fun setOnGridResize (Lkotlin/jvm/functions/Function2;)V
  	public final fun unmount (Ldev/improve/xmux/spatial/ScreenWindow;)V
  }
- 
 diff --git a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt
-index 908c886..08ca653 100644
+index f60fe00..86f92a6 100644
 --- a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt
 +++ b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/ScreenBinding.kt
 @@ -25,7 +25,7 @@ import dev.improve.xmux.window.frame.TerminalWindowState
  internal class ScreenBinding(
    val session: XmuxSession,
    val screen: ScreenId,
--  private val font: TerminalFont,
+-  val font: TerminalFont,
 +  var font: TerminalFont,
    private val terminals: TerminalRefs,
    private val onFocus: () -> Unit,
  ) : ScreenView.Listener {
 diff --git a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
-index 0d77fa5..7e8c863 100644
+index 59a7429..749bb56 100644
 --- a/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
 +++ b/packages/dev/improve/xmux/android/xmux-spatial/src/main/kotlin/dev/improve/xmux/spatial/XmuxSpatial.kt
-@@ -128,10 +128,12 @@ public class XmuxSpatial(
+@@ -140,10 +140,12 @@ public class XmuxSpatial(
    private val activity: AppSystemActivity,
    public val config: SpatialConfig = SpatialConfig(),
  ) {
@@ -42,9 +42,9 @@ index 0d77fa5..7e8c863 100644
    }
  
    /** Physical size of one panel pixel, so every window shares one text size. */
-@@ -147,6 +149,18 @@ public class XmuxSpatial(
- 
-   public val windows: List<ScreenWindow> get() = mounted
+@@ -173,6 +175,18 @@ public class XmuxSpatial(
+     if (session != null) for ((terminal, size) in sizes) if (terminal in shown) session.terminal(terminal).resize(size.cols, size.rows)
+   }
  
 +  /** Changes local text size, keeping sessions and window poses. Call on the main thread. */
 +  public fun setFontSize(sizePx: Float) {
@@ -61,7 +61,7 @@ index 0d77fa5..7e8c863 100644
    /** The window that last got a tap; keyboard input goes to its focused pane. */
    public var focused: ScreenWindow? = null
      private set
-@@ -194,7 +208,8 @@ public class XmuxSpatial(
+@@ -221,7 +235,8 @@ public class XmuxSpatial(
    public fun mount(content: WindowContent, placement: Placement = Placement.InFrontOfHead): ScreenWindow {
      val index = mounted.size
      val header = content.chrome.headerHeightDp
@@ -71,7 +71,7 @@ index 0d77fa5..7e8c863 100644
      val window = ScreenWindow(index, content, null, index < config.maxLayers, null, windowSpec, content.chrome)
      window.pending = placement
      mounted.add(window)
-@@ -328,12 +343,20 @@ public class XmuxSpatial(
+@@ -405,12 +420,20 @@ public class XmuxSpatial(
      window.entity?.destroy()
      window.entity = null
      window.screenView = null

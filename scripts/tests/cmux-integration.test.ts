@@ -165,6 +165,62 @@ suite("background cmux control", () => {
     await control.ok("workspace.close", { workspace }, true);
   }, 20_000);
 
+  test("window close removes the exact cmux screen while another screen is focused", async () => {
+    const workspace = (await control.ok("workspace.create", { name: "Window controls QA", initial_content: "empty" }, true)).value.workspace_id;
+    try {
+      const first = (await control.ok("screen.create", { workspace, name: "Close this window" }, true)).value;
+      const second = (await control.ok("screen.create", { workspace, name: "Keep this window" }, true)).value;
+      await control.ok("pane.focus", { pane: second.pane_id }, true);
+      await control.ok("screen.close", { screen: first.screen_id }, true);
+      const snapshot = await control.ok("session.snapshot");
+      expect(snapshot.screens.some((screen: any) => screen.id === first.screen_id)).toBe(false);
+      expect(snapshot.screens.some((screen: any) => screen.id === second.screen_id)).toBe(true);
+      expect(snapshot.panes.some((pane: any) => pane.id === second.pane_id)).toBe(true);
+    } finally {
+      await control.ok("workspace.close", { workspace }, true);
+    }
+  });
+
+  test("the Quest pins a terminal's grid over other viewers and can hand it back", async () => {
+    const workspace = (await control.ok("workspace.create", { name: "Grid size QA", initial_content: "empty" }, true)).value.workspace_id;
+    const stream = `stream_${crypto.randomUUID().replaceAll("-", "")}`;
+    try {
+      const terminal = (await control.ok("screen.create", { workspace, name: "Resize from the Quest" }, true)).value.terminal_id;
+      const grid = async () => {
+        const t = await control.ok("terminal.get", { terminal });
+        return { cols: t.cols ?? t.size?.cols, rows: t.rows ?? t.size?.rows };
+      };
+      const settle = async (cols: number, rows: number) => {
+        for (let i = 0; i < 40 && JSON.stringify(await grid()) !== JSON.stringify({ cols, rows }); i++) await Bun.sleep(25);
+        expect(await grid()).toEqual({ cols, rows });
+      };
+      // Another viewer (a Mac frontend, say) sizes the terminal to its own window.
+      const lease = (await control.ok("terminal.attach", { terminal, stream_id: stream })).attachment_lease;
+      await control.ok("terminal.viewer.resize", { terminal, attachment_lease: lease, cols: 60, rows: 20 });
+      await settle(60, 20);
+
+      const pinned = await control.ok("vrcode.terminal.size.set", { terminal, cols: 132, rows: 43 });
+      expect(pinned).toMatchObject({ terminal, cols: 132, rows: 43, policy: "fixed" });
+      await settle(132, 43);
+      await control.ok("terminal.viewer.resize", { terminal, attachment_lease: lease, cols: 70, rows: 25 });
+      await Bun.sleep(100);
+      expect(await grid()).toEqual({ cols: 132, rows: 43 });
+
+      const released = await control.ok("vrcode.terminal.size.set", { terminal });
+      expect(released.policy).not.toBe("fixed");
+      await settle(70, 25);
+
+      for (const bad of [{ terminal, cols: 80 }, { terminal, cols: 0, rows: 24 }, { cols: 80, rows: 24 }]) {
+        expect((await control.request("vrcode.terminal.size.set", bad)).error.code).toBe("vrcode.invalid_request");
+      }
+      const missing = await control.request("vrcode.terminal.size.set", { terminal: `term_${"0".repeat(32)}`, cols: 80, rows: 24 });
+      expect(missing.error.message).toContain("no open terminal");
+    } finally {
+      await control.ok("stream.cancel", { stream }).catch(() => {});
+      await control.ok("workspace.close", { workspace }, true);
+    }
+  });
+
   test("persistent streams can be cancelled while ordinary requests keep working", async () => {
     const stream = `stream_${crypto.randomUUID().replaceAll("-", "")}`;
     const result = await control.ok("session.events", { stream_id: stream });

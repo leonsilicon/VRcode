@@ -11,20 +11,25 @@ user sees, hears, says and configures goes through the Quest. vrcode does five t
    ordinary Mac apps stay usable from the headset. With the lid closed it is the Mac's only screen.
 3. **Gestures, shortcuts and voice.** Hand gestures act on the xmux terminals; a
    palm-facing middle-finger pinch opens a configurable Shortcuts pie for creating windows. Speech
-   to text types through a staged transcript, nothing reaching a terminal before Send.
+   to text types into the focused window as soon as the fist opens, like dictation on a Mac.
 4. **Audio from the Quest.** Microphones, speakers and their settings are chosen on the Quest, and
    Mac app audio plays in the headset.
 5. **Saved layout.** Quitting and reopening vrcode puts every window back where it was.
 
 Rules that hold across all of it:
 
-- cmux on the Mac is the only source of truth for terminals: contents, layout, tabs and focus. vrcode
-  stores where windows are in the room and its own settings, never terminal state.
+- cmux on the Mac is the only source of truth for terminals: contents, layout, tabs and focus, and
+  also where each terminal window is in the room (a cmux frontend projection). The Quest renders
+  that state and stores only vrcode's own settings.
 - The Mac is compute and state only. vrcode works with the lid closed and no external display,
-  keyboard, speakers or microphone. With the lid open the Mac works as usual, and xmux never resizes
-  the Mac's terminal grids.
-- Every setting, Mac-side ones included, is changed from the Quest in the vrcode menu (left palm
-  pinch). The vrcode Mac service has no UI of its own.
+  keyboard, speakers or microphone. With the lid open the Mac works as usual.
+- The Quest sets each terminal's columns and rows in cmux (decided 2026-11-01). Resizing a terminal
+  window re-flows its terminals instead of stretching the panel, and the size is pinned in cmux, so
+  a Mac frontend showing the same terminal crops or pans it rather than resizing it back. See
+  [window resize](docs/xmux-integration.md#window-resize-2026-11-01).
+- Every setting, Mac-side ones included, is changed from the Quest in the vrcode menu (the
+  dock's gear, or the left controller's menu button). On the Mac, the VRcode Mac menu-bar app's window covers only what has to happen there:
+  privacy permissions, approving a headset, the API key, and service status.
 - vrcode does not patch xmux. Anything xmux lacks is filed as an xmux issue first (open gaps are
   listed below). xmux's README leaves gestures, voice and macros to apps built on it.
 - Every gesture has an on-panel equivalent, so a flaky gesture never blocks a feature.
@@ -32,9 +37,10 @@ Rules that hold across all of it:
 | Piece | Runs on | Owns |
 |---|---|---|
 | cmux (`cmux-tui` daemon, session `main`) | Mac (lid open or closed) | all terminal state |
-| `xmux-bridge` | Mac, port 7272 | mirrors the cmux session to the headset; input and focus back to cmux |
-| vrcode Mac service | Mac, its own port | speech recognition, the Mac display (capture, virtual display), mouse and keyboard injection, Mac audio, clipboard, keeping the Mac awake, starting cmux and the bridge |
-| vrcode app (Spatial SDK and `xmux-spatial`) | Quest | window placement and the saved layout, gestures, transcript dialog, Mac display panel, audio devices, all settings |
+| `xmux-bridge` | Mac, port 7272, bundled in VRcode Mac | mirrors the cmux session to the headset; input and focus back to cmux |
+| vrcode Mac service (`vrcode-mac`) | Mac, ports 7273 (speech) and 7274 (relay), bundled in VRcode Mac | speech recognition, the Mac display (capture, virtual display), mouse and keyboard injection, Mac audio, clipboard, keeping the Mac awake, starting cmux |
+| VRcode Mac (`mac-app/`, signed Tauri menu-bar app) | Mac, at login | runs and restarts both helpers above; permissions, headset pairing, API key, status ([docs](docs/mac-app.md)) |
+| vrcode app (Spatial SDK and `xmux-spatial`) | Quest | drawing windows where cmux's layout puts them, gestures, transcript dialog, Mac display panel, audio devices, all settings |
 
 ## How vrcode uses xmux
 
@@ -93,7 +99,9 @@ Notes:
 - **`follow` cannot restore a layout.** Its placement callback gets `(index, count)`, not the
   screen, so vrcode runs its own follow loop for the saved layout (see below). Ask for the `Screen`
   in the callback.
-- **No way to set a window's size from code.** Restoring a saved size needs it.
+- **No way to set a window's size from code.** Done in xmux `f8a216b` (`SpatialConfig.resizeGrids`,
+  `onGridResize`, `resizeWindow`): a screen window's size is its terminals' grids, held by cmux,
+  so nothing is restored on the Quest.
 - **No grab state.** vrcode cannot tell when ISDK is moving or resizing a window, so it detects
   "move ended" by polling poses.
 - **No reusable framing.** `xmux-proto`'s `encode_frame`/`decode_frame` take only xmux's own `Frame`,
@@ -120,8 +128,11 @@ Notes:
 
 ## vrcode Mac service
 
-The vrcode Mac service runs next to `xmux-bridge` on its own port (the bridge uses 7272) and starts
-at login as a LaunchAgent. It handles speech recognition, the Mac display and its input, Mac audio,
+The vrcode Mac service runs next to `xmux-bridge` on its own ports (the bridge uses 7272). Both are
+helpers bundled in VRcode Mac, a Developer ID-signed Tauri menu-bar app (`mac-app/`, built and
+verified 2026-11-01; see [the Mac app](docs/mac-app.md)). The app starts at login through the
+LaunchAgent `dev.improve.vrcode.mac` (`bun run mac:install`), restarts a failed helper, and owns the
+macOS privacy grants. The service handles speech recognition, the Mac display and its input, Mac audio,
 and clipboard and screenshot delivery. It also executes configured Shortcuts: create a cmux screen
 and launch the chosen CLI in its new terminal. On request from the Quest it starts or restarts cmux
 and `xmux-bridge`, whose status shows on the HUD. The headset reaches it over a separate connection, and
@@ -130,11 +141,12 @@ with its own payload kinds and version.
 
 ### Clamshell mode
 
-- **One-time setup with the lid open** (or an external display attached): install the service and
-  `xmux-bridge` LaunchAgents, grant the macOS permissions (Screen & System Audio Recording for the
-  display and Mac audio, Accessibility for injected input), and pair the headset with both. After
-  that the lid can stay closed. Later pairings: the service runs `xmux-bridge pair <code>` itself,
-  with the code the headset shows, for a headset it already trusts.
+- **One-time setup with the lid open** (or an external display attached): install VRcode Mac
+  (`bun run mac:install`), grant the macOS permissions from its window (Screen & System Audio
+  Recording for the display and Mac audio, Accessibility for injected input), and pair the headset
+  (the window opens on Headset pairing when it waits). After that the lid can stay closed. Later
+  pairings: the service runs `xmux-bridge pair <code>` itself, with the code the headset shows, for
+  a headset it already trusts.
 - **Staying awake.** macOS sleeps when the lid closes unless an external display and power are
   connected, and power assertions do not prevent that. For headset-only use, either
   `sudo pmset -a disablesleep 1` while vrcode is in use, or an HDMI dummy plug plus power, which
@@ -190,7 +202,7 @@ LiveKit/WebRTC, VNC) each need a separate app or server, or UDP, which `adb reve
 |---|---|
 | Capture (Mac) | ScreenCaptureKit, the chosen display with the cursor, up to 60 fps |
 | Encode (Mac) | VideoToolbox H.264 High with low-latency rate control, real time, no frame reordering, long GOP with keyframes on request (HEVC Main to try if text needs it); bitrate per link (USB with `adb reverse`, or Wi-Fi) |
-| Transport | its own video socket on port 7274 (Mac → Quest, Annex-B access units in the xmux header layout); control and input on the vrcode connection (7273); video never shares xmux's stream |
+| Transport | its own video socket on port 7275 (Mac → Quest, Annex-B access units in the xmux header layout; 7274 is the connection relay); control and input on the vrcode connection (7273); video never shares xmux's stream |
 | Decode and show (Quest) | `MediaCodec` `c2.qti.avc.decoder.low_latency` with `KEY_LOW_LATENCY` and Qualcomm's low-latency vendor keys, into the `Surface` of a flat `VideoSurfacePanelRegistration` panel (a compositor layer, so text stays sharp); grabbable and resizable like the xmux windows |
 | Pointer | vrcode intersects the ray with the panel quad before `xmux.hitTest`; the UV maps to display coordinates and becomes `CGEvent` hover, clicks (double and triple via click state), right-clicks, drags and scrolls on the Mac |
 | Keyboard | a hardware keyboard paired with the Quest (a closed Mac's keyboard is unusable). While the panel has focus, its events go to the Mac as `CGEvent` keys, with Meta mapped to Command, instead of to `xmux.dispatchKeyEvent`. Check which keys Horizon OS keeps for itself |
@@ -211,7 +223,7 @@ microphone and only muffled speakers, so the Quest's devices are the defaults.
 | Mac app audio | Mac -> Quest | a Core Audio process tap on all processes (macOS 14.2+, `CATapDescription` with the muted-when-tapped behavior, so the Mac's speakers stay silent while the headset plays) -> Opus 48 kHz stereo -> `AudioTrack` on the Quest output chosen with `setPreferredDevice` (built-in speakers, USB-C or Bluetooth headphones) |
 | Mic for Mac apps (later) | Quest -> Mac apps | a virtual input device on the Mac (an Audio Server plug-in) fed by the selected Quest mic, so calls and dictation in Mac apps work with the lid closed |
 
-The audio and speech settings live in the vrcode menu (left palm pinch, see Gestures): speech input
+The audio and speech settings live in the vrcode menu (the dock's gear, see Gestures): speech input
 device, output device, mic mute, Mac audio on/off and volume, speech language, VAD sensitivity and
 silence timeout. The service reports Mac-side devices and applies Mac-side choices. Devices that connect or disconnect
 (a Bluetooth headset, say) show up live; if the selected one goes away, vrcode falls back to the
@@ -223,31 +235,31 @@ mic is open.
 
 ## Saved layout
 
-Quitting and reopening vrcode puts every window back where it was. cmux stays the source of truth:
-vrcode saves where windows are, never what they show.
+Quitting and reopening vrcode puts every window back where it was. Built 2026-11-01; details in
+[window layout](docs/window-layout.md).
 
-- **Saved, per cmux screen:** pose, size (the entity's `IsdkPanelDimensions`) and whether it was
-  hidden, keyed by the bridge's `session.sessionName` plus `Screen.cmuxId`. The numeric `ScreenId`
-  is not a key: each bridge run assigns its own. Also saved: the Mac display panel's pose and size,
-  the transcript card's position, hand roles, audio choices, the ordered Shortcuts configuration
-  (including disabled items and custom CLI/model arguments), and other settings.
-- **Not saved:** terminal contents, layout, tabs and focus. They come from cmux on every connect. A
-  saved screen that cmux no longer has is not shown. A screen with no saved entry gets the next free
-  arc slot.
-- **Stable in the room:** xmux sets `LOCAL_FLOOR`, which moves when the user recenters, so poses are
-  stored relative to a persisted spatial anchor that vrcode creates on first run (OpenXR
-  `XR_FB_spatial_entity` storage, through whatever Spatial SDK 0.14 or MRUK exposes; check first).
-  The boundary's `STAGE` space is the fallback if anchors are not reachable. If neither can be
-  found (another room, a cleared boundary), the saved arrangement is placed as a group in front of
-  the head, keeping the windows' relative positions.
+- **cmux holds the window state.** Each terminal window's pose, Fixed/Follow mode, minimized flag,
+  and the one fullscreen window are stored in a cmux `frontend_projection`: one per headset scene,
+  keyed by stable cmux screen ids (`Screen.cmuxId`; the numeric `ScreenId` changes with each bridge
+  run). The Quest keeps no window state of its own. Every frame it draws the layout cmux holds, and
+  it turns the user's moves into layout changes. A change written to the projection from anywhere
+  (`cmux` CLI, another tool) is shown live through `session.events`.
+- **Not in it:** terminal contents, panes, tabs and focus, which come from cmux's own resources. Size
+  isn't stored either: a window's size follows its cmux terminal grid. A screen that cmux no longer
+  has is dropped from the layout. A screen with no entry gets the next free arc slot.
 - **Restoring:** vrcode mounts screens itself with `xmux.mount(session, screen,
-  Placement.Fixed(pose), chrome)` instead of `follow`, and mounts new screens and unmounts removed
-  ones on each tick (what `follow` does today, about 20 lines). `setPose` is a no-op before a window
-  spawns, so mounting with `Placement.Fixed` is the only flicker-free way to restore. Sizes cannot be
-  restored until xmux can set them (see the gaps above).
-- **Writing:** after a window stops moving (poses polled, debounced) and in `onPause`, because
-  Horizon OS can kill a backgrounded app without `onDestroy`. Storage is versioned JSON in
-  app-private storage.
+  Placement.Fixed(pose), chrome)` instead of `follow`. It waits up to 3 s for cmux's layout first,
+  so restored windows appear in place.
+- **Writing:** settled changes only. A drag, grab or dock recall is written 0.5 s after it stops, and
+  pending changes are flushed in `onPause` because Horizon OS can kill a backgrounded app without
+  `onDestroy`. Writes carry `expected_projection_revision`. On a conflict, vrcode rereads, keeps its
+  unsaved windows on top, and writes again.
+- **Still open, stable in the room:** poses are in `LOCAL_FLOOR` (`"space": "local_floor"`), which
+  moves when the user recenters. Anchoring to a persisted spatial anchor (OpenXR
+  `XR_FB_spatial_entity`, or MRUK) would be a new `space` value in the same projection, with the
+  boundary's `STAGE` space as the fallback.
+- Other saved items (the Mac display panel, transcript card, hand roles, audio and Shortcuts) are
+  vrcode settings, not terminal window state.
 
 ## Gestures
 
@@ -261,7 +273,7 @@ Signals and where they come from:
 | Index pinch | runtime (`XR_FB_hand_tracking_aim` INDEX_PINCHING; ISDK select/grab) | highest; Meta's primary click |
 | Middle-finger pinch | runtime per-finger bit + strength (`XR_FB_hand_tracking_aim`), read through our own `xrCreateHandTrackerEXT` via the public OpenXR handles (Spatial SDK does not surface it) | good with an open hand; gate on "index not pinching" and "not fist", with hysteresis |
 | Fist | Spatial SDK `Microgestures.isFist` | good |
-| Palm facing the headset + index pinch | runtime system gesture on both hands (SYSTEM_GESTURE flag while the pose is held; ISDK stands down). **Dominant hand** (right by default): opens the OS Universal Menu, consumed by the OS. **Non-dominant hand** (left by default): delivered to the app as a one-frame menu-button press (`MENU_PRESSED`), the hand equivalent of the left controller's menu button; exposed by Spatial SDK as the left menu button where mapped, otherwise read from our JNI hand tracker | left palm + index pinch is the sanctioned app menu gesture and is reliable; right palm + index pinch is the OS's; right palm + **middle** pinch is unreserved but adjacent to the OS gesture, so it needs gating and on-device testing |
+| Palm facing the headset + index pinch | runtime system gesture on both hands (SYSTEM_GESTURE flag while the pose is held; ISDK stands down). **Dominant hand** (right by default): opens the OS Universal Menu, consumed by the OS. **Non-dominant hand** (left by default): delivered to the app as a one-frame menu-button press (`MENU_PRESSED`), the hand equivalent of the left controller's menu button; exposed by Spatial SDK as the left menu button where mapped, otherwise read from our JNI hand tracker | left palm + index pinch is the sanctioned app menu gesture and is reliable (vrcode uses it for the quick inputs ring since 2026-11-01, not Settings); right palm + index pinch is the OS's; right palm + **middle** pinch is unreserved but adjacent to the OS gesture, so it needs gating and on-device testing |
 | Palm facing the headset + middle-finger pinch, index unpinched | app classifier combining the tracked palm orientation with the middle-pinch signal; separate from `MENU_PRESSED` | intended Shortcuts gesture on either hand; verify whether Horizon OS still supplies usable joints and pinch data in the palm-facing pose, and whether it asserts SYSTEM_GESTURE before a pinch (see Shortcuts validation below) |
 | Thumbs up/down | not runtime-detected; no longer used (a MediaPipe landmark classifier remains an option if ever wanted) | - |
 
@@ -270,21 +282,23 @@ on the thumb with the index still up):
 
 | Hand | Gesture | Action |
 |---|---|---|
-| Right (pointer) | index pinch | click / select (terminals and the Mac display); drag when the ray holds the top bar (ISDK grab handle); corners resize (xmux's window defaults) |
+| Right (pointer) | index pinch | click / select (terminals and the Mac display); drag when the ray holds the top bar (ISDK grab handle); corners resize a terminal window by changing its terminals' columns and rows in cmux (no stretching) |
 | Right | middle pinch hold + move, palm away (index stays up) | radial action menu at the hand: contextual pane actions (cmux pane/tab/workspace operations, i.e. right-click) when the ray is over a pane, otherwise the global set: undo, redo, keyboard, screenshot |
 | Either | palm facing the headset + middle pinch hold + move (index stays up) | Shortcuts pie: **Create new window** with Claude Code, Codex or Terminal by default; user-configurable entries, independent of the hovered pane |
-| Left (voice) | fist, held | **speak to the AI** (built 2026-11-01): the microphone prop appears in the fist; the voice pane shows above the dock while listening. When the hand opens, the Mac's AI (Claude Opus 5.5, low effort) turns what was said into the input for the focused pane, using its visible screen: a shell command, or a clear prompt for a coding agent. The AI pane stays above the dock, showing the AI's text over what was said, until it is pasted or deleted; nothing is typed until a paste |
-| Right (voice) | fist, held | **plain dictation** (built 2026-11-01): same strict fist, from the right hand's own joint tracker; the pane shows above the dock while listening and hides when the hand opens, the transcript staged as said. One dictation at a time: only the hand that started it ends it |
-| Left | index pinch, palm away, with text staged | insert the staged text into the pane the left hand points at (see Voice input); the left hand runs the whole voice flow |
-| Either | palm toward the user + middle pinch hold + move (index stays up) | palm menus at the pinch point (built; see [hand input](docs/hand-input.md#palm-menus-both-hands)). **Left**: Terminal, Codex, Claude Code, each a new cmux screen. **Right**: Keyboard, Enter, Esc, Ctrl-C, Paste voice, Clear voice. Move onto an item (~7 cm) to run it, or toward it (past 3.5 cm) and release; releasing in the centre, a dominant index pinch, a fist or tracking loss over 200 ms cancels. Pinch = the runtime's MIDDLE_PINCHING and pinchStrengthMiddle; palm-facing = the runtime's SYSTEM_GESTURE or the palm joint's −Y within 55° of the head. The palm-away right middle pinch stays the right-click |
+| Left (voice) | fist, held | **speak to the AI** (built 2026-11-01): the microphone prop appears in the fist; the voice pane floats just above it while listening. When the hand opens, the Mac's AI (the provider picked in Settings → AI mic: Claude Opus 5.5 by default, ChatGPT `gpt-6.1-sol` or Gemini `gemini-3.8-flash`, all at low effort; the news mic's flag shows that provider's logo) turns what was said into the input for the focused pane, using its visible screen: a shell command, or a clear prompt for a coding agent. The pane hides when the hand opens, the target window's header shows Typing… while the AI works, and the AI's text is then typed into the pane that was focused when the hand opened, without Enter unless the AI mic's Auto-Enter toggle is on (off by default, so it waits at the prompt to be checked) (rebuilt 2026-11-01: no review pane) |
+| Right (voice) | fist, held | **plain dictation** (built 2026-11-01): same strict fist, from the right hand's own joint tracker; the pane floats just above the mic while listening and hides when the hand opens; the transcript is typed as said into the pane focused at that moment once the Mac finalizes it (then Enter if the text mic's Auto-Enter toggle is on). One dictation at a time: only the hand that started it ends it |
+| Left | index pinch, palm away, with text staged | insert staged text (only left when it could not be typed: no terminal open, the AI failed) into the pane the left hand points at (see Voice input) |
+| Either | palm toward the user + middle pinch hold + move (index stays up) | palm menus at the pinch point (built; see [hand input](docs/hand-input.md#palm-menus-both-hands)). **Left**: Terminal, Codex, Claude Code, each a new cmux screen, and Bring forward (the focused window to straight ahead at eye height). **Right**: Keyboard, Enter, Esc, Ctrl-C, Paste voice, Clear voice. Move onto an item (~7 cm), then hold one second or swipe on outward to the far end of its pill to run it; releasing anywhere, a dominant index pinch, a fist or tracking loss over 200 ms cancels. Pinch = the runtime's MIDDLE_PINCHING and pinchStrengthMiddle; palm-facing = the runtime's SYSTEM_GESTURE or the palm joint's −Y within 55° of the head. The palm-away right middle pinch stays the right-click |
 | (from the pie) | Keyboard | a floating iPhone-style keyboard (letters, 123, #+=, and an esc/tab/ctrl/arrows row), 30 cm wide at chest height and tilted toward the eyes; typed by fingertip touch (Interaction SDK direct touch) or ray pinch, grabbable to move, × to close. Keys go to the voice pane picked for editing (return ends editing), else to the focused terminal pane. Replaces the open-palm keyboard, dropped because typing over the other hand degrades hand tracking |
 | Left | middle pinch hold + move, palm away (index stays up) | radial macro menu (e.g. Claude Code commands); items run as `TerminalHandle.write` / `keys` |
-| Left | palm + **index** pinch (the app menu button, `MENU_PRESSED`) | open/close the vrcode menu (settings popup, see below); runtime-detected, no gating |
+| Left | palm + **index** pinch hold + move (the runtime's app menu gesture) | **quick inputs** ring (built 2026-11-01, see [hand input](docs/hand-input.md#quick-inputs-left-index-pinch)): ↑ top, → right, ↓ bottom, ← left, Esc top-left, Keyboard top-right, Tab bottom-left, Enter bottom-right, sent to the focused pane. Same pick/dwell/cancel rules as the palm menus; the pinch is the runtime's INDEX_PINCHING and pinchStrengthIndex. Replaces the old Settings toggle: with hand tracking, the menu-button press this gesture also produces is ignored |
 
 Pane and window selection is direct: look toward the desired pane or window, point and index-pinch
 to focus it. cmux focus and hardware-keyboard routing follow that selection. Thumb taps and swipes
-have no app action on either hand. The left fist is reserved for voice. Enter and Escape for staged
-text live on the transcript dialog (Insert with Enter, Clear).
+have no app action on either hand. The left fist is reserved for voice. A terminal window is always
+focused while any is open (`FocusKeeper`: the most recently focused, else the one nearest the line
+of sight), and its header carries a dot that becomes Dictating / Talking to AI / Typing… while voice
+targets it.
 
 Radial hold menu (both hands, shared selection code): at middle-pinch start (per-finger bit with
 strength hysteresis, index unpinched), classify the palm orientation and choose one menu:
@@ -302,8 +316,9 @@ three sectors; allow up to eight enabled entries in one ring, with additional en
 in the Shortcuts pane. Until xmux can split, close or create panes and tabs (see the gaps), the
 contextual set is limited to focus and tab switching.
 
-Rules: ignore ordinary app gestures while the runtime reports SYSTEM_GESTURE; treat `MENU_PRESSED`
-(left palm + index pinch) as the vrcode menu toggle; require valid tracking for all input. The
+Rules: ignore ordinary app gestures while the runtime reports SYSTEM_GESTURE, except the palm
+menus; the left palm + index pinch opens the quick inputs ring, and its `MENU_PRESSED` / menu-key
+echo is ignored while the left hand is tracked; require valid tracking for all input. The
 palm-facing Shortcuts gesture needs its own runtime validation before enabling it (see below);
 do not bypass OS ownership to make it work.
 
@@ -362,10 +377,28 @@ before shipping; do not simply remove the system-gesture guard. Test palm-away v
 routing, orientation jitter, index/middle overlap, release in the dead zone, tracking loss and
 role swapping. A gesture must never open two menus or accidentally launch two windows.
 
+### Dock
+
+Built 2026-11-01; the full spec is in [docs/dock.md](docs/dock.md). The dock is an iPhone-mini-style
+home bar: a short, faint pill about 38° below the gaze at arm's reach (45 cm), easing after the head
+instead of locking to it. A fingertip or pointer near the pill makes it bulge.
+
+- **Raise:** swipe up from the pill to raise a row of options: Connection, one per cmux window,
+  Keyboard, Arrange and Settings.
+- **Activate:** press an option, slide to another and flick up. Flicking up on a window glides it
+  to just above the dock, which recovers a lost window.
+- **Lower:** the pill stays at the raised dock's top centre; swiping down on it (or leaving the dock
+  alone for 5 s) lowers it.
+
+Touches count only when the fingertip reaches the dock's plane from in front, and pointer rays only
+from 25 cm away, so hands typing below the dock never trigger it. Voice panes and the floating
+keyboard stack just above the dock.
+
 ### vrcode menu
 
-The left palm + index pinch (`MENU_PRESSED`) opens vrcode's own menu: a settings popup for vrcode
-itself, not for cmux. With controllers, the left menu button does the same. The right palm pinch
+The dock's gear opens vrcode's own menu: a settings popup for vrcode itself, not for cmux. With
+controllers, the left menu button toggles it. The left palm + index pinch used to toggle it too;
+since 2026-11-01 that gesture opens the quick inputs ring instead. The right palm pinch
 stays the OS's Universal Menu, which apps cannot override.
 
 - It opens world-locked in front of the user at chest height. The right-hand ray works it like any
@@ -394,7 +427,8 @@ which source the shutter means.
 
 ## Voice input
 
-Fist-to-talk with a staged transcript. A first version is built (2026-11-01): the Quest side in
+Fist-to-talk, typed into the focused window when the fist opens (changed 2026-11-01 from a staged
+transcript pasted by pinch, for less friction). A first version is built (2026-11-01): the Quest side in
 `app/src/main/kotlin/dev/improve/vrcode/voice/`, `speech/` and `hands/`, the Mac side in `mac/`, the
 wire format in `docs/vrcode-protocol.md`.
 
@@ -402,8 +436,9 @@ wire format in `docs/vrcode-protocol.md`.
 |---|---|
 | Start / stop | either fist held is listening: the right for plain dictation, the left for the AI. The fist is strict: all four fingers rolled up (each finger's three joint bends sum to at least 150°, 185° on average, from XR_EXT_hand_tracking joints) and the thumb wrapped over them (within 5 cm of the index or middle finger); the runtime's `Microgestures.isFist` also fires for a cupped hand and is only a fallback when joints are unavailable. Hysteresis keeps a slightly loosening fist (mean above 140°) a fist. Debounced: 120 ms of fist to start, 400 ms of a tracked open hand to stop). **Only unrolling the fist ends listening**: there is no silence timeout, and losing hand tracking (a fist lowered out of the cameras' view) holds voice mode instead of ending it. Every fist makes a new voice pane |
 | Microphone | the selected 3D voice prop appears in the fist (`assets/microphone/microphone.glb` by default); the adjacent listening badge pulses with the input level |
-| Voice panes | only the current pane is shown, just above the dock (which follows the view), not on the hand: while its fist is closed, while the Mac finishes or the AI thinks, and for an AI pane until it is pasted or deleted. A dictation pane hides when the hand opens; its transcript stays staged. Panes carry a Dictation or AI badge; an AI pane shows Thinking, then the AI's text (what a paste types) above what was said. If the AI fails or has no key, the pane says why and a paste types what was said. Transcripts are retained (up to 8 notes; the oldest unselected one goes first) |
-| Paste | with the hand open, point the left hand at a terminal pane and pinch (index, palm away): the selected staged transcript is typed there and removed (`TerminalHandle.write`, then `Key("enter")` if "Enter after" is on), and that pane is focused with `xmux.focus`. The right-hand pie's Paste voice action pastes into the focused terminal. A pinch counts only when it starts at least 400 ms after the fist, so unrolling the hand cannot insert. Hidden voice panels do not intercept the ray; a pinch on a window header pastes nothing (the header still drags the window) |
+| Voice panes | only the current pane is shown, and only while its fist is closed: it floats just above the mic in the fist (21 cm up the grip plus 3 cm; never closer than 12 cm below the eyes or 30 cm in front of them), turned to the eyes, and eases after the hand with a 2 cm dead zone so a press does not chase it (rebuilt 2026-11-01; it sat above the dock before, which was a reach). With the hand untracked it holds still; with no position yet it falls back to just above the dock. It names the target window and carries push buttons the other hand presses by fingertip (they act on press, like the touch keyboard): the mic's Auto-Enter toggle, a round latching ⏎ button in the bottom corner nearest the free hand (bottom left for the right, text mic; bottom right for the left, AI mic) that glows green, rests pushed in and reads ON when on, and stands dark and raised reading OFF when off; Cancel (stop, type nothing) and Clear (start over, still listening) sit at the far end. Each mic's toggle is separate and remembered across restarts (SharedPreferences `voice`); both start off. It hides when the hand opens. If the text cannot be typed (no terminal open, the AI failed or has no key, the Mac dropped mid-dictation) the pane stays where it was (while still in view) with the reason, Delete, Paste and the same toggle; a paste of a failed AI pane types what was said. Panes carry a Dictation or AI badge. Up to 8 staged panes are kept (the oldest unselected one goes first) |
+| Insert | when the fist opens, the pane focused at that moment (`FocusKeeper` keeps one focused) is the target; the text is typed there with `TerminalHandle.write` once ready, even if focus moves meanwhile, then Enter if that mic's Auto-Enter toggle is on |
+| Paste (fallback) | for a pane left staged: with the hand open, point the left hand at a terminal pane and pinch (index, palm away): the selected staged transcript is typed there and removed (`TerminalHandle.write`, then `Key("enter")` if the pane's mic has Auto-Enter on), and that pane is focused with `xmux.focus`. The right-hand pie's Paste voice action pastes into the focused terminal. A pinch counts only when it starts at least 400 ms after the fist, so unrolling the hand cannot insert. Hidden voice panels do not intercept the ray; a pinch on a window header pastes nothing (the header still drags the window) |
 | Capture (Quest) | `AudioRecord` (`VOICE_RECOGNITION` source) at 16 kHz mono 16-bit in 50 ms chunks from the speech input chosen in Audio (default: the Quest's built-in mic), `RECORD_AUDIO`, honor `AudioManager.isMicrophoneMute()`. A mic on the Mac skips this and the transport |
 | VAD | none: the fist bounds each utterance. If Silero VAD (ONNX Runtime) or a WebRTC VAD port is added later, it may only trim silence or save bandwidth; it never ends listening |
 | Transport | today raw PCM (32 KB/s) on the vrcode service connection; Opus via `MediaCodec` (`audio/opus`) or Concentus, ~24 kbps, once Wi-Fi bandwidth matters |
@@ -452,8 +487,8 @@ Every gate is also run with the MacBook lid closed and nothing attached to it bu
 
 | Milestone | Work | Time | Gate |
 |---|---|---|---|
-| M2.5 Voice + gestures | `AudioRecord` + VAD + Opus; SpeechAnalyzer on Mac; left-fist voice mode with the dialog above the hand and left-pinch insert; the 3D microphone in the fist; JNI hand tracker for middle pinch and palm orientation; shared radial hold menus (contextual, global, macro, Shortcuts) | 1.5 wk | staged text never reaches a terminal before an insert; a left pinch inserts into the pane under the left ray only, and never fires while the fist unrolls; left-fist false starts counted over a 10-minute session that includes typing and holding objects; middle-pinch false-positive rate and radial selection accuracy measured over a 10-minute walking session (target: wrong-item rate under 5%); selecting a pane updates cmux focus and the Mac TUI follows |
+| M2.5 Voice + gestures | `AudioRecord` + VAD + Opus; SpeechAnalyzer on Mac; left-fist voice mode with the dialog above the hand and left-pinch insert; the 3D microphone in the fist; JNI hand tracker for middle pinch and palm orientation; shared radial hold menus (contextual, global, macro, Shortcuts) | 1.5 wk | opening the fist types into the focused pane and nothing else, and Cancel types nothing; a left pinch inserts staged text into the pane under the left ray only, and never fires while the fist unrolls; left-fist false starts counted over a 10-minute session that includes typing and holding objects; middle-pinch false-positive rate and radial selection accuracy measured over a 10-minute walking session (target: wrong-item rate under 5%); selecting a pane updates cmux focus and the Mac TUI follows |
 | Shortcuts | palm-facing middle-pinch pie and pointer-accessible pane; Claude Code/Codex/Terminal presets with icons; Quest-side editor and persistence; Mac-service create-window dispatch through cmux | tbd | each preset creates exactly one new floating cmux screen with the intended CLI/shell; a custom CLI/model preset and ordering survive relaunch; cancellation/tracking loss create nothing; retries never duplicate screens or command startup; no commands reach an existing terminal; palm-facing versus palm-away menus route correctly on both hands without opening the OS menu; missing tools and offline service show actionable errors |
-| Saved layout | own follow loop keyed by `cmuxId`; anchored poses; store written on move end and `onPause` | tbd | quit and relaunch puts every window back within 2 cm, also after a recenter; a screen closed in cmux meanwhile stays gone and a new one gets a free slot; no terminal state is read from local storage |
+| Saved layout | own follow loop keyed by `cmuxId` (built); layout in a cmux `frontend_projection`, written on settle and `onPause` (built); anchored poses (open) | tbd | quit and relaunch puts every window back within 2 cm, also after a recenter; a screen closed in cmux meanwhile stays gone and a new one gets a free slot; no window or terminal state is read from Quest storage; a `frontend_projection.put` from the Mac moves, hides or fullscreens the window live |
 | Mac display | ScreenCaptureKit + VideoToolbox stream; virtual display for the closed lid; `MediaCodec` video panel; ray clicks and keyboard as `CGEvent`; keeping the Mac awake | tbd | Mac text readable at 1 m; clicks land on the intended control; glass-to-glass latency measured (target under 100 ms over USB); with the lid closed the Mac stays awake for an hour and the virtual display is usable; with the lid open the Mac works as without vrcode |
 | Audio | device pickers in the vrcode menu; Mac process tap streamed to the Quest; Mac-side mic option for speech | tbd | switching the speech mic or the output on the Quest takes effect without a restart; with the lid closed Mac app audio plays only in the headset; a Bluetooth device disconnecting mid-dictation falls back to the built-in mic without losing the staged text |

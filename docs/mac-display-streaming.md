@@ -57,10 +57,10 @@ The native path is the only one that:
 
 | Part | How | Copy from |
 |---|---|---|
-| Packaging | Ship the service as a signed `.app` LaunchAgent. Since macOS 26.1, bare background executables don't appear in the Screen Recording list, and on 27 `CGRequestScreenCaptureAccess()` no longer prompts, so request access through ScreenCaptureKit. Needs Screen & System Audio Recording and Accessibility | — |
+| Packaging | Done: the service ships inside the signed VRcode Mac app ([docs](mac-app.md)), which owns the privacy grants. Since macOS 26.1, bare background executables don't appear in the Screen Recording list, and on 27 `CGRequestScreenCaptureAccess()` no longer prompts, so request access through ScreenCaptureKit. Needs Screen & System Audio Recording and Accessibility | — |
 | Capture | `SCStream` of one display at its native **pixel** size (`CGDisplayPixelsWide/High`; `captureResolution` applies only to windows). Pixel format `420v` (the encoder's native input), cursor shown, `minimumFrameInterval` set from the chosen fps, small `queueDepth`. ScreenCaptureKit sends frames only when the screen changes | Glass `macos/capture.rs`; Apple's "Capturing screen content in macOS" sample |
 | Encode | VideoToolbox H.264 High:<br>• `EnableLowLatencyRateControl` and `RequireHardwareAcceleratedVideoEncoder`<br>• `RealTime`, `AllowFrameReordering = false`<br>• expected frame rate, BT.709/sRGB colour tags<br>• `MaxAllowedFrameQP` to keep text sharp<br>• a long GOP, with `ForceKeyFrame` on request<br>HEVC Main is a setting to try later | Glass `macos/encode.rs` |
-| Stream socket | A new loopback port, **7274**, sending video only, Mac → Quest. Frames are Annex-B access units with xmux's 16-byte header layout (protocol version 1). Kept off 7273 so video frames never queue ahead of speech, AI or input. Backpressure: while unsent bytes exceed a threshold, skip *captured* frames (never drop encoded ones, which breaks decoding). When the backlog clears, send the next frame, or an IDR if it was long. Bitrate is set per link: start around 30 Mbit/s on USB and 15 on Wi-Fi ADB, then tune | scrcpy's server (same idea) |
+| Stream socket | A new loopback port, **7275** (7274 is the connection relay), sending video only, Mac → Quest. Frames are Annex-B access units with xmux's 16-byte header layout (protocol version 1). Kept off 7273 so video frames never queue ahead of speech, AI or input. Backpressure: while unsent bytes exceed a threshold, skip *captured* frames (never drop encoded ones, which breaks decoding). When the backlog clears, send the next frame, or an IDR if it was long. Bitrate is set per link: start around 30 Mbit/s on USB and 15 on Wi-Fi ADB, then tune | scrcpy's server (same idea) |
 | Input injection | `CGEvent` posted to the HID tap:<br>• mouse moved; left and right down/up; left and right dragged<br>• scroll wheel in pixel and line units<br>• `kCGMouseEventClickState` for double and triple clicks (synthetic events don't count clicks by themselves)<br>• modifier flags tracked across key events<br>• keys by virtual keycode; text via `CGEventKeyboardSetUnicodeString` for voice and keyboard paste | Glass `macos/input.rs` (right/other buttons, drag types, click state, flags); Sunshine `src/platform/macos/input.cpp` for keycodes |
 | Coordinates | Global point = `CGDisplayBounds(displayID).origin + (u·widthPts, v·heightPts)`, from the panel UV the Quest sends | — |
 | Virtual display | `CGVirtualDisplay` (private, still header-less in macOS 27) at the size, HiDPI flag and refresh the Quest sends. Created when the lid is closed (nothing else is online) or on request | Glass `macos/virtual_display.rs` (`create_scaled`), or DeskPad (Swift) |
@@ -72,7 +72,7 @@ The native path is the only one that:
 | Part | How | Copy from |
 |---|---|---|
 | Panel | `VideoSurfacePanelRegistration` as a flat quad (curved panels report wrong hit UVs) in layer mode, so it goes direct to the compositor (`mips = 1`, no scene texture). Grabbable and resizable like the xmux windows, with its pose and size in the saved layout | Spatial SDK media docs |
-| Decoder | `MediaCodec.createByCodecName("c2.qti.avc.decoder.low_latency")` (present on this Quest, as are the HEVC, VP9 and AV1 variants), configured with:<br>• `KEY_LOW_LATENCY = 1`<br>• `vendor.qti-ext-dec-low-latency.enable = 1`<br>• `vendor.qti-ext-dec-picture-order.enable = 1`<br>• `KEY_OPERATING_RATE` set high and `KEY_PRIORITY = 0`<br>Release each output buffer to the Surface as soon as it is dequeued. On a decoder error or a gap, request an IDR. A dedicated thread reads the 7274 socket | moonlight-android `MediaCodecHelper.java` (vendor keys, low-latency decoder choice), `MediaCodecDecoderRenderer.java` (decode loop) |
+| Decoder | `MediaCodec.createByCodecName("c2.qti.avc.decoder.low_latency")` (present on this Quest, as are the HEVC, VP9 and AV1 variants), configured with:<br>• `KEY_LOW_LATENCY = 1`<br>• `vendor.qti-ext-dec-low-latency.enable = 1`<br>• `vendor.qti-ext-dec-picture-order.enable = 1`<br>• `KEY_OPERATING_RATE` set high and `KEY_PRIORITY = 0`<br>Release each output buffer to the Surface as soon as it is dequeued. On a decoder error or a gap, request an IDR. A dedicated thread reads the 7275 socket | moonlight-android `MediaCodecHelper.java` (vendor keys, low-latency decoder choice), `MediaCodecDecoderRenderer.java` (decode loop) |
 | Hit test | vrcode intersects the ray with the panel quad itself, using the entity's pose and its live `IsdkPanelDimensions`. This happens before `xmux.hitTest`, so it doesn't depend on video panels delivering pointer events. Result: UV in [0,1]², sent as a fraction so Mac-side resolution changes need nothing from the Quest | — |
 | Cursor | The Mac draws its own cursor into the stream, keeping its shape (I-beam, resize arrows). vrcode's existing ray cursor sits on top for instant feedback | `PointerCursor` |
 
@@ -122,9 +122,9 @@ Notes:
 
   JSON is fine at these rates. A compact binary `POINTER` can come later if move events turn out to
   be costly.
-- **Port 7274 (video).** Mac → Quest only. Each frame is one access unit with a header carrying a
+- **Port 7275 (video).** Mac → Quest only. Each frame is one access unit with a header carrying a
   sequence number and the capture timestamp, so latency can be logged on the Quest.
-- `scripts/quest-link.py` gains the 7274 reverse tunnel next to 7272 and 7273.
+- `scripts/quest-link.ts` gains the 7275 reverse tunnel next to the existing ones.
 
 ### Picture quality
 
@@ -142,7 +142,7 @@ Notes:
 Each step ends in a gate that is checked on the Quest.
 
 1. **Video only, mirror mode, USB.** About 2 days.
-   - Mac: package the service as an `.app`; capture → encode → 7274.
+   - Mac: capture → encode → 7275 (the service is already a signed `.app`).
    - Quest: panel + low-latency decoder.
    - Gates:
      - Mac text readable at 1 m.

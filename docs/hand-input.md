@@ -35,17 +35,24 @@ Turn either **palm toward yourself** and touch the **middle finger to the thumb*
 finger up. A ring of items appears around the pinch, with a hint above the middle fingertip that
 fills as the fingers close. Actions start as **circular icon buttons**. While pinching, **move the
 hand onto an icon** (about 7 cm): it expands into a pill with its label and a progress fill.
-**Hover on the same item for one full second** to launch it automatically. Moving away or switching
-items resets the fill. A dropped tracking frame or a brief flicker of the runtime's pinch reading
-only pauses it; the other hand's ray can hover over an icon too. **Releasing the pinch
-anywhere dismisses the menu without launching.** Clicking cannot skip the dwell. The chosen item
+Reaching an icon runs nothing by itself. **Hold the pinch on the same item for one full second** to
+run it, or **swipe on outward to the far end of the expanded pill** to run it sooner. The fill
+sweeps outward from the end nearest the centre, and moving outward along the item adds to the
+clock: a whole swipe (from reaching the icon to the pill's far end, 4 to 7 cm depending on the
+item) runs it at once, half a swipe halves the wait, and moving back inward takes the swipe away
+again. The swipe counts from the innermost point of the current hover, so sliding into a
+neighbouring item far out cannot run it. Moving away or switching items resets the fill. A dropped
+tracking frame or a brief flicker of the runtime's pinch reading pauses both the clock and the
+swipe. The other hand's ray can hover over an icon too; that hover only uses the clock. **Releasing
+the pinch anywhere dismisses the menu without launching**, because the runtime sometimes reports
+a release that did not happen. Clicking cannot launch an item either. The chosen item
 stays marked (white outline, other items dimmed) for a quarter
 second before the ring hides. After an item runs, the hint stays hidden until you let go of the
 pinch; a fully filled hint means the runtime reports a full middle pinch.
 
 | Hand | Items (item 0 at the top, then clockwise) |
 |---|---|
-| Left | **Terminal**, **Codex**, **Claude Code**. Each opens a new cmux screen (a new floating window) and focuses it. Codex and Claude Code are started by typing `codex` / `claude` into that new login shell, so the shell remains when they exit. Nothing is sent to an existing terminal. If the Mac service is unavailable, the Terminal actions panel opens with the error. |
+| Left | **Add terminal** (terminal with a plus), **Codex**, **Claude Code**. Each opens a new cmux screen (a new floating window) and focuses it. Codex and Claude Code are started by typing `codex` / `claude` into that new login shell, so the shell remains when they exit. Nothing is sent to an existing terminal. If the Mac service is unavailable, the Terminal actions panel opens with the error. **Bring forward** (a small window with arrows out of its corners, on the ring's left side) glides the focused window from wherever it is to straight ahead of you at eye height, at Settings' window distance and facing you: where Arrange puts a single window. Only your head's heading counts, not its tilt, because you are looking down at your palm when you pick it. A Follow window keeps following at the new spot; a minimized one is shown; a fullscreen one is already in front and stays as it is. The move is saved to cmux like a drag. |
 | Right | **Keyboard** (the same floating keyboard as the dock's), Enter, Esc, Ctrl-C (focused pane), Paste voice, Clear voice |
 
 Only one ring is open at a time. Neither opens while voice is listening or while Settings or
@@ -53,7 +60,7 @@ Terminal actions are open. An index pinch taking over from the middle pinch, a f
 losing hand tracking for more than 200 ms cancels; the next ring needs a fresh pinch. Single
 dropped tracking frames, which the runtime produces regularly, do not close the ring. Neither do
 pinch readings that flicker while the hand moves: a held pinch ends (releases, or cancels for the
-index/fist cases) only after 80 ms of readings saying so. A missing tracking frame or an off pinch
+index/fist cases) only after 150 ms of readings saying so (a headset log showed the runtime taking 78 ms to report a pinch the joints had already seen). A missing tracking frame or an off pinch
 reading pauses the dwell clock, so no action can launch during that grace period. A confirmed
 release discards all progress. A pinch must
 start with the palm already facing you; turning a held palm-away pinch (the right-click) toward
@@ -67,7 +74,7 @@ per-finger pinches (only index pinch as a button, and `Microgestures`). Meta's o
 uses a fixed 2.5 cm fingertip distance and has no palm-facing check. So `cpp/hand_aim.cpp` reads
 one `XR_EXT_hand_tracking` tracker per hand, in VIEW space, and passes on what the runtime reports:
 
-- **Pinch** (`hands/MiddlePinch.kt`): Meta's `XR_FB_hand_tracking_aim` `MIDDLE_PINCHING` signal
+- **Pinch** (`hands/FingerPinch.kt`, `MiddlePinch`): Meta's `XR_FB_hand_tracking_aim` `MIDDLE_PINCHING` signal
   starts it. Its `pinchStrengthMiddle` keeps a held pinch down (≥ 0.5) through a dropout of that
   signal and fills the hint. An index pinch blocks a new pinch when `INDEX_PINCHING` is set and
   its strength is at least the middle's. A held pinch only yields to the index once the runtime
@@ -103,8 +110,8 @@ depend on private class layouts. `XR_EXT_hand_interaction` and `XR_META_hand_tra
 cover the index pinch and thumb microgestures only. The runtime's aim signals stay the detector;
 only the app's use of them changed.
 
-Every close is logged with its cause: `palm menu: dwell complete (1000ms)`,
-`released (cancelled)`, or `palm menu cancelled: Fist|IndexPinch|TrackingLost`, each
+Every close is logged with its cause: `palm menu: dwell complete (swiped N%)`,
+`released (cancelled)`, or `palm menu cancelled: Fist|OtherFinger|TrackingLost`, each
 with how far the hand moved. While the ring is open, `palm menu held: flags=… middle=… index=…`
 records each change in the runtime's pinch flags, and `middle pinch did not open the palm menu`
 explains a palm-facing middle pinch that was ignored.
@@ -119,12 +126,54 @@ says no pinch, palm-away versus palm-facing, the `SYSTEM_GESTURE` path, the join
 take-over (and both fingers reading as pinched), fists while open, flickering readings while the hand
 moves, dropouts versus real tracking loss, and fresh-pinch rules including a flicker after an item ran. `PieSelectionTest`
 covers clockwise picking, reach, the VIEW-to-scene conversion and the menu axes at several head
-yaws. `MenuDwellTest` covers the one-second deadline, switching/leaving items, release at the
-deadline, reopening, and firing only once. `PieMenuTest` renders the production Compose UI on the
-Android emulator and checks circular icons, expanded labels, progress, six-item bounds, and the
-absence of click-to-launch. Selection accuracy, the left ring's cmux launch, and whether a palm-facing middle pinch
+yaws. `MenuDwellTest` covers the one-second deadline, swiping to the pill's end, part swipes that
+speed up the clock, moving back inward, crossing into a neighbour far out, flickers during a swipe,
+ray hovers (clock only), switching/leaving items, release at the deadline, reopening, and firing
+only once. `PieGeometryTest` checks where each pill's swipe ends. `PieMenuTest` renders the production Compose UI on the
+Android emulator and checks circular icons, expanded labels, progress, six-item bounds, the
+fill sweeping outward on the up, right, down and left pills, and the absence of click-to-launch. Selection accuracy, the left ring's cmux launch, and whether a palm-facing middle pinch
 ever triggers OS behavior need a Quest wearer. Watch `adb logcat -s vrcode` for
 `palm menu opened (Runtime pinch, palm N°)` and the once-a-second `left|right hand facing=…` lines.
+
+Emulator captures: [icon circles](screenshots/palm-quick-actions/icons.png),
+[half-filled hover pill](screenshots/palm-quick-actions/hover.png), and
+[right-hand actions](screenshots/palm-quick-actions/keys.png).
+
+```sh
+./gradlew :app:testDebugUnitTest :app:assembleDebug
+ANDROID_SERIAL=emulator-5554 ./gradlew :settings-ui:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=dev.improve.vrcode.pie.PieMenuTest
+```
+
+## Quick inputs (left index pinch)
+
+Turn the **left palm toward yourself** and pinch the **index finger to the thumb**: the runtime's
+app menu gesture, which used to toggle Settings. A ring of keys opens at the pinch, each where it
+points. Move onto one and hover for a second, or swipe on outward to the end of its pill, to send
+it to the focused pane (as in the palm menus; releasing cancels):
+
+|  |  |  |
+|---|---|---|
+| **Esc** | **↑** | **Keyboard** (shows the floating keyboard) |
+| **←** | *Input* | **→** |
+| **Tab** | **↓** | **Enter** |
+
+It is the palm menus' gesture driven by the index finger (`HandMenuGesture(IndexPinch)`), sharing the
+left hand's tracker with the left palm menu, so the same opening, picking, release, fist and
+tracking-loss rules apply. The pinch is the runtime's `INDEX_PINCHING` and `pinchStrengthIndex`,
+with the same joint fallback as the middle pinch. When the runtime reports both fingers pinched at
+equal strength, the index ring opens and the middle ring does not. A middle pinch taking over a held
+index pinch cancels, and the reverse. There is no app hint: the runtime draws its own menu glyph
+for this pose. Settings stays on the dock's gear and the controller's menu button; with hand
+tracking, the runtime's `MENU_PRESSED` / menu-key echo of this pinch is ignored.
+
+Logs use `left quick inputs` in place of `left palm menu`, for example
+`left quick inputs opened (Runtime index pinch, palm 12°)`. `QuickInputsTest` checks that every key
+sits in the direction it points; `HandMenuGestureTest` covers the index pinch (opening, the joint
+fallback, the system gesture, both fingers at once, take-over); `PieMenuTest` renders the eight
+items and keeps each expanded pill inside the ring. Emulator captures:
+[ring](screenshots/palm-quick-actions/quick-inputs.png),
+[hovering →](screenshots/palm-quick-actions/quick-inputs-hover.png).
 
 ## Pointer cursor and text selection
 

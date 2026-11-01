@@ -150,7 +150,7 @@ final class Client: @unchecked Sendable {
     let engine = speech.engine
     send(.welcome, body: jsonBody([
       "service": "vrcode-mac", "protocol": Int(protocolVersion), "locale": engine?.locale.identifier ?? "",
-      "ready": engine?.ready ?? false, "cmux": allowControl,
+      "ready": engine?.ready ?? false, "cmux": allowControl, "settings": true,
     ]))
   }
 
@@ -158,6 +158,14 @@ final class Client: @unchecked Sendable {
     switch Kind(rawValue: frame.kind) {
     case .hello:
       welcome()
+      // VRcode Mac mirrors the Quest's settings (SettingsHub). Loopback only, like cmux control.
+      if allowControl, frame.json()?["client"] as? String == "vrcode-mac-app" { SettingsHub.shared.addObserver(self) }
+    case .settings:
+      if let state = frame.json() { SettingsHub.shared.headset(self, state: state) }
+    case .settingsSet:
+      if let problem = SettingsHub.shared.set(frame.json()?["values"] as? [String: Any] ?? [:], from: self) { sendError(problem, id: 0) }
+    case .settingsAction:
+      if let problem = SettingsHub.shared.action(frame.json()?["action"] as? String ?? "", from: self) { sendError(problem, id: 0) }
     case .cmuxRequest:
       if !allowControl {
         send(.cmuxEvent, body: jsonBody(CmuxService.failure(id: frame.json()?["id"] as? String ?? "",
@@ -211,11 +219,12 @@ final class Client: @unchecked Sendable {
       let transcript = info["transcript"] as? String ?? ""
       let screen = info["screen"] as? String ?? ""
       let title = info["title"] as? String ?? ""
+      let provider = AiProvider.from(info["provider"] as? String)
       Task { [weak self] in
         do {
-          let text = try await AiService.complete(transcript: transcript, screen: screen, title: title)
-          log("ai \(id): \(text.count) chars")
-          self?.send(.aiResult, id: id, body: jsonBody(["text": text, "model": AiService.model]))
+          let text = try await AiService.complete(provider: provider, transcript: transcript, screen: screen, title: title)
+          log("ai \(id) (\(provider.rawValue)): \(text.count) chars")
+          self?.send(.aiResult, id: id, body: jsonBody(["text": text, "provider": provider.rawValue, "model": provider.model]))
         } catch {
           self?.sendError("\(error)", id: id)
         }
@@ -225,7 +234,7 @@ final class Client: @unchecked Sendable {
     }
   }
 
-  private func send(_ kind: Kind, id: UInt32 = 0, body: Data = Data()) {
+  func send(_ kind: Kind, id: UInt32 = 0, body: Data = Data()) {
     sendLock.withLock {
       guard !didClose else { return }
       guard body.count <= maxBodyLength, pendingSendBytes + headerLength + body.count <= 8 * 1024 * 1024 else {
@@ -253,6 +262,7 @@ final class Client: @unchecked Sendable {
       return true
     }
     guard first else { return }
+    SettingsHub.shared.remove(self)
     frames.finish()
     connection.cancel()
     onClose()

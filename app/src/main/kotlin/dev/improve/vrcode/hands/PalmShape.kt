@@ -17,7 +17,6 @@ object PalmShape {
   const val WRIST = 1
   const val THUMB_TIP = 5
   const val INDEX_TIP = 10
-  const val MIDDLE_DISTAL = 14
   const val MIDDLE_TIP = 15
 
   /** Unit normal pointing out of the palm: the palm joint's -Y axis rotated by [palm] (x, y, z, w). */
@@ -29,9 +28,8 @@ object PalmShape {
     return Math.toDegrees(acos(dot(normal(palm), toHead).coerceIn(-1f, 1f).toDouble())).toFloat()
   }
 
-  fun thumbToMiddleM(joints: FloatArray): Float = distance(joints, THUMB_TIP, MIDDLE_TIP)
-
-  fun thumbToIndexM(joints: FloatArray): Float = distance(joints, THUMB_TIP, INDEX_TIP)
+  /** Distance from the thumb tip to the fingertip joint [tip]. */
+  fun thumbToTipM(joints: FloatArray, tip: Int): Float = distance(joints, THUMB_TIP, tip)
 
   /**
    * Whether the thumb tip and [tip] touch: their skin surfaces (each joint's runtime-reported
@@ -41,12 +39,13 @@ object PalmShape {
     distance(joints, THUMB_TIP, tip) <= radii[THUMB_TIP] + radii[tip] + slackM
 
   /**
-   * Where a hint sits for the middle finger: [aboveM] beyond the fingertip along the finger and
-   * [outM] off the palm toward the user.
+   * Where a hint sits for the finger ending at joint [tipJoint]: [aboveM] beyond the fingertip along
+   * the finger and [outM] off the palm toward the user. In XR_EXT_hand_tracking order each
+   * fingertip's distal joint comes just before it.
    */
-  fun aboveMiddleTip(joints: FloatArray, palm: FloatArray, aboveM: Float, outM: Float): FloatArray {
-    val tip = point(joints, MIDDLE_TIP)
-    val along = normalize(sub(tip, point(joints, MIDDLE_DISTAL)))
+  fun aboveTip(joints: FloatArray, palm: FloatArray, tipJoint: Int, aboveM: Float, outM: Float): FloatArray {
+    val tip = point(joints, tipJoint)
+    val along = normalize(sub(tip, point(joints, tipJoint - 1)))
     val out = normal(palm)
     return floatArrayOf(
       tip[0] + along[0] * aboveM + out[0] * outM,
@@ -55,10 +54,10 @@ object PalmShape {
     )
   }
 
-  /** Midway between the thumb tip and the middle fingertip. */
-  fun middlePinchPoint(joints: FloatArray): FloatArray {
+  /** Midway between the thumb tip and the fingertip joint [tip]. */
+  fun pinchPoint(joints: FloatArray, tip: Int): FloatArray {
     val a = point(joints, THUMB_TIP)
-    val b = point(joints, MIDDLE_TIP)
+    val b = point(joints, tip)
     return floatArrayOf((a[0] + b[0]) / 2f, (a[1] + b[1]) / 2f, (a[2] + b[2]) / 2f)
   }
 

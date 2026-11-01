@@ -7,8 +7,10 @@ launchers remain unchanged and invoke the JVM for native builds.
 | Task | Command |
 | --- | --- |
 | Quest USB / Wi-Fi setup | `bun run quest-link --help` |
-| Build and run the background Mac app | `bun run mac:run --bluetooth` |
-| Package the Mac app without launching | `bun run mac:run --package-only` |
+| Build, sign and run VRcode Mac (Tauri menu-bar app with vrcode-mac and xmux-bridge; needs `cargo install tauri-cli --version '^2' --locked`) | `bun run mac:run --bluetooth` |
+| Package VRcode Mac without launching | `bun run mac:run --package-only` |
+| Start VRcode Mac at login / remove it | `bun run mac:install [args]` / `bun run mac:uninstall` |
+| Publish VRcode Mac to GitHub Releases | push a `mac-v<version>` tag, or run the **Release VRcode Mac** workflow ([docs](../docs/mac-app.md#releases)) |
 | Script policy and unit tests | `bun run test` |
 | Native TLS relay integration tests | `VRCODE_RELAY_BINARY="$PWD/mac/.build/debug/vrcode-mac" bun test scripts/tests/relay-integration.test.ts` |
 | Background cmux integration tests | `VRCODE_CMUX_BINARY="$PWD/mac/.build/debug/vrcode-mac" bun test scripts/tests/cmux-integration.test.ts` |

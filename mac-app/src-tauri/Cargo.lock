@@ -3684,6 +3684,7 @@ name = "vrcode-mac-app"
 version = "0.1.0"
 dependencies = [
  "core-foundation",
+ "core-foundation-sys",
  "libc",
  "security-framework",
  "serde",

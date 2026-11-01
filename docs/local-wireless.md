@@ -18,23 +18,25 @@ Build and start the background Mac app (the bundle is necessary for macOS Blueto
 bun scripts/run-mac-service.ts --bluetooth
 ```
 
-For everyday use, install both Mac services so they start at login and restart if they exit:
+For everyday use, install the app so it starts at login and relaunches after a crash:
 
 ```sh
-bun run mac:install                                              # relay 7274 + speech 7273
-~/Developer/github/leonsilicon/xmux/target/debug/xmux-bridge service install --session main  # 7272
+bun run mac:install          # xmux bridge 7272 + speech 7273 + relay 7274, one signed app
 ```
 
-`mac:install` copies the packaged app out of `mac/.build`, so later rebuilds and tests never replace
-the running binary. Re-run it after rebuilding; `bun run mac:uninstall` removes it. Logs go to
-`~/Library/Logs/vrcode-mac.log` and `~/Library/Logs/xmux-bridge.log`.
+The app bundles the xmux bridge, so no separate xmux LaunchAgent is needed (remove an old one with
+`launchctl bootout gui/$(id -u)/dev.improve.xmux.bridge`). `mac:install` copies the packaged app out
+of `mac/.build`, so later rebuilds and tests never replace the running binary. Re-run it after
+rebuilding; `bun run mac:uninstall` removes it. The log is `~/Library/Logs/vrcode-mac.log`. See
+[the Mac app](mac-app.md).
 
-Keep the normal xmux bridge running as well. To add the relay alongside an already-running speech
+To add the relay alongside an already-running speech
 service, use `bun scripts/run-mac-service.ts --link-only --bluetooth` instead. Without `--link-only`,
 the service also starts speech on loopback port 7273. The relay listens on port 7274 and advertises
 `_vrcode._tcp` using Bonjour. Bluetooth is opt-in on the Mac; omit `--bluetooth` for network-only use.
-Allow the Mac's Bluetooth / local-network prompt when presented. The background app has no window
-and does not bring itself to the foreground.
+Allow the Mac's Bluetooth / local-network prompt when presented. The app lives in the menu bar; its
+window (permissions, headset pairing, API key, log) opens from there and when a headset waits to
+pair.
 
 With the debug Quest app installed and an authorized ADB connection available:
 
@@ -77,9 +79,16 @@ but a key provisioned later by `quest-link pair` still switches the app to the r
   the remembered and listed addresses are what reconnects.
 - **Prompt retries.** Retries back off from one to five seconds indefinitely, but Wi-Fi becoming
   available or the app resuming retries immediately and restarts discovery if it had stopped.
-- **Always-on Mac.** With `mac:install` and the xmux LaunchAgent, a reboot, logout or crash does not
-  leave the Quest waiting for a service that someone has to restart. The relay exits if its
-  listener fails (for example a port conflict) so launchd restarts it.
+- **Says what to fix.** When a full round of routes fails, the Connection page names the fix and
+  stays up while retries continue: **Make sure the VRcode Mac app is running** when nothing
+  answers (the usual case; the Quest connects on its own as soon as the app starts), **Connect the
+  Quest to Wi-Fi** in Automatic with no Wi-Fi, or **Your Mac's connection key has changed** when a
+  Mac answers but rejects the key. Losing the Mac also unmounts the terminal windows, so the app
+  opens the Connection page once per outage and closes it when the terminals return.
+- **Always-on Mac.** With `mac:install`, a reboot, logout or crash does not leave the Quest waiting
+  for a service that someone has to restart. The relay exits if its listener fails (for example a
+  port conflict), and the app restarts it, as it does a crashed bridge; launchd relaunches the app
+  itself after a crash.
 
 If the Mac's address changes to one the key never listed, and Bonjour cannot reach it, the USB or
 Wi-Fi debugging routes still connect when their mappings exist. Otherwise run `quest-link pair`

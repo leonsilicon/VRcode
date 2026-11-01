@@ -67,5 +67,5 @@ fun WindowChrome.withTerminalTheme(theme: TerminalTheme): WindowChrome = if (the
   headerHeightDp = headerHeightDp, cornerRadiusDp = cornerRadiusDp,
   bodyColor = theme.background, headerColor = theme.background, titleColor = theme.foreground,
   onClose = onClose, onMinimize = onMinimize, onZoom = onZoom,
-  leadingSlot = leadingSlot, trailingSlot = trailingSlot, header = header,
+  leadingSlot = leadingSlot, trailingSlot = trailingSlot, header = header, overlay = overlay, outline = outline,
 )

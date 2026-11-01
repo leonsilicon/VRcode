@@ -14,6 +14,12 @@ enum Kind: UInt8 {
   case cmuxEvent = 10
   case aiRequest = 11
   case aiResult = 12
+  /// Quest -> Mac: its settings schema and values. Mac -> VRcode Mac app: the same plus `connected`, `pending`.
+  case settings = 13
+  /// VRcode Mac app -> Mac -> Quest: `{"values":{…}}`, a partial update (queued while the Quest is away).
+  case settingsSet = 14
+  /// VRcode Mac app -> Mac -> Quest: `{"action":"arrange_windows"}`.
+  case settingsAction = 15
 }
 
 let protocolVersion: UInt16 = 1

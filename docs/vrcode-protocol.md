@@ -39,12 +39,12 @@ connection.
 | 8 | `ERROR` | Mac -> headset | `{"message":"..."}` |
 | 9 | `CMUX_REQUEST` | headset -> Mac | One public `cmux.protocol/2` request envelope, including its own string request ID and mutation idempotency key |
 | 10 | `CMUX_EVENT` | Mac -> headset | The cmux response, stream item, or stream end envelope unchanged; `connection_end` reports a lost local cmux socket |
-| 11 | `AI_REQUEST` | headset -> Mac | `{"transcript":"...","screen":"...","title":"..."}`: what the user said to the AI (left fist) and the focused pane's visible text and title. `id` is unique per connection (shared with utterance ids) |
-| 12 | `AI_RESULT` | Mac -> headset | `{"text":"...","model":"..."}`: the exact text to stage for that pane (a shell command, or a prompt for a coding agent), same `id`. A failure is an `ERROR` with that `id` |
+| 11 | `AI_REQUEST` | headset -> Mac | `{"transcript":"...","screen":"...","title":"...","provider":"claude"}`: what the user said to the AI (left fist), the focused pane's visible text and title, and the model provider chosen in Settings (`claude`, `openai` or `gemini`; missing means `claude`). `id` is unique per connection (shared with utterance ids) |
+| 12 | `AI_RESULT` | Mac -> headset | `{"text":"...","provider":"...","model":"..."}`: the exact text to stage for that pane (a shell command, or a prompt for a coding agent), same `id`. A failure is an `ERROR` with that `id` |
 
 One utterance is in flight per connection: a new `AUDIO_START` cancels the previous one.
 
-AI requests run beside the audio path, so a slow answer never delays audio frames. The Mac calls the Claude Messages API (`claude-opus-5-5`, low effort, server-side refusal fallback) with the key from `ANTHROPIC_API_KEY` or `~/.config/vrcode/anthropic-api-key`; the key never reaches the headset, and the result is staged on a voice pane for review, never typed directly.
+AI requests run beside the audio path, so a slow answer never delays audio frames. The Mac calls the chosen provider at low effort: Claude (Messages API, `claude-opus-5-5`, server-side refusal fallback), ChatGPT (OpenAI Responses API, `gpt-6.1-sol`) or Gemini (`generateContent`, `gemini-3.8-flash`). Each provider's key comes from the Mac Keychain (service `dev.improve.vrcode`, account `anthropic-api-key`, `openai-api-key` or `gemini-api-key`), else `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`, else `~/.config/vrcode/<account>`; keys never reach the headset, and the result is staged on a voice pane for review, never typed directly.
 
 ## Background cmux control
 
@@ -69,5 +69,14 @@ Two local extensions use the same request/response envelopes: `vrcode.clipboard.
 `{"text":"..."}`; `vrcode.clipboard.write` accepts `{"text":"..."}` and returns `{"copied":true}`.
 These use `NSPasteboard` in the background. They never simulate Cmd-C or Cmd-V. The Quest's normal
 paste reads its own clipboard and sends `terminal.input.write` to the captured terminal ID.
+
+A third, `vrcode.terminal.size.set`, sets a terminal's grid from the Quest. With
+`{"terminal":"term_…","cols":C,"rows":R}` (1-1000 each) it sets cmux's per-terminal size policy to
+`fixed` C×R, so the grid holds while other viewers, such as a Mac frontend, report other sizes; they
+crop or pan it. With only `{"terminal":"term_…"}` it clears the policy and the grid goes back to
+cmux's attached viewers. It returns `{"terminal","cols","rows","policy"}` from cmux's new size
+state. The size policy has no protocol/2 operation, so the service sends `list-workspaces` (to find
+the terminal's surface) and `set-size-policy` as protocol/1 commands on a short-lived socket of
+its own. Policies live in the cmux daemon's memory and reset when it restarts.
 
 The complete public, keyboard, and context-menu inventory is in [cmux interactions](cmux-interactions.md).

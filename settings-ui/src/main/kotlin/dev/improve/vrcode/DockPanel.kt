@@ -141,13 +141,22 @@ fun DockBody(
           }
         }
         if (picked) {
-          // The label and the flick cue above the picked option.
-          Text(
-            if (pressing) "↑ ${option.label}" else option.label,
-            Modifier.offset(x = w * x - w * 0.15f, y = h * rowY - size / 2 - rise - h * 0.2f).width(w * 0.3f),
-            color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1,
-            overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-          )
+          // The label and the flick cue in a pill above the body (clear of the grabber), over the
+          // picked option, rising a little with the flick. The world shows behind it in the headset.
+          Box(
+            Modifier.offset(
+              x = (w * x - w * 0.15f).coerceIn(0.dp, w * 0.7f),
+              y = (h * bodyTop - h * 0.2f - h * 0.08f * l).coerceAtLeast(0.dp),
+            ).width(w * 0.3f),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(
+              if (pressing) "↑ ${option.label}" else option.label,
+              Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xE61A202B)).padding(horizontal = 8.dp, vertical = 2.dp),
+              color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+              overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+            )
+          }
         }
       }
       if (pressing) {
@@ -155,8 +164,11 @@ fun DockBody(
         Box(Modifier.offset(x = w * fingerX - 4.dp, y = h * rowY + icon / 2 + 3.dp).size(8.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.8f)))
       }
       if (hint != null) {
-        Text(hint, Modifier.offset(y = h * bodyTop - h * 0.16f).fillMaxWidth(), color = Color(0xFFB9C5D8), fontSize = 10.sp,
-          textAlign = TextAlign.Center, maxLines = 1)
+        // At the top of the panel, above where an option's label shows.
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+          Text(hint, Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xCC1A202B)).padding(horizontal = 8.dp, vertical = 2.dp),
+            color = Color(0xFFB9C5D8), fontSize = 10.sp, textAlign = TextAlign.Center, maxLines = 1)
+        }
       }
     }
   }

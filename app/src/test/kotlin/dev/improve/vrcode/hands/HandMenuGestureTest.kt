@@ -117,13 +117,48 @@ class HandMenuGestureTest {
     assertEquals(Event.None, g.step(frame(middle = 0.3f)))
     assertEquals(Event.Opened, g.step(frame(flags = pinch, middle = 1f)))
     assertTrue(g.open)
-    assertEquals(MiddlePinch.Source.Runtime, g.source)
+    assertEquals(FingerPinch.Source.Runtime, g.source)
     // A one-frame dropout of the discrete signal with the strength still high keeps it held.
     assertEquals(Event.None, g.step(frame(middle = 0.8f)))
     val (event, tookMs) = g.hold(frame(middle = 0.2f))
     assertEquals(Event.Released, event)
     assertTrue(tookMs >= HandMenuGesture.RELEASE_GRACE_MS)
     assertFalse(g.open)
+  }
+
+  @Test
+  fun aLightTouchStartsThePinchBeforeTheRuntimesFullStrengthSignal() {
+    val g = HandMenuGesture()
+    assertEquals(Event.None, g.step(frame(middle = 0.5f)))
+    assertEquals(Event.None, g.step(frame(middle = 0.74f)))
+    assertFalse(g.open)
+    assertEquals(Event.Opened, g.step(frame(middle = FingerPinch.MIDDLE_START_STRENGTH)))
+    assertEquals(1f, g.progress, 0f)
+    assertEquals(FingerPinch.Source.Runtime, g.source)
+    // Held like any pinch: the strength keeps it down, and letting go releases it.
+    assertEquals(Event.None, g.hold(frame(middle = 0.6f), maxMs = 300L).first)
+    assertTrue(g.open)
+    assertEquals(Event.Released, g.release(frame(middle = 0.2f)))
+  }
+
+  @Test
+  fun aStrengthOnlyMiddlePinchYieldsToTheIndex() {
+    val g = HandMenuGesture()
+    g.step(frame())
+    // The index reads stronger, equal (the index wins ties), or is flagged: not a middle pinch.
+    assertEquals(Event.None, g.step(frame(middle = 0.8f, index = 0.85f)))
+    assertEquals(Event.None, g.step(frame(middle = 0.8f, index = 0.8f)))
+    assertEquals(Event.None, g.step(frame(flags = AIM_VALID or INDEX_PINCHING, middle = 0.9f, index = 0.7f)))
+    assertFalse(g.open)
+    assertEquals(Event.Opened, g.step(frame(middle = 0.8f, index = 0.5f)))
+  }
+
+  @Test
+  fun theIndexPinchStillNeedsTheRuntimesSignal() {
+    val g = HandMenuGesture(IndexPinch)
+    assertEquals(Event.None, g.step(frame(index = 0.95f)))
+    assertEquals(0.95f, g.progress, 0.001f)
+    assertEquals(Event.Opened, g.step(frame(flags = AIM_VALID or INDEX_PINCHING, index = 1f)))
   }
 
   @Test
@@ -158,7 +193,7 @@ class HandMenuGestureTest {
     val g = HandMenuGesture()
     val withheld = AIM_VALID or SYSTEM_GESTURE // palm-facing system pose, both strengths zero
     g.step(frame(joints = joints(middleGapM = 0.06f), flags = withheld))
-    assertEquals(MiddlePinch.Source.Joints, g.source)
+    assertEquals(FingerPinch.Source.Joints, g.source)
     // Tip radii 8 mm each: surfaces touch at 16 mm, plus 6 mm slack to start.
     assertEquals(Event.Opened, g.step(frame(joints = joints(middleGapM = 0.02f), flags = withheld)))
     assertEquals(Event.None, g.step(frame(joints = joints(middleGapM = 0.03f), flags = withheld))) // release slack holds
@@ -177,7 +212,7 @@ class HandMenuGestureTest {
     assertTrue(g.open)
     val (event, tookMs) = g.hold(indexOnly)
     assertEquals(Event.Cancelled, event)
-    assertEquals(HandMenuGesture.CancelReason.IndexPinch, g.cancelReason)
+    assertEquals(HandMenuGesture.CancelReason.OtherFinger, g.cancelReason)
     assertTrue(tookMs >= HandMenuGesture.RELEASE_GRACE_MS)
     assertEquals(Event.None, g.release())
     assertEquals(Event.Opened, g.step(frame(flags = pinch, middle = 1f)))
@@ -290,13 +325,15 @@ class HandMenuGestureTest {
   }
 
   @Test
-  fun theHintFillsWithTheRuntimesPinchStrength() {
+  fun theHintFillsWithTheRuntimesPinchStrengthAndIsFullWhereAPinchStarts() {
     val g = HandMenuGesture()
     g.step(frame(middle = 0f))
     assertTrue(g.hint)
     assertEquals(0f, g.progress, 0.001f)
     g.step(frame(middle = 0.55f))
-    assertEquals(0.55f, g.progress, 0.001f)
+    assertEquals(0.55f / FingerPinch.MIDDLE_START_STRENGTH, g.progress, 0.001f)
+    g.step(frame(middle = 0.7f))
+    assertTrue(g.progress in 0.9f..0.99f) // almost full: not quite a pinch
     // The hint sits beyond the middle fingertip (fingers point up, +y) and toward the user (+z).
     val tip = joints()
     assertTrue(g.hintPoint!![1] > tip[PalmShape.MIDDLE_TIP * 3 + 1])
@@ -313,5 +350,84 @@ class HandMenuGestureTest {
     assertEquals(Event.None, g.step(frame(flags = pinch, middle = 1f)))
     assertEquals(Event.None, g.release())
     assertEquals(Event.Opened, g.step(frame(flags = pinch, middle = 1f)))
+  }
+
+  // The left hand's quick inputs: the same gesture driven by the index finger.
+
+  private val indexPinch = AIM_VALID or INDEX_PINCHING
+
+  @Test
+  fun anIndexPinchWithThePalmTowardTheUserOpensTheIndexMenuAndReleaseEnds() {
+    val g = HandMenuGesture(IndexPinch)
+    assertEquals(Event.None, g.step(frame(index = 0.3f)))
+    assertEquals(Event.Opened, g.step(frame(flags = indexPinch, index = 1f)))
+    assertEquals(FingerPinch.Source.Runtime, g.source)
+    // The ring opens between the thumb and the index fingertip, not the middle one.
+    val tips = joints()
+    assertEquals((tips[PalmShape.THUMB_TIP * 3] + tips[PalmShape.INDEX_TIP * 3]) / 2f, g.point!![0], 1e-5f)
+    assertEquals(Event.None, g.step(frame(index = 0.8f))) // the strength holds a one-frame dropout
+    assertEquals(Event.Released, g.release(frame(index = 0.2f)))
+    assertFalse(g.open)
+  }
+
+  @Test
+  fun eachFingersMenuIgnoresTheOtherFingersPinch() {
+    val index = HandMenuGesture(IndexPinch)
+    val middle = HandMenuGesture(MiddlePinch)
+    for (g in listOf(index, middle)) g.step(frame())
+    assertEquals(Event.None, index.step(frame(flags = pinch, middle = 1f, index = 0.4f)))
+    assertEquals(Event.Opened, middle.step(frame(flags = pinch, middle = 1f, index = 0.4f)))
+    middle.release()
+    index.release()
+    assertEquals(Event.Opened, index.step(frame(flags = indexPinch, index = 1f, middle = 0.4f)))
+    assertEquals(Event.None, middle.step(frame(flags = indexPinch, index = 1f, middle = 0.4f)))
+  }
+
+  @Test
+  fun bothFingersReadingAsPinchedAtOnceOpensOnlyTheIndexMenu() {
+    val index = HandMenuGesture(IndexPinch)
+    val middle = HandMenuGesture(MiddlePinch)
+    for (g in listOf(index, middle)) g.step(frame())
+    val both = frame(flags = pinch or INDEX_PINCHING, middle = 1f, index = 1f)
+    assertEquals(Event.Opened, index.step(both))
+    assertEquals(Event.None, middle.step(both))
+  }
+
+  @Test
+  fun aPalmAwayIndexPinchIsAnOrdinaryPinchNotTheMenu() {
+    val g = HandMenuGesture(IndexPinch)
+    g.step(frame(palm = palmAway))
+    assertEquals(Event.None, g.step(frame(palm = palmAway, flags = indexPinch, index = 1f)))
+    assertFalse(g.palmFacing)
+  }
+
+  @Test
+  fun theIndexMenuOpensDuringTheRuntimesSystemGesture() {
+    val g = HandMenuGesture(IndexPinch)
+    // The left palm + index pinch is the runtime's app menu gesture: it flags SYSTEM_GESTURE.
+    g.step(frame(palm = palmAway, flags = AIM_VALID or SYSTEM_GESTURE, index = 0.2f))
+    assertEquals(Event.Opened, g.step(frame(palm = palmAway, flags = indexPinch or SYSTEM_GESTURE, index = 1f)))
+  }
+
+  @Test
+  fun whenTheRuntimeWithholdsPinchDataTheIndexFingertipTouchingStandsIn() {
+    val g = HandMenuGesture(IndexPinch)
+    val withheld = AIM_VALID or SYSTEM_GESTURE
+    g.step(frame(joints = joints(indexGapM = 0.06f), flags = withheld))
+    assertEquals(FingerPinch.Source.Joints, g.source)
+    assertEquals(Event.Opened, g.step(frame(joints = joints(indexGapM = 0.02f), flags = withheld)))
+    assertEquals(Event.None, g.step(frame(joints = joints(indexGapM = 0.03f), flags = withheld)))
+    assertEquals(Event.Released, g.release(frame(joints = joints(indexGapM = 0.045f), flags = withheld)))
+  }
+
+  @Test
+  fun aMiddlePinchTakingOverCancelsTheIndexMenu() {
+    val g = HandMenuGesture(IndexPinch)
+    g.step(frame())
+    g.step(frame(flags = indexPinch, index = 1f))
+    val (event, tookMs) = g.hold(frame(flags = pinch, middle = 1f, index = 0.6f))
+    assertEquals(Event.Cancelled, event)
+    assertEquals(HandMenuGesture.CancelReason.OtherFinger, g.cancelReason)
+    assertTrue(tookMs >= HandMenuGesture.RELEASE_GRACE_MS)
   }
 }

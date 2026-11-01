@@ -10,14 +10,17 @@ data class AppSettings(
   val windowStyle: WindowStyle = WindowStyle.MacOS,
   val textMicProp: VoiceProp = VoiceProp.Microphone,
   val aiMicProp: VoiceProp = VoiceProp.NewsMicrophone,
+  val aiProvider: AiProvider = AiProvider.Claude,
   val terminalTheme: TerminalTheme = TerminalTheme.Mac,
   val terminalFontSize: Float = DEFAULT_FONT_SIZE,
   val terminalCursor: TerminalCursor = TerminalCursor.Terminal,
   val defaultWindowMode: WindowMode = WindowMode.Fixed,
+  val defaultTerminalSize: TerminalSize = TerminalSize(),
   val pointerCursor: PointerCursorStyle = PointerCursorStyle.Arrow,
   val pointerCursorSize: Float = DEFAULT_POINTER_SIZE,
 ) {
   fun sanitized(): AppSettings = copy(
+    defaultTerminalSize = defaultTerminalSize.sanitized(),
     windowDistanceM = if (windowDistanceM.isFinite()) windowDistanceM.coerceIn(MIN_DISTANCE, MAX_DISTANCE) else 1.4f,
     terminalFontSize = if (terminalFontSize.isFinite()) terminalFontSize.coerceIn(MIN_FONT_SIZE, MAX_FONT_SIZE) else DEFAULT_FONT_SIZE,
     pointerCursorSize = if (pointerCursorSize.isFinite()) pointerCursorSize.coerceIn(MIN_POINTER_SIZE, MAX_POINTER_SIZE) else DEFAULT_POINTER_SIZE,
@@ -49,10 +52,15 @@ class SettingsStore(private val preferences: SharedPreferences) {
         ?: preferences.getString("voice_prop", null)?.takeUnless { it == "microphone" },
       fallback = VoiceProp.NewsMicrophone,
     ),
+    aiProvider = AiProvider.fromStorage(preferences.getString("ai_provider", null)),
     terminalTheme = TerminalTheme.fromStorage(preferences.getString("terminal_theme", null)),
     terminalFontSize = preferences.getFloat("terminal_font_size", AppSettings.DEFAULT_FONT_SIZE),
     terminalCursor = TerminalCursor.fromStorage(preferences.getString("terminal_cursor", null)),
     defaultWindowMode = WindowMode.fromStorage(preferences.getString("default_window_mode", null)),
+    defaultTerminalSize = TerminalSize(
+      preferences.getInt("default_terminal_cols", TerminalSize.DEFAULT_COLS),
+      preferences.getInt("default_terminal_rows", TerminalSize.DEFAULT_ROWS),
+    ),
     pointerCursor = PointerCursorStyle.fromStorage(preferences.getString("pointer_cursor", null)),
     pointerCursorSize = preferences.getFloat("pointer_cursor_size", AppSettings.DEFAULT_POINTER_SIZE),
   ).sanitized()
@@ -67,10 +75,13 @@ class SettingsStore(private val preferences: SharedPreferences) {
       .putString("text_mic_prop", s.textMicProp.storageValue)
       .putString("ai_mic_prop", s.aiMicProp.storageValue)
       .remove("voice_prop")
+      .putString("ai_provider", s.aiProvider.storageValue)
       .putString("terminal_theme", s.terminalTheme.storageValue)
       .putFloat("terminal_font_size", s.terminalFontSize)
       .putString("terminal_cursor", s.terminalCursor.storageValue)
       .putString("default_window_mode", s.defaultWindowMode.storageValue)
+      .putInt("default_terminal_cols", s.defaultTerminalSize.cols)
+      .putInt("default_terminal_rows", s.defaultTerminalSize.rows)
       .putString("pointer_cursor", s.pointerCursor.storageValue)
       .putFloat("pointer_cursor_size", s.pointerCursorSize)
       .apply()

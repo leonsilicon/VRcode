@@ -1,8 +1,11 @@
 # Terminal appearance
 
 Open **Settings → Appearance**, then scroll below Window style. All choices save automatically
-and apply to existing terminals and newly opened panes. Window style remains independent of
-terminal colors.
+and apply to existing terminals and newly opened panes that follow app defaults. Window style
+remains independent of terminal colors. A terminal's own gear opens a scrollable **Window settings**
+top sheet with overrides for only that terminal: style, theme, text size, cursor, and Fixed/Follow.
+**Use app defaults** clears those overrides. They last for the mounted terminal and survive
+closing the sheet and resizing the panel, but reset on reconnect.
 
 - **Follow Mac** is the default and keeps the Mac's terminal colors.
 - Eight offline presets: Catppuccin Mocha, Dracula, Nord, Tokyo Night, Gruvbox Dark,
@@ -44,6 +47,13 @@ install the full source palettes. The MIT notice also ships in the APK's `termin
 
 The local xmux checkout requires [`patches/xmux-terminal-appearance.patch`](../patches/xmux-terminal-appearance.patch).
 It adds render-only `GridAppearance` overrides to `TerminalGridView` and `XmuxSpatial.setFontSize`.
+Apply [`patches/xmux-window-settings.patch`](../patches/xmux-window-settings.patch) after the existing
+header, appearance, and window-visibility patches. It adds a body overlay slot to `WindowChrome`,
+per-window terminal input suspension, and `XmuxSpatial.setFontSize(window, sizeOrNull)` so changing
+one terminal does not resize its neighbors. The overlay shares the terminal's panel, pose, and
+viewport constraints; it does not mount a separate app-settings panel.
+Use `git apply --unidiff-zero` for the window-settings patch: its additive font API declaration
+uses minimal context to coexist with other extensions to the xmux API.
 The patch includes the corresponding public API dumps. It is independent of the existing custom
 header patch; both are required with an older checkout. From the VRcode root:
 

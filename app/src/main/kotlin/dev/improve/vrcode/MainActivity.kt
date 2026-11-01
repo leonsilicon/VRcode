@@ -10,6 +10,7 @@ import android.util.Log
 import android.view.KeyEvent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
@@ -27,6 +28,7 @@ import com.meta.spatial.runtime.ButtonBits
 import com.meta.spatial.toolkit.AppSystemActivity
 import com.meta.spatial.toolkit.AvatarAttachment
 import com.meta.spatial.toolkit.Controller
+import com.meta.spatial.toolkit.ControllerType
 import com.meta.spatial.toolkit.PanelRegistration
 import com.meta.spatial.toolkit.PlayerBodyAttachmentSystem
 import com.meta.spatial.toolkit.Transform
@@ -35,6 +37,7 @@ import dev.improve.vrcode.voice.VoiceFeature
 import dev.improve.vrcode.dock.DockFeature
 import dev.improve.vrcode.hands.RightClickFeature
 import dev.improve.vrcode.cmux.CmuxFeature
+import dev.improve.vrcode.cmux.TerminalGridSizing
 import dev.improve.vrcode.pie.HandMenusFeature
 import dev.improve.vrcode.connection.ConnectionController
 import dev.improve.vrcode.connection.ConnectionPanel
@@ -47,13 +50,13 @@ import dev.improve.xmux.client.XmuxSession
 import dev.improve.xmux.connect.panel.BridgeChoice
 import dev.improve.xmux.connect.panel.ConnectStatus
 import dev.improve.xmux.connect.panel.parseAddress
-import dev.improve.xmux.spatial.Placement
 import dev.improve.xmux.spatial.SpatialConfig
 import dev.improve.xmux.spatial.WindowLayout
 import dev.improve.xmux.spatial.XmuxSpatial
 import dev.improve.xmux.window.frame.WindowChrome
 import dev.improve.vrcode.dock.DockGesture
 import dev.improve.vrcode.dock.DockRecall
+import dev.improve.vrcode.windows.TerminalWindows
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -66,22 +69,30 @@ class MainActivity : AppSystemActivity() {
   private val preferences by lazy { getSharedPreferences("vrcode", MODE_PRIVATE) }
   private val store by lazy { SettingsStore(preferences) }
   private var settings by mutableStateOf(AppSettings())
-  private val xmux by lazy { XmuxSpatial(this, SpatialConfig(enablePassthrough = false)) }
+  private val xmux by lazy { XmuxSpatial(this, SpatialConfig(enablePassthrough = false, resizeGrids = true)) }
   private val client by lazy { XmuxClient(this) }
   private val failures = FailureLog(TAG)
   /** A failed background job must not take down the headset app with it. */
   private val scope = MainScope() + CoroutineExceptionHandler { _, error -> failures.report("background job", error) }
-  private val palmMenu = LeftPalmMenu()
   private val boundary = BoundaryVisibility()
   private val menuButton = MenuButtonGate()
   private val terminalAppearance = TerminalAppearanceController()
   private val terminalPointer by lazy { TerminalPointerInput(xmux) }
-  private val rightHandPointer by lazy { RightHandPointer(this, xmux) }
-  private val cmuxControls: CmuxFeature by lazy { CmuxFeature(this, xmux, scope) }
-  /** Voice mode: left fist dictates into a voice pane, left pinch pastes it (see voice/VoiceFeature.kt). */
+  private val rightHandPointer by lazy { RightHandPointer(this, xmux, ::updateHeaderHover) }
+  private val cmuxControls: CmuxFeature by lazy { CmuxFeature(this, xmux, scope) { settings.defaultTerminalSize } }
+  /** Resizing a terminal window sets its terminals' columns and rows in cmux (cmux/TerminalGridSizing.kt). */
+  private val gridSizing by lazy { TerminalGridSizing(this, xmux, cmuxControls, scope) }
+  /** Where each terminal window is, its mode, minimized and fullscreen: kept in cmux, drawn from it (windows/TerminalWindows.kt). */
+  private val terminalWindows by lazy {
+    TerminalWindows(xmux, scope, android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown",
+      head = ::headPose, defaultMode = { settings.defaultWindowMode }, distanceM = { settings.windowDistanceM })
+  }
+  /** Keeps a terminal window focused whenever one is open, so voice and keys always have a target. */
+  private val focus by lazy { FocusKeeper(xmux) }
+  /** Voice mode: a fist dictates, opening it types into the focused pane (see voice/VoiceFeature.kt). */
   @OptIn(SpatialSDKExperimentalAPI::class)
   private val voice: VoiceFeature by lazy {
-    VoiceFeature(this, xmux, scope, overlayHitDistance = { origin, direction -> dock.hitDistance(origin, direction) },
+    VoiceFeature(this, xmux, scope, focus, overlayHitDistance = { origin, direction -> dock.hitDistance(origin, direction) },
       dockPose = { dock.currentPose() }) {
       spatial.getFrameTiming().predictedDisplayTimeNs
     }
@@ -90,16 +101,18 @@ class MainActivity : AppSystemActivity() {
   private val rightClick: RightClickFeature by lazy { RightClickFeature(this, xmux,
     predictedTimeNs = { spatial.getFrameTiming().predictedDisplayTimeNs },
     onContextMenu = { hit -> terminalPointer.cancel(); cmuxControls.open(hit) }) }
-  /** Palm toward the user + middle pinch: left = new terminal/Codex/Claude, right = keyboard and keys. */
+  /** Palm toward the user + middle pinch: left = new terminal/Codex/Claude and bring forward, right = keyboard and keys. */
   @OptIn(SpatialSDKExperimentalAPI::class)
-  private val handMenu: HandMenusFeature by lazy { HandMenusFeature(this, xmux, voice, cmuxControls) { spatial.getFrameTiming().predictedDisplayTimeNs } }
+  private val handMenu: HandMenusFeature by lazy {
+    HandMenusFeature(this, xmux, voice, cmuxControls, bringForward = ::bringFocusedForward) { spatial.getFrameTiming().predictedDisplayTimeNs }
+  }
   @OptIn(SpatialSDKExperimentalAPI::class)
   private val dock: DockFeature by lazy {
     DockFeature(xmux, scene = { scene }, predictedTimeNs = { spatial.getFrameTiming().predictedDisplayTimeNs },
       onWindow = ::showDockWindow, onKeyboard = { handMenu.toggleKeyboard() },
       onArrange = ::arrangeWindows, onSettings = { openSettings() }, onConnection = { openSettings(SettingsPage.Connection) })
   }
-  /** Flicking up on a window in the dock glides it to just above the dock. */
+  /** Flicking up on a window in the dock glides it to just above the dock; Bring forward uses the same glide. */
   private val dockRecall = DockRecall()
   private val linkController: ConnectionController by lazy {
     ConnectionController(this, scope,
@@ -111,6 +124,7 @@ class MainActivity : AppSystemActivity() {
   private val adverts = mutableMapOf<String, BridgeAdvert>()
   private var session: XmuxSession? = null
   private var sessionJob: Job? = null
+  private var linkAttention: Job? = null
   private var discovery: Job? = null
   private var settingsPage by mutableStateOf(SettingsPage.Workspace)
   private var customizationTab by mutableStateOf(CustomizationTab.Pointer)
@@ -120,7 +134,9 @@ class MainActivity : AppSystemActivity() {
   private var sceneReady = false
   private var setupConnection = false
   private var resumed = false
-  private val windowMotion = mutableMapOf<ScreenId, WindowMotion>()
+  private val windowOverrides = mutableStateMapOf<ScreenId, TerminalWindowSettings>()
+  private var windowSettingsScreen by mutableStateOf<ScreenId?>(null)
+  private val windowHeaderHover = mutableMapOf<ScreenId, TerminalHeaderHover>()
 
   override fun onCreate(savedInstanceState: Bundle?) {
     settings = store.load()
@@ -142,8 +158,10 @@ class MainActivity : AppSystemActivity() {
     guarded("dock setup") { dock.onSceneReady() }
     guarded("voice setup") { voice.onSceneReady() }
     guarded("hand menu setup") { handMenu.onSceneReady() }
+    guarded("grid sizing") { gridSizing.install() }
     sceneReady = true
     applySettings(settings)
+    Log.i(TAG, "New terminal default: ${settings.defaultTerminalSize.cols}x${settings.defaultTerminalSize.rows}")
     setupConnection = true
     openSettings(SettingsPage.Connection)
     startDiscovery()
@@ -151,6 +169,16 @@ class MainActivity : AppSystemActivity() {
     val address = intent?.getStringExtra("address")
     linkController.start(autoConnect = address == null && settings.autoConnect)
     if (address != null) connect(address)
+    // Losing the Mac unmounts every terminal window. Show why (for example "Make sure the VRcode
+    // Mac app is running") once per outage; the page closes itself when the terminals return.
+    linkAttention?.cancel()
+    linkAttention = scope.launch {
+      var shown = false
+      linkController.status.collect { status ->
+        if (status.attention && !shown && sceneReady && !settingsOpen) { setupConnection = true; openSettings(SettingsPage.Connection) }
+        shown = status.attention
+      }
+    }
   }
 
   override fun onSceneTick() {
@@ -196,41 +224,48 @@ class MainActivity : AppSystemActivity() {
       pointers = dockPointers())
     dockRecall.tick(SystemClock.uptimeMillis())?.let { (screen, pose) ->
       val window = xmux.windows.firstOrNull { it.screen?.value == screen } ?: return@let
-      window.setPose(pose)
-      windowMotion[window.screen]?.moved(headPose(), pose)
+      terminalWindows.move(window.screen ?: return@let, pose)
     }
   }
 
   @OptIn(SpatialSDKExperimentalAPI::class)
   private fun tickFeatures() {
-    terminalAppearance.update(xmux.windows, settings)
+    if (windowSettingsScreen != null && xmux.windows.none { it.screen == windowSettingsScreen && it.visible }) closeWindowSettings()
+    terminalAppearance.update(xmux.windows) { effectiveSettings(it.screen) }
     if (resumed) boundary.update(scene, settings.passthrough)
     if (resumed) {
+      // Only a real controller's menu button toggles Settings. With hand tracking the same press is
+      // the left palm-facing index pinch, which opens the quick inputs ring (HandMenusFeature).
       val sdkDown = Query.where { has(Controller.id, AvatarAttachment.id) }.filter { isLocal() }.eval().any { entity ->
         val side = entity.getComponent<AvatarAttachment>().type
-        (side == "left_hand" || side == "left_controller") && entity.getComponent<Controller>().isDown(ButtonBits.ButtonMenu)
+        val controller = entity.getComponent<Controller>()
+        (side == "left_hand" || side == "left_controller") && controller.type != ControllerType.HAND &&
+          controller.isDown(ButtonBits.ButtonMenu)
       }
-      val palmDown = palmMenu.isPressed(scene, spatial.getFrameTiming().predictedDisplayTimeNs)
-      if (menuButton.update(sdkDown, palmDown, SystemClock.uptimeMillis())) toggleSettings()
+      if (menuButton.update(sdkDown, SystemClock.uptimeMillis())) toggleSettings()
     }
-    updateWindowMotion()
+    terminalWindows.tick(resumed)
+    windowHeaderHover.keys.retainAll(xmux.windows.mapNotNull { it.screen }.toSet())
+    focus.tick(headPose())
     val right = systemManager.tryFindSystem<PlayerBodyAttachmentSystem>()?.tryGetLocalPlayerAvatarBody()?.rightHand
     val rightRay = right?.takeIf { it.tryGetComponent<Controller>()?.isActive == true }?.tryGetComponent<Transform>()?.transform
     val overDock = rightRay?.let { dock.blocksRay(it.t, it.forward()) } == true
-    terminalPointer.update(allowInput = resumed && !settingsOpen && !cmuxControls.isOpen)
+    terminalPointer.update(allowInput = resumed && !settingsOpen && windowSettingsScreen == null && !cmuxControls.isOpen)
     if (rightHandPointer.update(visible = resumed && !settingsOpen && !cmuxControls.isOpen && !overDock,
         style = settings.pointerCursor, size = settings.pointerCursorSize)) terminalPointer.cancel()
-    voice.onSceneTick(allowGestures = !settingsOpen && !cmuxControls.isOpen,
+    voice.onSceneTick(allowGestures = !settingsOpen && windowSettingsScreen == null && !cmuxControls.isOpen,
       previewMic = customizationTab.mic.takeIf { resumed && settingsOpen && settingsPage == SettingsPage.Customization })
-    handMenu.onSceneTick(enabled = resumed && !settingsOpen && !cmuxControls.isOpen)
+    handMenu.onSceneTick(enabled = resumed && !settingsOpen && windowSettingsScreen == null && !cmuxControls.isOpen)
     // A palm-facing middle pinch belongs to the pie; the right-click is the palm-away one.
-    rightClick.onSceneTick(enabled = resumed && !settingsOpen && !cmuxControls.isOpen && !handMenu.busy && !overDock)
+    rightClick.onSceneTick(enabled = resumed && !settingsOpen && windowSettingsScreen == null && !cmuxControls.isOpen && !handMenu.busy && !overDock)
   }
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-    // Some runtime versions deliver the app-menu action as an Android menu key instead.
+    // Some runtime versions deliver the app-menu action as an Android menu key instead. From a
+    // tracked left hand that is the palm pinch, which belongs to the quick inputs ring.
     if (event.keyCode == KeyEvent.KEYCODE_MENU || event.keyCode == KeyEvent.KEYCODE_BUTTON_START) {
-      if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && menuButton.request(SystemClock.uptimeMillis())) toggleSettings()
+      if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !leftIsHand() &&
+        menuButton.request(SystemClock.uptimeMillis())) toggleSettings()
       return true
     }
     if (cmuxControls.isOpen) {
@@ -248,6 +283,13 @@ class MainActivity : AppSystemActivity() {
       // Let fields/virtual keyboard use keys without typing them into a focused terminal.
       return super.dispatchKeyEvent(event)
     }
+    if (windowSettingsScreen != null) {
+      if (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
+        if (event.action == KeyEvent.ACTION_UP) closeWindowSettings()
+        return true
+      }
+      return super.dispatchKeyEvent(event)
+    }
     if (event.action == KeyEvent.ACTION_DOWN) terminalPointer.clear()
     return xmux.dispatchKeyEvent(event) || super.dispatchKeyEvent(event)
   }
@@ -258,12 +300,20 @@ class MainActivity : AppSystemActivity() {
     if (sceneReady) intent.getStringExtra("address")?.let { openSettings(SettingsPage.Connection); connect(it) }
   }
 
+  /** The left hand's SDK input is a tracked hand rather than a controller. */
+  private fun leftIsHand(): Boolean {
+    val body = systemManager.tryFindSystem<PlayerBodyAttachmentSystem>()?.tryGetLocalPlayerAvatarBody() ?: return false
+    val controller = body.leftHand.tryGetComponent<Controller>() ?: return false
+    return controller.isActive && controller.type == ControllerType.HAND
+  }
+
   private fun toggleSettings() {
     if (settingsOpen) closeSettings() else openSettings()
   }
 
   private fun openSettings(page: SettingsPage = SettingsPage.Workspace) {
     if (!sceneReady) return
+    closeWindowSettings()
     cmuxControls.hide()
     settingsPage = page
     if (settingsPanel == null) {
@@ -278,7 +328,7 @@ class MainActivity : AppSystemActivity() {
           onTerminalActions = { closeSettings(); cmuxControls.open(xmux.focused ?: xmux.windows.firstOrNull()) },
           connectionContent = {
             ConnectionPanel(linkController, when (val bridge = status) {
-              is ConnectStatus.Pairing -> "Terminal pairing code: ${bridge.code}. On the Mac, run xmux pair and enter this code."
+              is ConnectStatus.Pairing -> "Terminal pairing code: ${bridge.code}. On your Mac, open VRcode Mac from the menu bar and enter this code under Headset pairing."
               is ConnectStatus.Failed -> "Terminal connection: ${bridge.reason}"
               is ConnectStatus.Online -> "${bridge.session} · ${bridge.screens} terminal screens"
               is ConnectStatus.Connecting -> "Connecting to the terminal session…"
@@ -308,8 +358,8 @@ class MainActivity : AppSystemActivity() {
     store.save(s)
     if (!sceneReady) return
     xmux.setFontSize(s.terminalFontSize)
-    terminalAppearance.update(xmux.windows, s)
-    voice.setVoiceProps(s.textMicProp, s.aiMicProp)
+    terminalAppearance.update(xmux.windows) { effectiveSettings(it.screen) }
+    voice.setVoiceProps(s.textMicProp, s.aiMicProp, s.aiProvider)
     // Restore boundary visibility before removing the view of the physical room.
     if (!s.passthrough) boundary.update(scene, false)
     scene.enablePassthrough(s.passthrough)
@@ -327,24 +377,7 @@ class MainActivity : AppSystemActivity() {
     return Pose(head.t + offset + Vector3(0f, heightOffset, 0f), Quaternion.lookRotation(offset))
   }
 
-  private fun terminalPlacement(index: Int, count: Int): Placement {
-    val head = headPose() ?: return Placement.InFrontOfHead
-    val window = xmux.windows.getOrNull(index)
-    val width = window?.panelSize?.widthM ?: xmux.spec.widthM
-    val height = window?.panelSize?.heightM ?: xmux.spec.heightM
-    return Placement.Fixed(WindowLayout.arc(head, index, count, width, height, settings.windowDistanceM.coerceAtLeast(width / 2f + 0.1f)))
-  }
-
-  private fun arrangeWindows() {
-    val head = headPose() ?: return
-    val windows = xmux.windows.toList()
-    for ((index, window) in windows.withIndex()) {
-      (terminalPlacement(index, windows.size) as? Placement.Fixed)?.let {
-        window.setPose(it.pose)
-        windowMotion[window.screen]?.moved(head, it.pose)
-      }
-    }
-  }
+  private fun arrangeWindows() = terminalWindows.arrange()
 
   /** A dock flick recalls the existing window to just above the dock and focuses its live pane in cmux as well. */
   private fun showDockWindow(id: Int) {
@@ -352,15 +385,16 @@ class MainActivity : AppSystemActivity() {
     val window = xmux.windows.firstOrNull { it.screen?.value == id } ?: return
     val pane = window.focusedPane ?: return
     val head = headPose() ?: return
+    val screen = window.screen ?: return
+    // Dock recall always returns to the normal workspace, including a minimized fullscreen panel.
+    terminalWindows.show(screen)
     val distance = settings.windowDistanceM.coerceAtLeast(window.panelSize.widthM / 2f + 0.1f)
     val dockPose = dock.currentPose()
     val from = window.pose()
     if (dockPose != null && from != null) {
       dockRecall.start(id, from, DockRecall.targetPose(head.t, dockPose, window.panelSize.heightM, distance), SystemClock.uptimeMillis())
     } else {
-      val pose = WindowLayout.inFrontOfHead(head, distance)
-      window.setPose(pose)
-      windowMotion[window.screen]?.moved(head, pose)
+      terminalWindows.move(screen, WindowLayout.inFrontOfHead(head, distance))
     }
     xmux.focus(window, pane)
     // The local focusPane can be a no-op when this was already this screen's selected pane.
@@ -368,28 +402,95 @@ class MainActivity : AppSystemActivity() {
     window.session?.focusPane(pane)
   }
 
-  private fun updateWindowMotion() {
-    val windows = xmux.windows
-    windowMotion.keys.retainAll(windows.mapNotNull { it.screen }.toSet())
-    if (!resumed) return
-    val head = headPose() ?: return
-    for (window in windows) {
-      val motion = windowMotion[window.screen] ?: continue
-      val world = window.pose() ?: continue
-      motion.poseForFrame(head, world)?.let(window::setPose)
+  /**
+   * The left palm menu's Bring forward: glides the focused window from wherever it is to straight
+   * ahead of the user at eye height and the window distance, facing them, where Arrange would put a
+   * single window. Only the head's yaw counts, since the head is tilted down toward the palm while
+   * picking the item. A minimized window is shown; a fullscreen one is already in front.
+   */
+  private fun bringFocusedForward() {
+    val window = focus.focused
+    if (window == null) {
+      Log.i("VrcodeWindow", "bring forward: no focused window")
+      return
     }
+    val screen = window.screen ?: return
+    val head = headPose() ?: return
+    if (terminalWindows.isFullscreen(screen)) return
+    terminalWindows.show(screen)
+    val spec = window.panelSize
+    val target = WindowLayout.arc(head, 0, 1, spec.widthM, spec.heightM,
+      settings.windowDistanceM.coerceAtLeast(spec.widthM / 2f + 0.1f))
+    val from = window.pose()
+    if (from != null) dockRecall.start(screen.value, from, target, SystemClock.uptimeMillis()) else terminalWindows.move(screen, target)
+    Log.i("VrcodeWindow", "bring forward: screen ${screen.value} (\"${window.state.title}\")")
   }
 
-  private fun toggleWindowMode(screen: ScreenId) {
-    val motion = windowMotion[screen] ?: return
+  private fun updateHeaderHover(screen: ScreenId?, point: Offset?) {
+    for ((id, hover) in windowHeaderHover) hover.updatePointer(point.takeIf { id == screen })
+  }
+
+  private fun minimizeWindow(screen: ScreenId) {
+    terminalPointer.cancel()
+    dockRecall.cancel()
+    terminalWindows.minimize(screen)
+    xmux.windows.firstOrNull { it.visible }?.let { xmux.focus(it, it.focusedPane) }
+    Log.i("VrcodeWindow", "minimized screen ${screen.value} to dock")
+  }
+
+  private fun toggleFullscreen(screen: ScreenId) {
     val window = xmux.windows.firstOrNull { it.screen == screen } ?: return
-    val next = if (motion.mode == WindowMode.Fixed) WindowMode.Follow else WindowMode.Fixed
-    motion.setMode(next, headPose(), window.pose())
+    terminalPointer.cancel()
+    dockRecall.cancel()
+    terminalWindows.toggleFullscreen(screen)
+    xmux.focus(window, window.focusedPane)
+    Log.i("VrcodeWindow", "screen ${screen.value} fullscreen=${terminalWindows.isFullscreen(screen)}")
+  }
+
+  private fun toggleWindowMode(screen: ScreenId) =
+    setWindowMode(screen, if (terminalWindows.mode(screen) == WindowMode.Fixed) WindowMode.Follow else WindowMode.Fixed)
+
+  private fun setWindowMode(screen: ScreenId, mode: WindowMode) = terminalWindows.setMode(screen, mode)
+
+  private fun effectiveSettings(screen: ScreenId?): AppSettings = windowOverrides[screen]?.resolve(settings) ?: settings
+
+  private fun toggleWindowSettings(screen: ScreenId) {
+    if (windowSettingsScreen == screen) { closeWindowSettings(); return }
+    val window = xmux.windows.firstOrNull { it.screen == screen && it.visible } ?: return
+    closeWindowSettings()
+    cmuxControls.hide()
+    terminalPointer.cancel()
+    xmux.focus(window)
+    windowSettingsScreen = screen
+    window.inputEnabled = false
+    terminalPointer.update(allowInput = false)
+    Log.i("VrcodeWindow", "Window settings opened: screen ${screen.value}")
+  }
+
+  private fun closeWindowSettings() {
+    val screen = windowSettingsScreen ?: return
+    xmux.windows.firstOrNull { it.screen == screen }?.inputEnabled = true
+    windowSettingsScreen = null
+    Log.i("VrcodeWindow", "Window settings closed: screen ${screen.value}")
+  }
+
+  private fun applyWindowSettings(screen: ScreenId, value: TerminalWindowSettings) {
+    val window = xmux.windows.firstOrNull { it.screen == screen } ?: return
+    val previous = windowOverrides[screen] ?: TerminalWindowSettings()
+    val next = value.sanitized()
+    windowOverrides[screen] = next
+    if (previous.fontSize != next.fontSize) {
+      terminalPointer.cancel()
+      xmux.setFontSize(window, next.fontSize)
+    }
+    terminalAppearance.update(xmux.windows) { effectiveSettings(it.screen) }
+    Log.i("VrcodeWindow", "Window settings changed: screen ${screen.value} $next")
   }
 
   private fun dragTerminal(screen: ScreenId, anchor: Offset, position: Offset) {
     if (!sceneReady || settingsOpen) return
     val window = xmux.windows.firstOrNull { it.screen == screen } ?: return
+    if (terminalWindows.isFullscreen(screen)) return
     val pose = window.pose() ?: return
     val spec = window.panelSize
     val dimensions = window.entity?.tryGetComponent<IsdkPanelDimensions>()?.dimensions
@@ -402,8 +503,7 @@ class MainActivity : AppSystemActivity() {
       metresPerPixelY = (dimensions?.y ?: spec.heightM) / spec.heightPx,
       head = head?.t,
     )
-    window.setPose(moved)
-    windowMotion[screen]?.moved(head, moved)
+    terminalWindows.move(screen, moved)
     xmux.focus(window)
   }
 
@@ -443,25 +543,49 @@ class MainActivity : AppSystemActivity() {
     // The vrcode Mac service runs next to the bridge (over USB: adb reverse tcp:7273 tcp:7273).
     voice.connectSpeech(speechHost ?: intent?.getStringExtra("speech_host") ?: parsed.first, speechPort)
     cmuxControls.connect(speechHost ?: intent?.getStringExtra("speech_host") ?: parsed.first, speechPort)
+    terminalWindows.connect(speechHost ?: intent?.getStringExtra("speech_host") ?: parsed.first, speechPort)
     val s = client.connect(BridgeTarget(parsed.first, parsed.second, adverts[address]?.fingerprint), scope)
     session = s
-    xmux.follow(s, placement = ::terminalPlacement, chrome = { screen ->
-      val motion = WindowMotion(settings.defaultWindowMode).also { windowMotion[screen] = it }
+    terminalWindows.follow(s) { screen ->
+      Log.i("VrcodeWindow", "mounted controls for screen ${screen.value}")
+      windowOverrides.remove(screen)
+      val hover = TerminalHeaderHover().also { windowHeaderHover[screen] = it }
       val onDrag: (Offset, Offset) -> Unit = { anchor, position -> dragTerminal(screen, anchor, position) }
       WindowChrome(
+        onClose = { terminalPointer.cancel(); dockRecall.cancel(); xmux.windows.firstOrNull { it.screen == screen }?.let(cmuxControls::closeScreen) },
+        onMinimize = { minimizeWindow(screen) },
+        onZoom = { toggleFullscreen(screen) },
         trailingSlot = {
+          val theme = effectiveSettings(screen).terminalTheme
           Row(verticalAlignment = Alignment.CenterVertically) {
+            voice.TargetBadge(screen)
             androidx.compose.material3.TextButton(onClick = {
               terminalPointer.cancel()
               cmuxControls.open(xmux.windows.firstOrNull { it.screen == screen })
             }) { androidx.compose.material3.Text("Actions") }
-            WindowModeButton(motion.mode, settings.terminalTheme) { toggleWindowMode(screen) }
-            SettingsButton(tint = androidx.compose.ui.graphics.Color(settings.terminalTheme.accent)) { openSettings() }
+            WindowModeButton(terminalWindows.mode(screen), theme) { toggleWindowMode(screen) }
+            WindowSettingsButton(tint = androidx.compose.ui.graphics.Color(theme.accent)) { toggleWindowSettings(screen) }
           }
         },
-        header = { state, chrome -> VrcodeWindowHeader(state, settings.windowStyle, chrome.withTerminalTheme(settings.terminalTheme), onDrag) },
+        header = { state, chrome ->
+          val appearance = effectiveSettings(screen)
+          val fullscreen = terminalWindows.isFullscreen(screen)
+          VrcodeWindowHeader(state, appearance.windowStyle, chrome.withTerminalTheme(appearance.terminalTheme),
+            onDrag = onDrag.takeUnless { fullscreen }, fullscreen = fullscreen, hoverState = hover,
+            focused = focus.focusedScreen == screen)
+        },
+        outline = { windowOutline(focus.focusedScreen == screen, effectiveSettings(screen).terminalTheme) },
+        overlay = {
+          if (windowSettingsScreen == screen) {
+            val title = xmux.windows.firstOrNull { it.screen == screen }?.state?.title ?: "Terminal"
+            TerminalWindowSettingsSheet(title, windowOverrides[screen] ?: TerminalWindowSettings(), settings, terminalWindows.mode(screen),
+              onChange = { applyWindowSettings(screen, it) }, onMode = { setWindowMode(screen, it) },
+              onReset = { applyWindowSettings(screen, TerminalWindowSettings()); setWindowMode(screen, settings.defaultWindowMode) },
+              onClose = ::closeWindowSettings)
+          }
+        },
       )
-    })
+    }
     status = ConnectStatus.Connecting(address)
     sessionJob = scope.launch {
       s.state.combine(s.topology) { state, topology -> state to topology.screens.size }.collect { (state, screens) ->
@@ -472,7 +596,7 @@ class MainActivity : AppSystemActivity() {
           is ConnectionState.Reconnecting -> ConnectStatus.Reconnecting(state.attempt, state.reason)
           is ConnectionState.Closed -> state.reason?.let { ConnectStatus.Failed(it) } ?: ConnectStatus.Idle
         }
-        // Debug builds only: lets `xmux pair <code>` run on the Mac without wearing the headset.
+        // Debug builds only: lets the code be read from logcat and approved in VRcode Mac without wearing the headset.
         if (state is ConnectionState.Pairing && applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
           Log.i(TAG, "Pairing code ${state.code}")
         }
@@ -487,14 +611,17 @@ class MainActivity : AppSystemActivity() {
   }
 
   private fun disconnectBridge() {
+    closeWindowSettings()
     cmuxControls.disconnect()
     terminalPointer.clear()
     rightHandPointer.hide()
     sessionJob?.cancel()
     sessionJob = null
-    xmux.follow(null)
+    terminalWindows.disconnect()
     for (window in xmux.windows.toList()) xmux.unmount(window)
-    windowMotion.clear()
+    windowOverrides.clear()
+    windowHeaderHover.clear()
+    dockRecall.cancel()
     session?.close()
     session = null
     status = ConnectStatus.Idle
@@ -528,6 +655,8 @@ class MainActivity : AppSystemActivity() {
     terminalPointer.update(allowInput = false)
     rightHandPointer.hide()
     store.save(settings)
+    // Horizon OS can kill a paused app without onDestroy: save window placements to cmux now.
+    terminalWindows.flush()
     super.onPause()
   }
 
@@ -537,7 +666,6 @@ class MainActivity : AppSystemActivity() {
     rightClick.close()
     terminalPointer.close()
     rightHandPointer.hide()
-    palmMenu.close()
     boundary.reset()
     sceneReady = false
     super.onSpatialShutdown()
@@ -545,7 +673,9 @@ class MainActivity : AppSystemActivity() {
 
   override fun onDestroy() {
     dock.close()
+    gridSizing.dispose()
     cmuxControls.close()
+    terminalWindows.close()
     rightClick.close()
     terminalPointer.close()
     rightHandPointer.hide()
@@ -554,7 +684,6 @@ class MainActivity : AppSystemActivity() {
     voice.close()
     handMenu.release()
     scope.cancel()
-    palmMenu.close()
     settingsPanel?.destroy()
     super.onDestroy()
   }

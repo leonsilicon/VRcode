@@ -133,7 +133,7 @@ async function printLink(serial: string, ports: number[], remote?: number) {
   const statuses = await Promise.all(ports.map(async (port) => await listenerStatus(port) ? "accepting TCP connections" : "not listening; start the Mac service"));
   for (const [i, name] of ["legacy xmux bridge", "legacy VRcode speech"].entries()) console.log(`  ${name}: Quest 127.0.0.1:${ports[i]} -> Mac 127.0.0.1:${ports[i]} (${statuses[i]})`);
   console.log(`  secure app relay: ${remote ? `Quest 127.0.0.1:${remote} -> ` : ""}Mac 127.0.0.1:${ports[2]} (${statuses[2]})`);
-  console.log("The tunnels are ready even if a service is not running yet. xmux pairing is still required.");
+  console.log("The tunnels are ready even if a service is not running yet. If the headset shows a terminal pairing code, approve it under Headset pairing in VRcode Mac.");
 }
 
 export async function probe(adb: Adb, serial: string, directHost?: string) {

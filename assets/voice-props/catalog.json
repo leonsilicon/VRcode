@@ -45,10 +45,27 @@
         0.28,
         0.062
       ],
-      "triangles": 6800,
+      "triangles": 6216,
       "materials": 5,
-      "bytes": 320908,
-      "license": "original vrcode asset",
+      "bytes": 284692,
+      "logos": {
+        "claude": {
+          "file": "news-microphone-claude.glb",
+          "flag": "claude-flag.png",
+          "bytes": 297160
+        },
+        "openai": {
+          "file": "news-microphone-openai.glb",
+          "flag": "openai-flag.png",
+          "bytes": 284684
+        },
+        "gemini": {
+          "file": "news-microphone-gemini.glb",
+          "flag": "gemini-flag.png",
+          "bytes": 300060
+        }
+      },
+      "license": "original vrcode geometry; Claude logo belongs to Anthropic, OpenAI logo belongs to OpenAI, Gemini logo belongs to Google",
       "author": "vrcode",
       "source": "README.md",
       "indicator": "shared app UI; no built-in emissive indicator",
