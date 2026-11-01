@@ -8,6 +8,8 @@
     "check:scripts": "bun scripts/check-scripts.ts",
     "quest-link": "bun scripts/quest-link.ts",
     "mac:run": "bun scripts/run-mac-service.ts",
+    "mac:install": "bun scripts/run-mac-service.ts --install",
+    "mac:uninstall": "bun scripts/run-mac-service.ts --uninstall",
     "check:relay:android": "bun scripts/check-relay-android.ts",
     "cmux:sync": "bun scripts/sync-cmux-catalog.ts",
     "assets:validate": "bun scripts/validate-assets.ts",

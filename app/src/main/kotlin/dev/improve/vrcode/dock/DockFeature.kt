@@ -4,61 +4,87 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Vector3
 import com.meta.spatial.isdk.IsdkGrabbable
+import com.meta.spatial.runtime.Scene
+import com.meta.spatial.toolkit.Hittable
+import com.meta.spatial.toolkit.MeshCollision
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.Visible
-import dev.improve.vrcode.DockPanel
-import dev.improve.vrcode.DockPill
-import dev.improve.vrcode.DockWindow
+import dev.improve.vrcode.DockBar
+import dev.improve.vrcode.DockBody
+import dev.improve.vrcode.DockOption
+import dev.improve.vrcode.DockOptionKind
+import dev.improve.vrcode.hands.HandAim
 import dev.improve.xmux.spatial.WindowLayout
 import dev.improve.xmux.spatial.XmuxSpatial
 import kotlin.math.roundToInt
 
-/** A pointer ray in world space. */
-internal data class DockRay(val origin: Vector3, val direction: Vector3)
-
 /**
- * Pooled panels, independent of terminal reconnects and terminal window follow/fixed modes. The
- * collapsed handle is a separate small panel, so the full dock's quad never sits invisibly in
- * front of terminals and swallows their pointer input.
+ * The dock, used like an iPhone's home bar (see [DockGesture]): a short faint bar at the bottom of
+ * the view that bulges under a hand and is swiped up to raise the dock; options are pressed, slid
+ * along and flicked up to activate; the bar at the raised dock's top centre is swiped down to lower
+ * it.
+ *
+ * Two pooled panels, independent of terminal reconnects: the bar (small and hittable, so pointers
+ * never click a terminal through it) and the raised body (visual only, never hittable, so it can
+ * never swallow terminal input; [hitDistance] treats it as foreground geometrically instead). The
+ * bar is always rendered while the head is tracked and [onSceneTick]'s `visible` is set, including
+ * while settings is open: it is how the user can tell VRcode loaded.
  */
 internal class DockFeature(
   private val xmux: XmuxSpatial,
+  private val scene: () -> Scene,
+  private val predictedTimeNs: () -> Long,
   private val onWindow: (Int) -> Unit,
   private val onKeyboard: () -> Unit,
   private val onArrange: () -> Unit,
   private val onSettings: () -> Unit,
   private val onConnection: () -> Unit,
 ) {
-  private var panel: Entity? = null
-  private var pill: Entity? = null
+  private var barPanel: Entity? = null
+  private var bodyPanel: Entity? = null
   private val follow = DockFollow()
+  private val gesture = DockGesture()
+  private val hands = listOf(HandAim(left = true), HandAim(left = false))
   private var lastTickMs: Long? = null
-  private val reveal = DockReveal()
-  private var windows by mutableStateOf(emptyList<DockWindow>())
-  private var focused by mutableStateOf<Int?>(null)
-  private var online by mutableStateOf(false)
-  private var keyboard by mutableStateOf(false)
+  private var reveals = 0
+  private var actions: List<() -> Unit> = emptyList()
 
-  val expanded: Boolean get() = reveal.expanded
+  // What the panels draw.
+  private var options by mutableStateOf(emptyList<DockOption>())
+  private var xs by mutableStateOf(emptyList<Float>())
+  private var highlighted by mutableStateOf<Int?>(null)
+  private var pressing by mutableStateOf(false)
+  private var fingerX by mutableFloatStateOf(0.5f)
+  private var lift by mutableFloatStateOf(0f)
+  private var bulge by mutableFloatStateOf(0f)
+  private var swipe by mutableFloatStateOf(0f)
+  private var hint by mutableStateOf<String?>(null)
 
-  /** Where the dock is drawn right now (it eases toward the head), or null while hidden. */
+  val expanded: Boolean get() = gesture.revealed
+
+  /** Where the bar is drawn right now (it eases toward the view), or null while hidden. */
   fun currentPose(): Pose? = follow.pose
 
   fun onSceneReady() {
-    if (panel != null) return
+    if (barPanel != null) return
     val metresPerPx = xmux.config.windowWidthM / xmux.spec.widthPx
-    panel = mount(DockPlacement.WIDTH_M, DockPlacement.HEIGHT_M, metresPerPx) {
-      DockPanel(windows, focused, online, keyboard, onWindow, onKeyboard, onArrange, onSettings, onConnection)
+    barPanel = mount(DockPlacement.BAR_HIT_WIDTH_M, DockPlacement.BAR_HIT_HEIGHT_M, metresPerPx) {
+      DockBar(bulge, swipe, barFraction = DockPlacement.BAR_WIDTH_M / DockPlacement.BAR_HIT_WIDTH_M)
     }
-    pill = mount(DockPlacement.PILL_WIDTH_M, DockPlacement.PILL_HEIGHT_M, metresPerPx) {
-      DockPill(online) { reveal.reveal(SystemClock.uptimeMillis()) }
-    }
+    bodyPanel = mount(DockPlacement.BODY_WIDTH_M, BODY_PANEL_HEIGHT_M, metresPerPx) {
+      DockBody(
+        options, xs, highlighted, pressing, fingerX, lift, grabberBulge = bulge, grabberSwipe = swipe,
+        rowY = fromTop(DockPlacement.ROW_Y_M), grabberY = fromTop(DockPlacement.GRAB_Y_M), bodyTop = fromTop(DockPlacement.BODY_TOP_M),
+        barFraction = DockPlacement.BAR_WIDTH_M / DockPlacement.BODY_WIDTH_M, hint = hint,
+      )
+    }.also { it.setComponent(Hittable(MeshCollision.NoCollision)) }
   }
 
   private fun mount(widthM: Float, heightM: Float, metresPerPx: Float, content: @Composable () -> Unit): Entity =
@@ -71,18 +97,14 @@ internal class DockFeature(
     }
 
   /**
-   * Shown whenever the head is tracked and [visible], easing toward the head (see [DockFollow]) and
-   * appearing in place after being hidden. Opens while any [rays] cross the visible
-   * footprint or any [hands] come within reach of it, and collapses shortly after they leave.
+   * Shown whenever the head is tracked and [visible], easing toward the view. [pointers] are per
+   * hand (0 = left, 1 = right) with their pinch state; fingertips come from the hands' joints.
    */
   fun onSceneTick(
     head: Pose?, visible: Boolean, connected: Boolean, keyboardShown: Boolean,
-    rays: List<DockRay> = emptyList(), hands: List<Vector3> = emptyList(), nowMs: Long = SystemClock.uptimeMillis(),
+    pointers: List<DockGesture.Pointer?> = emptyList(), nowMs: Long = SystemClock.uptimeMillis(),
   ) {
-    online = connected
-    keyboard = keyboardShown
-    windows = xmux.windows.mapNotNull { w -> w.screen?.let { DockWindow(it.value, w.state.title) } }
-    focused = (xmux.focused ?: xmux.windows.firstOrNull())?.screen?.value
+    buildOptions(connected, keyboardShown)
     val tracked = head?.takeIf(WindowLayout::isUsableHeadPose)
     if (!visible || tracked == null) {
       hide()
@@ -90,29 +112,63 @@ internal class DockFeature(
     }
     val dtS = lastTickMs?.let { (nowMs - it) / 1000f } ?: 0f
     lastTickMs = nowMs
-    val dock = follow.update(tracked, dtS)
-    val (width, height) = footprint()
-    val wasOpen = reveal.expanded
-    // Hands rest near chest height, right by the handle, so opening it takes a deliberate reach;
-    // once open, a hand moving between buttons keeps it open. Typing on the floating keyboard puts
-    // both hands next to the dock, so only pointers count then.
-    val reach = if (wasOpen) HOLD_REACH_M else OPEN_REACH_M
-    // Hands typing on a physical keyboard sit just below the dock and their rays graze it. Pointing
-    // at something within arm's reach from a few centimetres is not deliberate, so near rays only
-    // count as a reach.
-    val pointed = rays.any { (DockPlacement.hitDistance(dock, it.origin, it.direction, width, height) ?: 0f) >= MIN_POINT_M }
-    val touched = !keyboardShown && hands.any { DockPlacement.distanceTo(dock, it, width, height) <= reach }
-    val open = reveal.update(pointed || touched, nowMs)
-    if (open != wasOpen) Log.d(TAG, if (open) "dock opened (pointer=$pointed, hand=$touched)" else "dock collapsed")
-    val pose = Transform(dock)
-    panel?.setComponent(pose)
-    pill?.setComponent(pose)
-    panel?.setComponent(Visible(open))
-    pill?.setComponent(Visible(!open))
+    val bar = follow.update(tracked, dtS)
+    val optionXs = DockLayout.optionXs(options.size)
+    when (val event = gesture.update(bar, fingertips(tracked), pointers, optionXs, nowMs)) {
+      DockGesture.Event.Revealed -> {
+        reveals++
+        Log.d(TAG, "dock raised")
+      }
+      is DockGesture.Event.Activated -> {
+        Log.d(TAG, "dock option ${options.getOrNull(event.index)?.label}")
+        actions.getOrNull(event.index)?.invoke()
+      }
+      DockGesture.Event.Dismissed -> Log.d(TAG, "dock lowered")
+      DockGesture.Event.None -> {}
+    }
+    xs = optionXs.map { (it + DockPlacement.BODY_WIDTH_M / 2f) / DockPlacement.BODY_WIDTH_M }
+    highlighted = gesture.highlighted
+    pressing = gesture.pressing == DockGesture.Part.Option
+    fingerX = (gesture.fingerX + DockPlacement.BODY_WIDTH_M / 2f) / DockPlacement.BODY_WIDTH_M
+    lift = gesture.lift
+    bulge = gesture.hover
+    swipe = gesture.swipe
+    hint = if (reveals <= HINT_REVEALS && gesture.revealed && !pressing) "Press an icon, slide, then flick up" else null
+    barPanel?.setComponent(Transform(bar))
+    bodyPanel?.setComponent(Transform(bar * Pose(Vector3(0f, BODY_PANEL_CENTER_M, 0f))))
+    barPanel?.setComponent(Visible(!gesture.revealed))
+    bodyPanel?.setComponent(Visible(gesture.revealed))
   }
 
-  private fun footprint(): Pair<Float, Float> =
-    if (reveal.expanded) DockPlacement.WIDTH_M to DockPlacement.HEIGHT_M else DockPlacement.PILL_WIDTH_M to DockPlacement.PILL_HEIGHT_M
+  /** The options in the order they sit along the dock, with what each does. */
+  private fun buildOptions(connected: Boolean, keyboardShown: Boolean) {
+    val list = mutableListOf<DockOption>()
+    val run = mutableListOf<() -> Unit>()
+    list += DockOption(if (connected) "Connected" else "Connect", DockOptionKind.Connection, enabled = connected)
+    run += onConnection
+    val focused = (xmux.focused ?: xmux.windows.firstOrNull())?.screen?.value
+    for ((index, window) in xmux.windows.withIndex()) {
+      val id = window.screen?.value ?: continue
+      list += DockOption(window.state.title.ifBlank { "Terminal ${index + 1}" }, DockOptionKind.Window, selected = id == focused, enabled = connected)
+      run += { onWindow(id) }
+    }
+    list += DockOption("Keyboard", DockOptionKind.Keyboard, selected = keyboardShown)
+    run += onKeyboard
+    list += DockOption("Arrange", DockOptionKind.Arrange, enabled = connected && xmux.windows.isNotEmpty())
+    run += onArrange
+    list += DockOption("Settings", DockOptionKind.Settings)
+    run += onSettings
+    if (list != options) options = list
+    actions = run
+  }
+
+  /** Both index fingertips in scene space (their joints are tracked relative to the head). */
+  private fun fingertips(head: Pose): List<Vector3?> =
+    hands.map { hand ->
+      hand.poll(scene(), predictedTimeNs())?.joints?.let { j ->
+        head.t + head.q * Vector3(j[INDEX_TIP * 3], j[INDEX_TIP * 3 + 1], j[INDEX_TIP * 3 + 2])
+      }
+    }
 
   /** Only blocks a terminal if the visible dock is in front of it, preserving nearer panels. */
   fun blocksRay(origin: Vector3, direction: Vector3): Boolean {
@@ -121,34 +177,43 @@ internal class DockFeature(
     return terminal == null || distance < terminal
   }
 
-  /** Distance along a ray to whichever dock footprint is currently visible. */
+  /** Distance along a ray to the visible dock: the bar, or the raised body. */
   fun hitDistance(origin: Vector3, direction: Vector3): Float? {
-    val dock = follow.pose ?: return null
-    val (width, height) = footprint()
-    return DockPlacement.hitDistance(dock, origin, direction, width, height)
+    val bar = follow.pose ?: return null
+    return if (gesture.revealed) {
+      DockPlacement.hitDistance(DockPlacement.bodyPose(bar), origin, direction, DockPlacement.BODY_WIDTH_M, DockPlacement.BODY_TOP_M - DockPlacement.BODY_BOTTOM_M)
+    } else {
+      DockPlacement.hitDistance(bar, origin, direction, DockPlacement.BAR_HIT_WIDTH_M, DockPlacement.BAR_HIT_HEIGHT_M)
+    }
   }
 
   fun hide() {
     follow.reset()
+    gesture.reset()
     lastTickMs = null
-    reveal.collapse()
-    panel?.setComponent(Visible(false))
-    pill?.setComponent(Visible(false))
+    barPanel?.setComponent(Visible(false))
+    bodyPanel?.setComponent(Visible(false))
   }
 
   fun close() {
     hide()
-    panel?.destroy()
-    pill?.destroy()
-    panel = null
-    pill = null
+    hands.forEach { it.close() }
+    barPanel?.destroy()
+    bodyPanel?.destroy()
+    barPanel = null
+    bodyPanel = null
   }
+
+  /** A dock-local height (metres above the bar) as a fraction of the body panel from its top. */
+  private fun fromTop(y: Float): Float = (BODY_PANEL_TOP_M - y) / BODY_PANEL_HEIGHT_M
 
   private companion object {
     const val TAG = "VrcodeDock"
-    /** Distances from the hand's tracked pose, which sits a few centimetres behind the fingertips. */
-    const val OPEN_REACH_M = 0.06f
-    const val HOLD_REACH_M = 0.10f
-    const val MIN_POINT_M = 0.25f
+    const val INDEX_TIP = 10
+    const val HINT_REVEALS = 3
+    /** The body panel spans the raised body plus room above it for the lifted option's label. */
+    const val BODY_PANEL_TOP_M = DockPlacement.BODY_TOP_M + 0.06f
+    const val BODY_PANEL_HEIGHT_M = BODY_PANEL_TOP_M - DockPlacement.BODY_BOTTOM_M
+    const val BODY_PANEL_CENTER_M = (BODY_PANEL_TOP_M + DockPlacement.BODY_BOTTOM_M) / 2f
   }
 }

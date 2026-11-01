@@ -10,7 +10,7 @@ benchmark and do not establish display-streaming performance.
 | Quest app build | Gradle debug APK builds with the selector embedded in the existing Connection settings. |
 | Tooling / native relay | Bun tests passed with the native relay checks enabled, including actual Swift TLS authentication, both multiplexed services, binary preservation, fragmented headers, wrong-key rejection, channel independence, invalid destinations and oversized frames. Asset validation also passed. |
 | Android transport | Both emulator and Quest passed the real Kotlin-to-Swift TLS tests, certificate/key rejection, Keystore persistence, and a carrier adapter with very small chunks. |
-| Native Bluetooth radios | A complete seven-test run passed on the Quest, including actual RFCOMM and actual BLE. Each radio carried pinned TLS, authenticated the Mac, and round-tripped 16 KiB on each application service. |
+| Native Bluetooth radios and controller | The final nine-test run passed on the Quest, including actual RFCOMM, actual BLE, Automatic Wi-Fi selection and PAN route validation. Each radio carried pinned TLS, authenticated the Mac, and round-tripped 16 KiB on each application service. |
 | Wi-Fi Direct | The Quest successfully created a group, returned a nonempty network name and WPA passphrase, and removed the test-owned group. Mac joining and application traffic over that group were not tested. |
 | Connection UI | Four emulator UI tests passed: Automatic default, all ten selections, selection persistence / setup controls, and rejection of invalid pairing. A rendered screenshot was inspected. |
 | PAN | The controller requires an Android Bluetooth network and binds its socket to that network. It cannot claim a Wi-Fi connection as PAN. No functioning PAN network was available for an end-to-end test. |
@@ -23,9 +23,25 @@ failure, because a Mac service restart can invalidate the previous channel. The 
 refresh remains a firmware-specific compatibility path; the app reports a recovery action if it is
 unavailable.
 
+Classic initializes on AppKit's run loop after BLE has completed radio/permission startup. Radio
+fixtures use a separate app identity to avoid competing with a running helper. The bearer timeout
+starts after TLS completes, allowing slow BLE handshakes. Tunnel cleanup also handles concurrent
+channel removal without relying on a size-based snapshot of a concurrent map.
+
 The emulator does not necessarily expose the host route as an active Android Wi-Fi network. The
 Automatic Wi-Fi integration check requires that capability; the physical Quest is the authoritative
 test for Wi-Fi selection. The raw TLS tunnel can still be tested through the emulator host route.
+
+The updated debug app was installed in place on the Quest, preserving app data. The Mac relay was
+restarted with Bluetooth enabled; the existing Mac certificate and bearer key were retained. ADB's
+dedicated Wi-Fi relay mapping is ready, and the Mac pairing configuration was copied into the main
+app's private import file. Choose **Import from connected Mac**, then **Connect**, for initial
+onboarding. The transport tests use temporary identities and do not replace this production key.
+
+Argent launched the installed immersive app, but its screen tree did not expose the compositor
+panels, and its screenshot endpoint closed the response channel. Physical radio/runtime evidence
+and emulator Compose UI tests provide the verification above; the initial in-headset import tap
+is left to the user.
 
 Use `bun scripts/check-relay-android.ts --controller` for additional Automatic/PAN controller
 checks and `--bluetooth --classic-address ADDRESS` for radio checks. Test fixtures use temporary

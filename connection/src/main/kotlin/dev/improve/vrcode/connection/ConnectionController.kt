@@ -5,21 +5,31 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.wifi.p2p.WifiP2pManager
 import android.provider.Settings
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.Closeable
+import java.io.IOException
 import java.util.concurrent.CancellationException
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.Executors
+import kotlin.concurrent.thread
 
 data class LinkStatus(val title: String = "Not connected", val detail: String = "", val connected: Boolean = false, val busy: Boolean = false)
-data class FoundMac(val name: String, val host: String, val port: Int)
+/** A Bonjour `_vrcode._tcp` advert. [fingerprint] comes from its TXT record (absent on older Macs). */
+data class FoundMac(val name: String, val host: String, val port: Int, val fingerprint: String? = null)
 
 class ConnectionController(
   private val activity: Activity,
@@ -44,6 +54,9 @@ class ConnectionController(
   private val p2p = activity.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
   private var p2pChannel: WifiP2pManager.Channel? = null
   private var ownsGroup = false
+  private val wake = Channel<Unit>(Channel.CONFLATED)
+  private var networkCallback: ConnectivityManager.NetworkCallback? = null
+  private var provisioning: Job? = null
 
   fun update(value: ConnectionProfile) { store.save(value); mutableProfile.value = value }
   fun importMac(value: String): String? = runCatching { update(profile.value.importMac(value)); null }.getOrElse { it.message ?: "Invalid Mac connection key" }
@@ -54,6 +67,88 @@ class ConnectionController(
     if (error == null) file.delete()
     error
   }.getOrElse { it.message ?: "Could not import the Mac connection key" }
+
+  /**
+   * App launch: start discovery and network-change handling, import a key provisioned by
+   * `quest-link pair` (debug builds), then connect if a Mac is paired and [autoConnect] allows it.
+   */
+  fun start(autoConnect: Boolean) {
+    discover()
+    watchNetworks()
+    if (activity.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) watchProvisionedKey()
+    if (autoConnect && profile.value.paired) connect()
+  }
+
+  /** Retry now instead of after the backoff, e.g. when Wi-Fi returns or the app resumes. */
+  fun kick() { wake.trySend(Unit) }
+
+  // Only this app, or `run-as` from an ADB-authorized Mac on a debuggable build, can write the
+  // provisioning file, so importing it without a tap does not widen who can pair.
+  private fun watchProvisionedKey() {
+    if (provisioning != null) return
+    provisioning = scope.launch {
+      val file = java.io.File(activity.filesDir, "vrcode-pairing")
+      var rejected = -1L
+      while (isActive) {
+        val stamp = withContext(Dispatchers.IO) { if (file.isFile) file.lastModified() else -1L }
+        if (stamp >= 0 && stamp != rejected) {
+          val before = profile.value
+          val error = importFromConnectedMac()
+          val after = profile.value
+          if (error != null) { rejected = stamp; mutableStatus.value = LinkStatus("Could not import the Mac connection key", error) }
+          else if (!(status.value.connected && before.fingerprint == after.fingerprint && before.token == after.token)) connect()
+        }
+        delay(2000)
+      }
+    }
+  }
+
+  private fun watchNetworks() {
+    if (networkCallback != null) return
+    val connectivity = activity.getSystemService(ConnectivityManager::class.java) ?: return
+    val callback = object : ConnectivityManager.NetworkCallback() {
+      override fun onAvailable(network: Network) { activity.runOnUiThread { discover(); kick() } }
+    }
+    runCatching {
+      connectivity.registerNetworkCallback(NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), callback)
+      networkCallback = callback
+    }
+  }
+
+  /** Adverts from the paired Mac: matched by certificate fingerprint, or by name for older Macs. */
+  private fun discovered(selected: ConnectionProfile): List<FoundMac> = macs.value.filter { found ->
+    found.fingerprint?.equals(selected.fingerprint, ignoreCase = true) ?: (found.name == selected.name)
+  }
+
+  /**
+   * Opens a tunnel to the first endpoint that authenticates. Several stale addresses would
+   * otherwise each cost a connect timeout, so attempts start 300 ms apart and run concurrently.
+   */
+  private fun connectFirst(selected: ConnectionProfile, endpoints: List<Pair<String, Int>>, carrier: CarrierSocket?,
+                           network: Network?, onClosed: (String) -> Unit): Pair<RelayTunnel, String> {
+    if (endpoints.size == 1) endpoints[0].let { (host, port) -> return RelayTunnel.connect(selected, host, port, carrier, network, onClosed) to host }
+    val pool = Executors.newFixedThreadPool(endpoints.size)
+    val attempts = ExecutorCompletionService<Pair<RelayTunnel, String>>(pool)
+    endpoints.forEachIndexed { index, (host, port) ->
+      attempts.submit {
+        if (index > 0) Thread.sleep(index * 300L)
+        try { RelayTunnel.connect(selected, host, port, null, network, onClosed) to host }
+        catch (error: Exception) { throw IOException("$host: ${error.cause?.message ?: error.message ?: "unavailable"}", error) }
+      }
+    }
+    pool.shutdown()
+    val errors = mutableListOf<String>()
+    for (remaining in endpoints.size downTo 1) {
+      val result = runCatching { attempts.take().get() }
+      result.getOrNull()?.let { winner ->
+        // Unstarted tunnels never report onClosed; close any slower duplicates quietly.
+        if (remaining > 1) thread(isDaemon = true, name = "vrcode-relay-losers") { repeat(remaining - 1) { runCatching { attempts.take().get().first.close() } } }
+        return winner
+      }
+      result.exceptionOrNull()?.let { errors += ((it as? ExecutionException)?.cause ?: it).message ?: "unavailable" }
+    }
+    throw IOException(errors.joinToString("; "))
+  }
 
   fun connect() {
     disconnect()
@@ -84,7 +179,7 @@ class ConnectionController(
             val ended = CompletableDeferred<String>()
             // Native Bluetooth calls are bounded. Always reclaim a result even if cancelled
             // while a platform connect call was in progress.
-            tunnel = withContext(Dispatchers.IO + NonCancellable) {
+            val (opened, usedHost) = withContext(Dispatchers.IO + NonCancellable) {
               var carrier: CarrierSocket? = null
               try {
                 val connectivity = activity.getSystemService(ConnectivityManager::class.java)
@@ -97,28 +192,30 @@ class ConnectionController(
                   ConnectionMode.WiFiDirect -> { check(ownsGroup) { "Create the Quest network and join it from your Mac first." }; null }
                   else -> null
                 }
-                val endpoint = when (mode) {
-                  ConnectionMode.USB -> "127.0.0.1" to 17274
-                  ConnectionMode.WiFiADB -> "127.0.0.1" to 27274
+                val endpoints = when (mode) {
+                  ConnectionMode.USB -> listOf("127.0.0.1" to 17274)
+                  ConnectionMode.WiFiADB -> listOf("127.0.0.1" to 27274)
                   ConnectionMode.BluetoothClassic -> {
-                    carrier = CarrierSocket(BluetoothCarriers.classic(activity, selected.classicAddress)); "127.0.0.1" to carrier.port
+                    carrier = CarrierSocket(BluetoothCarriers.classic(activity, selected.classicAddress)); listOf("127.0.0.1" to carrier.port)
                   }
                   ConnectionMode.BluetoothLE -> {
-                    carrier = CarrierSocket(BluetoothCarriers.ble(activity, selected.bleAddress)); "127.0.0.1" to carrier.port
+                    carrier = CarrierSocket(BluetoothCarriers.ble(activity, selected.bleAddress)); listOf("127.0.0.1" to carrier.port)
                   }
                   else -> {
-                    val found = macs.value.firstOrNull { it.name == selected.name }
-                    val useDiscovery = selected.mode == ConnectionMode.Auto || selected.host.isBlank()
-                    (if (useDiscovery) found?.host ?: selected.host else selected.host).also {
-                      require(it.isNotBlank()) { "Enter your Mac address or discover it on the network." }
-                    } to (if (useDiscovery) found?.port ?: selected.port else selected.port)
+                    val found = discovered(selected)
+                    selected.candidateHosts(found.map { it.host }).map { host -> host to (found.firstOrNull { it.host == host }?.port ?: selected.port) }
+                      .also { require(it.isNotEmpty()) { "Enter your Mac address or discover it on the network." } }
                   }
                 }
-                RelayTunnel.connect(selected, endpoint.first, endpoint.second, carrier, network) { ended.complete(it) }
+                connectFirst(selected, endpoints, carrier, network) { ended.complete(it) }
               } catch (error: Exception) { carrier?.close(); throw error }
             }
+            tunnel = opened
             ensureActive()
             if (thisGeneration != generation) break
+            if (usedHost != "127.0.0.1" && usedHost != selected.lastHost && profile.value.fingerprint == selected.fingerprint) {
+              update(profile.value.copy(lastHost = usedHost))
+            }
             live = tunnel
             tunnel.start()
             onConnected(tunnel.bridgePort, tunnel.speechPort)
@@ -136,7 +233,7 @@ class ConnectionController(
         ensureActive()
         if (!connected) mutableStatus.value = LinkStatus("Could not connect", failures.joinToString("\n"), busy = true)
         retry++
-        delay(minOf(5000L, retry * 1000L))
+        withTimeoutOrNull(minOf(5000L, retry * 1000L)) { wake.receive() }
       }
     }
   }
@@ -155,12 +252,17 @@ class ConnectionController(
       override fun onStartDiscoveryFailed(type: String, code: Int) { discovery = null }
       override fun onStopDiscoveryFailed(type: String, code: Int) { discovery = null }
       override fun onServiceLost(service: NsdServiceInfo) { mutableMacs.value = mutableMacs.value.filterNot { it.name == service.serviceName } }
-      override fun onServiceFound(service: NsdServiceInfo) {
+      override fun onServiceFound(service: NsdServiceInfo) { resolve(service, 0) }
+      fun resolve(service: NsdServiceInfo, attempt: Int) {
         runCatching { nsd.resolveService(service, object : NsdManager.ResolveListener {
-          override fun onResolveFailed(info: NsdServiceInfo, code: Int) { }
+          override fun onResolveFailed(info: NsdServiceInfo, code: Int) {
+            // Older NSD implementations resolve one service at a time.
+            if (code == NsdManager.FAILURE_ALREADY_ACTIVE && attempt < 5) scope.launch { delay(300L * (attempt + 1)); resolve(service, attempt + 1) }
+          }
           override fun onServiceResolved(info: NsdServiceInfo) {
             val host = info.host?.hostAddress ?: return
-            mutableMacs.value = mutableMacs.value.filterNot { it.name == info.serviceName } + FoundMac(info.serviceName, host, info.port)
+            val fingerprint = info.attributes["fp"]?.toString(Charsets.UTF_8)
+            mutableMacs.value = mutableMacs.value.filterNot { it.name == info.serviceName } + FoundMac(info.serviceName, host, info.port, fingerprint)
           }
         }) }
       }
@@ -213,6 +315,9 @@ class ConnectionController(
 
   override fun close() {
     disconnect(); discovery?.let { runCatching { nsd?.stopServiceDiscovery(it) } }; discovery = null
+    provisioning?.cancel(); provisioning = null
+    networkCallback?.let { callback -> runCatching { activity.getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(callback) } }
+    networkCallback = null
     val channel = p2pChannel
     p2pChannel = null
     if (ownsGroup && channel != null && p2p != null) {

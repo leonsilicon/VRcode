@@ -4,37 +4,57 @@ import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Quaternion
 import com.meta.spatial.core.Vector3
 import kotlin.math.abs
+import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Low in the periphery at arm's reach: [BELOW_EYES_M] below eye height and [FORWARD_M] ahead in
- * the facing direction (about 42 degrees below the horizon), level and facing the eyes, so a glance
- * down brings it into view and it can be touched directly. Only head position and yaw matter;
- * pitch and roll are ignored so looking down never drags it. [DockFollow] eases the dock toward
- * this target rather than locking it to the head.
+ * Like an iPhone's home bar: the dock's bar sits at the bottom of the view, [BELOW_GAZE_DEG] below
+ * where the user looks and [DISTANCE_M] from the eyes, so a hand can reach it. It follows yaw and
+ * pitch (lazily, see [DockFollow]) but never roll, and always faces the eyes. Swiping up from the
+ * bar raises the dock's body above it.
+ *
+ * Dock-local frame: the bar is at the origin; X to the user's right, Y up (tilted toward the eyes),
+ * Z away from the user. The body spans [BODY_BOTTOM_M]..[BODY_TOP_M] above the bar.
  */
 internal object DockPlacement {
-  /** The expanded dock. Other overlays may stack against this footprint. */
-  const val WIDTH_M = 0.66f
-  const val HEIGHT_M = 0.095f
-  /** Pointer/hand footprint of the collapsed line, which is drawn much thinner (see DockPill). */
-  const val PILL_WIDTH_M = 0.16f
-  const val PILL_HEIGHT_M = 0.03f
-  const val FORWARD_M = 0.45f
-  const val BELOW_EYES_M = 0.40f
+  const val DISTANCE_M = 0.45f
+  const val BELOW_GAZE_DEG = 38f
+  private const val MIN_ELEVATION_DEG = -80f
+  private const val MAX_ELEVATION_DEG = -15f
 
-  /** Where the dock settles for [head]. */
-  fun pose(head: Pose): Pose = poseAt(head.t, yawDegrees(head))
+  /** The bar as drawn, and its larger touch/pointer target. */
+  const val BAR_WIDTH_M = 0.07f
+  const val BAR_HIT_WIDTH_M = 0.10f
+  const val BAR_HIT_HEIGHT_M = 0.05f
 
-  /** The dock for an [eye] position facing [yawDeg] (0 = +Z, positive toward +X). */
-  fun poseAt(eye: Vector3, yawDeg: Float): Pose {
+  /** The raised dock: a row of options with a grabber (the bar, moved up) at its top centre. */
+  const val BODY_WIDTH_M = DockLayout.MAX_SPAN_M + 0.06f
+  const val BODY_BOTTOM_M = 0.02f
+  const val BODY_TOP_M = 0.13f
+  const val ROW_Y_M = 0.06f
+  const val GRAB_Y_M = 0.11f
+
+  /** What other overlays (voice pane, keyboard) stack above: the raised body, centred on the bar. */
+  const val WIDTH_M = BODY_WIDTH_M
+  const val HEIGHT_M = 2f * BODY_TOP_M
+
+  /** Where the bar settles for [head]. */
+  fun pose(head: Pose): Pose = poseAt(head.t, yawDegrees(head), pitchDegrees(head))
+
+  /** The bar for an [eye] looking along [yawDeg] (0 = +Z, positive toward +X) and [pitchDeg] (up positive). */
+  fun poseAt(eye: Vector3, yawDeg: Float, pitchDeg: Float): Pose {
+    val elevation = Math.toRadians((pitchDeg - BELOW_GAZE_DEG).coerceIn(MIN_ELEVATION_DEG, MAX_ELEVATION_DEG).toDouble())
     val yaw = Math.toRadians(yawDeg.toDouble())
-    val offset = Vector3(sin(yaw).toFloat() * FORWARD_M, -BELOW_EYES_M, cos(yaw).toFloat() * FORWARD_M)
+    val flat = DISTANCE_M * cos(elevation).toFloat()
+    val offset = Vector3(sin(yaw).toFloat() * flat, DISTANCE_M * sin(elevation).toFloat(), cos(yaw).toFloat() * flat)
     return Pose(eye + offset, Quaternion.lookRotation(offset))
   }
+
+  /** The raised body's centre, for hit tests against it. */
+  fun bodyPose(bar: Pose): Pose = bar * Pose(Vector3(0f, (BODY_BOTTOM_M + BODY_TOP_M) / 2f, 0f))
 
   /**
    * Horizontal facing direction in degrees. Only when looking nearly straight up or down, where the
@@ -52,13 +72,16 @@ internal object DockPlacement {
     return Math.toDegrees(atan2(flat.x, flat.z).toDouble()).toFloat()
   }
 
+  /** Gaze elevation in degrees, up positive. Roll does not change it. */
+  fun pitchDegrees(head: Pose): Float = Math.toDegrees(asin(head.forward().normalize().y.coerceIn(-1f, 1f)).toDouble()).toFloat()
+
   /** Horizontal length of a unit gaze below which it counts as straight up or down (about 78 degrees). */
   private const val NEAR_VERTICAL = 0.2f
 
-  /** Ray/quad intersection with a dock at [dock], also used to keep input off panels behind it. */
-  fun hitDistance(dock: Pose, origin: Vector3, direction: Vector3, widthM: Float = WIDTH_M, heightM: Float = HEIGHT_M): Float? {
+  /** Ray/quad intersection with a rectangle centred on [panel], also used to keep input off panels behind it. */
+  fun hitDistance(panel: Pose, origin: Vector3, direction: Vector3, widthM: Float, heightM: Float): Float? {
     if (direction.length() < 0.001f) return null
-    val inverse = dock.inverse()
+    val inverse = panel.inverse()
     val localOrigin = inverse.q * origin + inverse.t
     val localDirection = inverse.q * direction.normalize()
     if (localDirection.z <= 0.0001f) return null
@@ -68,9 +91,9 @@ internal object DockPlacement {
     return distance.takeIf { abs(hit.x) <= widthM / 2f && abs(hit.y) <= heightM / 2f }
   }
 
-  /** Shortest distance from [point] (a hand or fingertip) to the dock rectangle at [dock]. */
-  fun distanceTo(dock: Pose, point: Vector3, widthM: Float = WIDTH_M, heightM: Float = HEIGHT_M): Float {
-    val inverse = dock.inverse()
+  /** Shortest distance from [point] (a hand or fingertip) to the rectangle centred on [panel]. */
+  fun distanceTo(panel: Pose, point: Vector3, widthM: Float, heightM: Float): Float {
+    val inverse = panel.inverse()
     val local = inverse.q * point + inverse.t
     val dx = (abs(local.x) - widthM / 2f).coerceAtLeast(0f)
     val dy = (abs(local.y) - heightM / 2f).coerceAtLeast(0f)

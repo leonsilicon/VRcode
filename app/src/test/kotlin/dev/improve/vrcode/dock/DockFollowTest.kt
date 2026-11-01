@@ -29,7 +29,15 @@ class DockFollowTest {
     assertAt(DockPlacement.pose(head(0f)), start)
     // Within the dead zone nothing moves, however long the head stays there.
     assertAt(start, follow.hold(head(12f), 3f))
-    assertAt(start, follow.hold(head(-10f, pitch = 50f, at = eye + Vector3(0.05f, -0.04f, 0.05f)), 3f))
+    assertAt(start, follow.hold(head(-10f, pitch = 8f, at = eye + Vector3(0.05f, -0.04f, 0.05f)), 3f))
+  }
+
+  @Test fun followsALargeLookDownLikeAHomeBarAtTheBottomOfTheView() {
+    val follow = DockFollow()
+    val start = follow.update(head(0f), 0f)
+    val down = follow.hold(head(0f, pitch = 40f), 3f)
+    assertTrue(down.t.y < start.t.y - 0.05f)
+    assertAt(DockPlacement.pose(head(0f, pitch = 40f)), down, 0.01f)
   }
 
   @Test fun easesTowardALargeTurnInsteadOfJumpingThenSettles() {

@@ -59,7 +59,8 @@ class PointerCursorSettingsTest {
         assertEquals(style, saved.pointerCursor)
         assertEquals(1.5f, saved.pointerCursorSize)
         assertEquals(TerminalCursor.Terminal, saved.terminalCursor)
-        assertEquals(VoiceProp.Microphone, saved.voiceProp)
+        assertEquals(VoiceProp.Microphone, saved.textMicProp)
+        assertEquals(VoiceProp.NewsMicrophone, saved.aiMicProp)
       }
     }
     compose.onNodeWithTag("settings-pointer-size").assertDoesNotExist()

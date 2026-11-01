@@ -35,8 +35,8 @@ fun ConnectionPanel(controller: ConnectionController, bridgeDetail: String? = nu
     else Text("Paired Mac: ${profile.name}")
     OutlinedTextField(importText, { importText = it }, label = { Text(if (profile.paired) "Replace Mac connection key" else "Mac connection key") },
       singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth().testTag("connection-import"))
-    TextButton({ error = controller.importMac(importText); if (error == null) importText = "" }, enabled = importText.isNotBlank(), modifier = Modifier.testTag("connection-save-mac")) { Text("Save Mac") }
-    TextButton({ error = controller.importFromConnectedMac() }, modifier = Modifier.testTag("connection-import-file")) { Text("Import from connected Mac") }
+    TextButton({ error = controller.importMac(importText); if (error == null) { importText = ""; controller.connect() } }, enabled = importText.isNotBlank(), modifier = Modifier.testTag("connection-save-mac")) { Text("Save Mac") }
+    TextButton({ error = controller.importFromConnectedMac(); if (error == null) controller.connect() }, modifier = Modifier.testTag("connection-import-file")) { Text("Import from connected Mac") }
     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     if (profile.mode !in listOf(ConnectionMode.BluetoothClassic, ConnectionMode.BluetoothLE, ConnectionMode.USB, ConnectionMode.WiFiADB)) {
       OutlinedTextField(profile.host, { controller.update(profile.copy(host = it.trim())) }, label = { Text("Mac address") }, singleLine = true,

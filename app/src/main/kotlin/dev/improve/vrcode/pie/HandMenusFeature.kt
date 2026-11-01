@@ -16,6 +16,7 @@ import com.meta.spatial.toolkit.Visible
 import dev.improve.vrcode.cmux.CmuxFeature
 import dev.improve.vrcode.hands.HandAim
 import dev.improve.vrcode.hands.HandMenuGesture
+import dev.improve.vrcode.hands.MenuDwell
 import dev.improve.vrcode.hands.PieSelection
 import dev.improve.vrcode.hands.RadialMenu
 import dev.improve.vrcode.hands.viewToScene
@@ -29,9 +30,8 @@ import kotlin.math.roundToInt
 
 /**
  * Palm menus on both hands: turn a palm toward yourself and touch the middle finger to the thumb
- * (index still up). A ring of items appears around the pinch; move the hand onto an item to run it,
- * or toward it and release. Releasing in the centre, an index pinch, a fist or tracking loss
- * cancels.
+ * (index still up). Move onto an icon and hover for one second while holding the pinch to run it.
+ * Releasing anywhere, an index pinch, a fist or tracking loss cancels.
  *
  * - Left: New terminal, Codex, Claude Code, each in a new cmux window ([CmuxFeature.newTerminal]).
  * - Right: Keyboard, then Enter, Esc and Ctrl-C for the focused pane, and pasting or clearing voice
@@ -54,9 +54,9 @@ class HandMenusFeature(
       HandAim(left = true),
       "New",
       listOf(
-        PieItem("Terminal") { cmux.newTerminal() },
-        PieItem("Codex") { cmux.newTerminal("codex", name = "Codex") },
-        PieItem("Claude Code") { cmux.newTerminal("claude", name = "Claude Code") },
+        PieItem("Terminal", PieIcon.Terminal) { cmux.newTerminal() },
+        PieItem("Codex", PieIcon.Codex) { cmux.newTerminal("codex", name = "Codex") },
+        PieItem("Claude Code", PieIcon.Claude) { cmux.newTerminal("claude", name = "Claude Code") },
       ),
     )
 
@@ -65,12 +65,12 @@ class HandMenusFeature(
       HandAim(left = false),
       "Keys",
       listOf(
-        PieItem("Keyboard") { toggleKeyboard() },
-        PieItem("Enter") { focusedKey(Key("enter")) },
-        PieItem("Esc") { focusedKey(Key("escape")) },
-        PieItem("Ctrl-C") { focusedKey(Key("c", setOf(Modifier.Ctrl))) },
-        PieItem("Paste voice") { voiceFeature.voice.selected?.let(voiceFeature::pasteIntoFocused) },
-        PieItem("Clear voice") { voiceFeature.voice.notes.toList().forEach(voiceFeature.voice::remove) },
+        PieItem("Keyboard", PieIcon.Keyboard) { toggleKeyboard() },
+        PieItem("Enter", PieIcon.Enter) { focusedKey(Key("enter")) },
+        PieItem("Esc", PieIcon.Escape) { focusedKey(Key("escape")) },
+        PieItem("Ctrl-C", PieIcon.Interrupt) { focusedKey(Key("c", setOf(Modifier.Ctrl))) },
+        PieItem("Paste voice", PieIcon.Paste) { voiceFeature.voice.selected?.let(voiceFeature::pasteIntoFocused) },
+        PieItem("Clear voice", PieIcon.Clear) { voiceFeature.voice.notes.toList().forEach(voiceFeature.voice::remove) },
       ),
     )
 
@@ -90,6 +90,7 @@ class HandMenusFeature(
     left.mount(metresPerPx)
     right.mount(metresPerPx)
     keyboard.onSceneReady()
+    Log.i(TAG, "Palm quick actions ready: icon hover pills, dwell=${MenuDwell.DURATION_MS}ms, pinch release cancels")
   }
 
   fun onSceneTick(enabled: Boolean) {
@@ -124,6 +125,7 @@ class HandMenusFeature(
     val gesture = HandMenuGesture()
     private val side = if (aim.left) "left" else "right"
     private val selection = PieSelection(RadialMenu(items.size, deadZoneM = DEAD_ZONE_M, reachM = REACH_M))
+    private val dwell = MenuDwell()
     private val state = PieState(title, items, cancelFraction = 2f * DEAD_ZONE_M / SIZE_M)
     private val hintState = PieHintState()
     private var panel: Entity? = null
@@ -144,11 +146,7 @@ class HandMenusFeature(
       val px = (SIZE_M / metresPerPx).roundToInt()
       panel =
         xmux.mountPanel(px, px, Placement.InFrontOfHead) {
-          PieMenu(state) { i ->
-            gesture.cancel()
-            confirm(i)
-            run(i)
-          }
+          PieMenu(state)
         }.also { it.setComponent(Visible(false)) }
       val hintPx = (HINT_SIZE_M / metresPerPx).roundToInt()
       hintPanel =
@@ -184,32 +182,32 @@ class HandMenusFeature(
       when (event) {
         HandMenuGesture.Event.Opened -> if (otherOpen || point == null) gesture.cancel() else open(point, head)
         HandMenuGesture.Event.Released -> {
-          val picked = selection.highlighted
-          if (picked != null) {
-            Log.i(TAG, "$side palm menu: released toward an item ${selectionTrace()}")
-            confirm(picked)
-            run(picked)
-          } else {
-            Log.i(TAG, "$side palm menu: released in the centre (cancelled) ${selectionTrace()}")
-            close()
-          }
+          Log.i(TAG, "$side palm menu: released (cancelled) ${selectionTrace()}")
+          close()
         }
         HandMenuGesture.Event.Cancelled -> {
           Log.i(TAG, "$side palm menu cancelled: ${gesture.cancelReason} ${selectionTrace()}")
           close()
         }
-        HandMenuGesture.Event.None ->
-          if (gesture.open && point != null) {
-            selection.update(point)
-            state.highlighted = selection.highlighted
-            trace(frame)
-            selection.reached?.let { reached ->
-              Log.i(TAG, "$side palm menu: reached an item ${selectionTrace()}")
+        HandMenuGesture.Event.None -> {
+          if (gesture.open) trace(frame)
+          if (gesture.open) {
+            // Never finish a dwell using a stale point or during the release debounce window. Those
+            // frames (a dropped frame, or the runtime's pinch flickering while the hand moves) pause
+            // the dwell rather than restart it; a real release or tracking loss closes the menu.
+            val canHover = frame != null && gesture.pinchReading && point != null
+            if (canHover) selection.update(point!!)
+            val completed = dwell.update(state.rayHovered ?: selection.reached, now, confirmed = canHover)
+            state.highlighted = dwell.hovered
+            state.progress = dwell.progress
+            completed?.let { reached ->
+              Log.i(TAG, "$side palm menu: dwell complete (${MenuDwell.DURATION_MS}ms) ${selectionTrace()}")
               gesture.cancel() // the pinch is still held: the next menu needs a fresh one
               confirm(reached)
               run(reached)
             }
           }
+        }
       }
     }
 
@@ -223,8 +221,11 @@ class HandMenusFeature(
       hideAtMs = 0L
       traceFlags = -1
       selection.open(at, head)
+      dwell.reset()
       state.highlighted = null
       state.chosen = null
+      state.rayHovered = null
+      state.progress = 0f
       // Just behind the pinch point, so the hand stays in front of the ring.
       val position = at + selection.forward * BEHIND_HAND_M
       panel?.setComponent(Transform(Pose(position, Quaternion.lookRotation(position - head.t))))
@@ -233,10 +234,56 @@ class HandMenusFeature(
     }
 
     private fun close() {
-      if (selection.center == null) return
+      val confirming = hideAtMs != 0L
+      hideAtMs = 0L
+      if (selection.center == null && !confirming) return
       selection.close()
+      dwell.reset()
       state.highlighted = null
+      state.chosen = null
+      state.rayHovered = null
+      state.progress = 0f
       panel?.setComponent(Visible(false))
+    }
+
+    /**
+     * Keeps the ring up briefly with [index] marked as chosen, so running an item reads as a
+     * selection rather than the menu dropping back to its hint.
+     */
+    private fun confirm(index: Int) {
+      selection.close()
+      state.highlighted = index
+      state.chosen = index
+      state.progress = 1f
+      hideAtMs = SystemClock.uptimeMillis() + CONFIRM_MS
+    }
+
+    private fun selectionTrace(): String =
+      "(moved ${"%.1f".format(selection.distanceM * 100)}cm, item=${selection.highlighted?.let { items[it].label }})"
+
+    /** While the ring is open: each change in the runtime's pinch flags, to diagnose closes. */
+    private fun trace(frame: HandAim.Frame?) {
+      if (frame == null || frame.flags == traceFlags) return
+      traceFlags = frame.flags
+      Log.d(
+        TAG,
+        "$side palm menu held: flags=${frame.flags} middle=${"%.2f".format(frame.middleStrength)} " +
+          "index=${"%.2f".format(frame.indexStrength)} ${selectionTrace()}",
+      )
+    }
+
+    /** The runtime started a middle pinch with the palm facing, but no menu opened: say why. */
+    private fun logIgnoredPinch(frame: HandAim.Frame?, event: HandMenuGesture.Event) {
+      val middle = frame?.has(HandAim.MIDDLE_PINCHING) == true
+      val rose = middle && !wasMiddlePinching
+      wasMiddlePinching = middle
+      if (!rose || frame == null || event == HandMenuGesture.Event.Opened || gesture.open || !gesture.palmFacing) return
+      Log.d(
+        TAG,
+        "$side middle pinch did not open the palm menu: palm ${gesture.facingDegrees.roundToInt()}° " +
+          "flags=${frame.flags} middle=${"%.2f".format(frame.middleStrength)} index=${"%.2f".format(frame.indexStrength)} " +
+          "fist=${gesture.fist} stillHeld=${gesture.down}",
+      )
     }
 
     private fun run(index: Int) {
@@ -284,5 +331,7 @@ class HandMenusFeature(
     const val BEHIND_HAND_M = 0.04f
     const val HINT_SIZE_M = 0.04f
     const val HINT_SMOOTHING = 0.6f
+    /** How long a chosen item stays marked before the ring hides. */
+    const val CONFIRM_MS = 250L
   }
 }

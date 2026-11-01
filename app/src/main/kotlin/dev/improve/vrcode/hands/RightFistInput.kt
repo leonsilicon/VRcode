@@ -1,6 +1,9 @@
 package dev.improve.vrcode.hands
 
 import android.util.Log
+import com.meta.spatial.core.Pose
+import com.meta.spatial.core.Quaternion
+import com.meta.spatial.core.Vector3
 import com.meta.spatial.toolkit.AppSystemActivity
 
 /**
@@ -13,6 +16,10 @@ class RightFistInput(private val activity: AppSystemActivity, private val predic
   private val hand = HandAim(left = false)
   private val gate = FistGate(onMs = FIST_ON_MS, offMs = FIST_OFF_MS)
   private var rawFist = false
+  /** Grip in scene space, held briefly through tracking gaps just like the left-hand prop. */
+  var grip: Pose? = null
+    private set
+  private var gripMs = Long.MIN_VALUE / 2
 
   /** Nothing said yet in the live dictation: an opening hand may end it at once. */
   var quickRelease = false
@@ -30,6 +37,19 @@ class RightFistInput(private val activity: AppSystemActivity, private val predic
     started = false
     ended = false
     val frame = hand.poll(activity.scene, predictedTimeNs())
+    // HandAim locates joints in OpenXR VIEW space. Reflect its right-handed pose into
+    // Spatial's left-handed coordinates, then move it with the current scene viewer pose.
+    val trackedGrip = frame?.let { FistGrip.pose(it.joints) }?.let { pose ->
+      val p = pose.t
+      val q = pose.q
+      activity.scene.getViewerPose() * Pose(Vector3(p.x, p.y, -p.z), Quaternion(q.w, -q.x, -q.y, q.z))
+    }
+    if (trackedGrip != null) {
+      grip = trackedGrip
+      gripMs = nowMs
+    } else if (nowMs - gripMs > GRIP_HOLD_MS) {
+      grip = null
+    }
     if (frame != null) {
       val fist = FistShape.isFist(frame.joints, wasFist = rawFist)
       if (fist != rawFist) Log.d(TAG, "right fist raw=$fist")
@@ -58,5 +78,6 @@ class RightFistInput(private val activity: AppSystemActivity, private val predic
     const val FIST_ON_MS = 120L
     const val FIST_OFF_MS = 400L
     const val QUICK_RELEASE_MS = 100L
+    const val GRIP_HOLD_MS = 250L
   }
 }

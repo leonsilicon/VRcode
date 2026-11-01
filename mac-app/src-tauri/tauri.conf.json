@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VRcode Mac",
+  "mainBinaryName": "vrcode-mac-app",
+  "version": "0.1.0",
+  "identifier": "dev.improve.vrcode.mac",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "VRcode Mac",
+        "width": 600,
+        "height": 680,
+        "minWidth": 460,
+        "minHeight": 480,
+        "visible": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; style-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "category": "DeveloperTool",
+    "shortDescription": "Runs the vrcode Mac service for the Quest",
+    "copyright": "Copyright © 2026 Improve Labs",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.png"],
+    "externalBin": ["binaries/vrcode-mac"],
+    "macOS": {
+      "minimumSystemVersion": "27.0",
+      "hardenedRuntime": true
+    }
+  }
+}

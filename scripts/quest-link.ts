@@ -205,9 +205,11 @@ async function provisionMac(adb: Adb, serial: string, binary: string, port: numb
   catch { throw new LinkError("Could not read the Mac connection key. Build the Mac service first."); }
   if (!configuration.startsWith("vrcode:")) throw new LinkError("Could not read the Mac connection key. Build the Mac service first.");
   await adb.run(["shell", "run-as", "dev.improve.vrcode", "mkdir", "-p", "files"], { serial });
-  try { await run([adb.executable, "-s", serial, "shell", "run-as", "dev.improve.vrcode", "tee", "files/vrcode-pairing"], { input: Buffer.from(configuration) }); }
+  // Owner-only, and renamed into place so the app's import watcher never reads a partial key.
+  const write = "'umask 077; cat > files/vrcode-pairing.tmp && mv -f files/vrcode-pairing.tmp files/vrcode-pairing'";
+  try { await run([adb.executable, "-s", serial, "shell", "run-as", "dev.improve.vrcode", "sh", "-c", write], { input: Buffer.from(configuration) }); }
   catch { throw new LinkError("Could not provision the debug app. Install it first, or paste the Mac connection key in Settings."); }
-  console.log("Mac connection key copied to the app's private storage. In Connection settings, choose Import from connected Mac.");
+  console.log("Mac connection key copied to the app's private storage. A running debug app imports it and connects within a few seconds; otherwise it does so at its next launch.");
 }
 
 export function portNumber(value: string) {

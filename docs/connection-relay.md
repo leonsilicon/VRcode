@@ -1,7 +1,10 @@
 # Connection relay, version 1
 
 The Mac listens on TCP 7274 with TLS 1.2 or later and a persistent self-signed certificate. Bonjour
-advertises `_vrcode._tcp`; discovery supplies an address, not trust. The Quest verifies the exact
+advertises `_vrcode._tcp` with TXT `fp=<certificate SHA-256 hex>` and `v=1`; the Quest uses `fp` to
+pick its paired Mac's advert, but discovery supplies an address, not trust. The connection key
+(`vrcode:` + base64 JSON) holds `host`, `hosts` (every Mac IPv4 address when the key was made, `host`
+first), `port`, `fingerprint`, `token` and `name`; older keys without `hosts` remain valid. The Quest verifies the exact
 SHA-256 DER certificate fingerprint from its imported Mac configuration before sending a random
 32-byte bearer key inside TLS. The Mac compares all 32 bytes before accepting application traffic.
 It replies with the four ASCII bytes `VRL1`. A wrong key closes the connection without opening any

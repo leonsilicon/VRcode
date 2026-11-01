@@ -52,7 +52,8 @@ import dev.improve.xmux.spatial.SpatialConfig
 import dev.improve.xmux.spatial.WindowLayout
 import dev.improve.xmux.spatial.XmuxSpatial
 import dev.improve.xmux.window.frame.WindowChrome
-import dev.improve.vrcode.dock.DockRay
+import dev.improve.vrcode.dock.DockGesture
+import dev.improve.vrcode.dock.DockRecall
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -92,10 +93,14 @@ class MainActivity : AppSystemActivity() {
   /** Palm toward the user + middle pinch: left = new terminal/Codex/Claude, right = keyboard and keys. */
   @OptIn(SpatialSDKExperimentalAPI::class)
   private val handMenu: HandMenusFeature by lazy { HandMenusFeature(this, xmux, voice, cmuxControls) { spatial.getFrameTiming().predictedDisplayTimeNs } }
+  @OptIn(SpatialSDKExperimentalAPI::class)
   private val dock: DockFeature by lazy {
-    DockFeature(xmux, onWindow = ::showDockWindow, onKeyboard = { handMenu.toggleKeyboard() },
+    DockFeature(xmux, scene = { scene }, predictedTimeNs = { spatial.getFrameTiming().predictedDisplayTimeNs },
+      onWindow = ::showDockWindow, onKeyboard = { handMenu.toggleKeyboard() },
       onArrange = ::arrangeWindows, onSettings = { openSettings() }, onConnection = { openSettings(SettingsPage.Connection) })
   }
+  /** Flicking up on a window in the dock glides it to just above the dock. */
+  private val dockRecall = DockRecall()
   private val linkController: ConnectionController by lazy {
     ConnectionController(this, scope,
       onConnected = { bridgePort, speechPort -> connectBridge("127.0.0.1:$bridgePort", "127.0.0.1", speechPort) },
@@ -142,10 +147,10 @@ class MainActivity : AppSystemActivity() {
     setupConnection = true
     openSettings(SettingsPage.Connection)
     startDiscovery()
-    linkController.discover()
+    // Also imports a key provisioned by `quest-link pair` and connects with it, without a tap.
     val address = intent?.getStringExtra("address")
+    linkController.start(autoConnect = address == null && settings.autoConnect)
     if (address != null) connect(address)
-    else if (settings.autoConnect && linkController.profile.value.paired) linkController.connect()
   }
 
   override fun onSceneTick() {
@@ -174,19 +179,26 @@ class MainActivity : AppSystemActivity() {
   }
 
   /** Both hands' pointer poses, when tracked. */
-  private fun activeHands(): List<Pose> {
-    val body = systemManager.tryFindSystem<PlayerBodyAttachmentSystem>()?.tryGetLocalPlayerAvatarBody() ?: return emptyList()
-    return listOfNotNull(body.leftHand, body.rightHand)
-      .filter { it.tryGetComponent<Controller>()?.isActive == true }
-      .mapNotNull { it.tryGetComponent<Transform>()?.transform }
+  /** Each hand's pointer ray with its pinch (left, right; null when that hand is not tracked). */
+  private fun dockPointers(): List<DockGesture.Pointer?> {
+    val body = systemManager.tryFindSystem<PlayerBodyAttachmentSystem>()?.tryGetLocalPlayerAvatarBody() ?: return listOf(null, null)
+    return listOf(body.leftHand to ButtonBits.ButtonTriggerL, body.rightHand to ButtonBits.ButtonTriggerR).map { (hand, pinch) ->
+      val controller = hand.tryGetComponent<Controller>()?.takeIf { it.isActive } ?: return@map null
+      val pose = hand.tryGetComponent<Transform>()?.transform ?: return@map null
+      DockGesture.Pointer(pose.t, pose.forward(), controller.buttonState and pinch != 0)
+    }
   }
 
   private fun tickDock() {
-    val hands = activeHands()
     dock.onSceneTick(headPose(), visible = resumed,
       connected = session?.state?.value == ConnectionState.Online,
       keyboardShown = runCatching { handMenu.keyboardShown }.getOrDefault(false),
-      rays = hands.map { DockRay(it.t, it.forward()) }, hands = hands.map { it.t })
+      pointers = dockPointers())
+    dockRecall.tick(SystemClock.uptimeMillis())?.let { (screen, pose) ->
+      val window = xmux.windows.firstOrNull { it.screen?.value == screen } ?: return@let
+      window.setPose(pose)
+      windowMotion[window.screen]?.moved(headPose(), pose)
+    }
   }
 
   @OptIn(SpatialSDKExperimentalAPI::class)
@@ -209,7 +221,7 @@ class MainActivity : AppSystemActivity() {
     if (rightHandPointer.update(visible = resumed && !settingsOpen && !cmuxControls.isOpen && !overDock,
         style = settings.pointerCursor, size = settings.pointerCursorSize)) terminalPointer.cancel()
     voice.onSceneTick(allowGestures = !settingsOpen && !cmuxControls.isOpen,
-      previewOnLeftHand = resumed && settingsOpen && settingsPage == SettingsPage.Customization && customizationTab == CustomizationTab.Microphone)
+      previewMic = customizationTab.mic.takeIf { resumed && settingsOpen && settingsPage == SettingsPage.Customization })
     handMenu.onSceneTick(enabled = resumed && !settingsOpen && !cmuxControls.isOpen)
     // A palm-facing middle pinch belongs to the pie; the right-click is the palm-away one.
     rightClick.onSceneTick(enabled = resumed && !settingsOpen && !cmuxControls.isOpen && !handMenu.busy && !overDock)
@@ -297,7 +309,7 @@ class MainActivity : AppSystemActivity() {
     if (!sceneReady) return
     xmux.setFontSize(s.terminalFontSize)
     terminalAppearance.update(xmux.windows, s)
-    voice.setVoiceProp(s.voiceProp)
+    voice.setVoiceProps(s.textMicProp, s.aiMicProp)
     // Restore boundary visibility before removing the view of the physical room.
     if (!s.passthrough) boundary.update(scene, false)
     scene.enablePassthrough(s.passthrough)
@@ -334,15 +346,22 @@ class MainActivity : AppSystemActivity() {
     }
   }
 
-  /** A dock click recalls the existing window and focuses its live pane in cmux as well. */
+  /** A dock flick recalls the existing window to just above the dock and focuses its live pane in cmux as well. */
   private fun showDockWindow(id: Int) {
     if (!resumed || settingsOpen || cmuxControls.isOpen || session?.state?.value != ConnectionState.Online) return
     val window = xmux.windows.firstOrNull { it.screen?.value == id } ?: return
     val pane = window.focusedPane ?: return
     val head = headPose() ?: return
-    val pose = WindowLayout.inFrontOfHead(head, settings.windowDistanceM.coerceAtLeast(window.panelSize.widthM / 2f + 0.1f))
-    window.setPose(pose)
-    windowMotion[window.screen]?.moved(head, pose)
+    val distance = settings.windowDistanceM.coerceAtLeast(window.panelSize.widthM / 2f + 0.1f)
+    val dockPose = dock.currentPose()
+    val from = window.pose()
+    if (dockPose != null && from != null) {
+      dockRecall.start(id, from, DockRecall.targetPose(head.t, dockPose, window.panelSize.heightM, distance), SystemClock.uptimeMillis())
+    } else {
+      val pose = WindowLayout.inFrontOfHead(head, distance)
+      window.setPose(pose)
+      windowMotion[window.screen]?.moved(head, pose)
+    }
     xmux.focus(window, pane)
     // The local focusPane can be a no-op when this was already this screen's selected pane.
     // Switching screens must still update the Mac's active pane.
@@ -487,6 +506,8 @@ class MainActivity : AppSystemActivity() {
     resumed = true
     // The user may have turned or walked while away; bring open settings back in front of them.
     if (settingsOpen) placeSettings = true
+    // Waking the headset often drops Wi-Fi briefly; retry the Mac now rather than after the backoff.
+    if (sceneReady) linkController.kick()
   }
 
   /** Settings placed from a pre-recenter or off-head pose would otherwise stay out of view. */

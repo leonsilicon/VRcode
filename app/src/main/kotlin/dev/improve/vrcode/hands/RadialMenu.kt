@@ -7,8 +7,8 @@ import kotlin.math.sqrt
 
 /**
  * Pie selection by hand displacement: [count] items around a circle, item 0 at the top and the rest
- * clockwise. Within [deadZoneM] of the start nothing is picked (releasing there cancels); at
- * [reachM] the hand is over the item, which runs it without waiting for the release.
+ * clockwise. Within [deadZoneM] of the start nothing is picked; at [reachM] the hand is over
+ * the item and can begin its hover dwell. Releasing anywhere cancels.
  */
 class RadialMenu(val count: Int, val deadZoneM: Float = 0.035f, val reachM: Float = 0.07f) {
   init {

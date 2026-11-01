@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the app's Info.plist by Tauri. The bundled vrcode-mac helper resolves
+     Bundle.main to this app, so its privacy strings live here (keep in step with mac/Info.plist,
+     which the bare `swift run` binary embeds). -->
+<plist version="1.0"><dict>
+  <key>LSUIElement</key><true/>
+  <key>NSBluetoothAlwaysUsageDescription</key><string>Connect your Quest to this Mac using Bluetooth when Wi-Fi is unavailable.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Connect your Quest to the local terminal and speech services.</string>
+  <key>NSBonjourServices</key><array><string>_vrcode._tcp</string></array>
+</dict></plist>

@@ -26,6 +26,7 @@ import com.meta.spatial.toolkit.MeshCollision
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.Visible
 import dev.improve.vrcode.VoiceProp
+import dev.improve.vrcode.VoiceMic
 import dev.improve.vrcode.dock.DockPlacement
 import dev.improve.vrcode.hands.HandInput
 import dev.improve.vrcode.hands.RightFistInput
@@ -94,9 +95,13 @@ class VoiceFeature(
   private var activeNote: VoiceNote? = null
   /** Debug builds: the prop floats in front of the head, to check the model renders. */
   private var propPreview = false
-  /** Settings preview uses the tracked left hand, independently of the dictation gesture. */
-  private var settingsPreview = false
-  private var selectedProp = VoiceProp.Microphone
+  /** Preview the mic being customized on its own hand without starting capture. */
+  private var settingsPreview: VoiceMic? = null
+  private var textProp = VoiceProp.Microphone
+  private var aiProp = VoiceProp.NewsMicrophone
+  private var selectedProp = VoiceProp.NewsMicrophone
+  private var propMic: VoiceMic? = null
+  private var debugMic = VoiceMic.Ai
   private var sceneReady = false
 
   fun connectSpeech(host: String, port: Int = DEFAULT_PORT) {
@@ -139,7 +144,10 @@ class VoiceFeature(
           "stop" -> stopVoiceMode()
           "delete", "clear" -> voice.selected?.let(voice::remove)
           "paste", "insert" -> voice.selected?.let(::pasteIntoFocused)
-          "prop" -> propPreview = !propPreview
+          "prop" -> {
+            debugMic = if (intent.getStringExtra("mic") == "text") VoiceMic.Text else VoiceMic.Ai
+            propPreview = !propPreview
+          }
         }
         Log.i(TAG, "debug voice ${intent.getStringExtra("cmd")}: panes=${voice.notes.map { "${it.id}:${it.mode}:${it.phase}:\"${it.output}\"" }}")
       }
@@ -147,17 +155,16 @@ class VoiceFeature(
   private var debugRegistered = false
 
   /** The preference also applies immediately if voice mode is already active. */
-  fun setVoiceProp(prop: VoiceProp) {
-    if (selectedProp == prop) return
-    selectedProp = prop
-    propEntity?.setComponent(Mesh(Uri.parse(prop.assetPath), MeshCollision.NoCollision))
-    Log.i(TAG, "voice prop: ${prop.storageValue}")
+  fun setVoiceProps(text: VoiceProp, ai: VoiceProp) {
+    textProp = text
+    aiProp = ai
+    Log.i(TAG, "voice props: text=${text.storageValue} right hand; AI=${ai.storageValue} left hand")
   }
 
-  fun onSceneTick(allowGestures: Boolean = true, previewOnLeftHand: Boolean = false) {
-    if (settingsPreview != previewOnLeftHand) {
-      settingsPreview = previewOnLeftHand
-      Log.i(TAG, "voice prop left-hand settings preview ${if (settingsPreview) "enabled" else "disabled"}")
+  fun onSceneTick(allowGestures: Boolean = true, previewMic: VoiceMic? = null) {
+    if (settingsPreview != previewMic) {
+      settingsPreview = previewMic
+      Log.i(TAG, "voice prop settings preview ${previewMic?.let { "${it.label} on ${it.hand} hand" } ?: "disabled"}")
     }
     hands.quickRelease = voice.quiet // nothing said yet: an opening hand ends voice mode at once
     rightFist.quickRelease = voice.quiet
@@ -303,8 +310,8 @@ class VoiceFeature(
 
   private fun placeMarker() {
     val entity = marker ?: return
-    val hand = hands.leftGrip
-    val show = propShown && voiceHand == VoiceHand.Left && voice.listening != null && hand != null
+    val hand = if (voiceHand == VoiceHand.Left) hands.leftGrip else rightFist.grip
+    val show = propShown && voiceHand != null && voice.listening != null && hand != null
     if (show != markerShown) {
       entity.setComponent(Visible(show))
       markerShown = show
@@ -312,25 +319,41 @@ class VoiceFeature(
     if (!show || hand == null) return
     val head = headPose() ?: return
     // Keep the listening badge beside the prop rather than covering its model.
-    val position = hand.t + head.q.times(Vector3(-0.08f, 0.03f, 0f))
+    val position = hand.t + head.q.times(Vector3(if (voiceHand == VoiceHand.Left) -0.08f else 0.08f, 0.03f, 0f))
     entity.setComponent(Transform(Pose(position, facing(head, position))))
   }
 
   /**
-   * The prop is in the left fist for as long as the fist that started voice mode stays closed,
+   * The selected mic is in the fist that started voice mode for as long as it stays closed,
    * whether or not the microphone could start (a failure shows on the voice pane instead). It
    * takes the hand's grip pose every frame, so it moves and turns with the hand. Settings can
    * also hold it on that hand without a fist or starting capture; tracking loss hides it.
    */
   private fun placeProp() {
     val entity = propEntity ?: return
+    val mic = settingsPreview ?: if (propPreview) debugMic else when (voiceHand) {
+      VoiceHand.Left -> VoiceMic.Ai
+      VoiceHand.Right -> VoiceMic.Text
+      null -> null
+    }
+    val prop = if (mic == VoiceMic.Text) textProp else aiProp
+    if (prop != selectedProp) {
+      selectedProp = prop
+      entity.setComponent(Mesh(Uri.parse(prop.assetPath), MeshCollision.NoCollision))
+    }
+    if (mic != propMic) {
+      propMic = mic
+      Log.i(TAG, "voice prop mode=${mic?.label} hand=${mic?.hand} asset=${prop.storageValue}")
+    }
     val pose =
-      if (settingsPreview) {
-        hands.leftGrip
-      } else if (propPreview) {
+      if (propPreview && settingsPreview == null) {
         headPose()?.let { head -> Pose(head.t + head.forward().normalize() * PREVIEW_DISTANCE_M, head.q.removePitchAndRoll()) }
       } else {
-        hands.leftGrip?.takeIf { voiceHand == VoiceHand.Left }
+        when (mic) {
+          VoiceMic.Ai -> hands.leftGrip
+          VoiceMic.Text -> rightFist.grip
+          null -> null
+        }
       }
     if (pose != null) entity.setComponent(Transform(pose))
     val show = pose != null

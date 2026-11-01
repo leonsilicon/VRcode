@@ -1,12 +1,15 @@
 import Foundation
+import Security
 
 /// The left-fist "speak to the AI" mode: turns what the user said into the exact text to type into
 /// one terminal pane, using that pane's screen as context. Calls the Claude Messages API over raw
 /// HTTP (there is no official Swift SDK). The headset stages the result for review; nothing here
 /// types into a terminal.
 ///
-/// The API key comes from `ANTHROPIC_API_KEY`, else the first line of
-/// `~/.config/vrcode/anthropic-api-key`. It never leaves the Mac.
+/// The API key comes from the macOS Keychain (generic password, service `dev.improve.vrcode`,
+/// account `anthropic-api-key`), else `ANTHROPIC_API_KEY` (for `swift run` during development),
+/// else the first line of `~/.config/vrcode/anthropic-api-key`. Under the menu-bar app's LaunchAgent
+/// the shell environment is absent, so the Keychain is the normal source. It never leaves the Mac.
 enum AiService {
   struct Failure: Error, CustomStringConvertible {
     let description: String
@@ -35,7 +38,7 @@ enum AiService {
   /// The text to type for [transcript], given the pane's [screen] text and window [title].
   static func complete(transcript: String, screen: String, title: String) async throws -> String {
     guard let key = apiKey() else {
-      throw Failure(description: "AI is off: set ANTHROPIC_API_KEY or ~/.config/vrcode/anthropic-api-key on the Mac")
+      throw Failure(description: "AI is off: add an Anthropic API key on the Mac (Keychain item dev.improve.vrcode / anthropic-api-key)")
     }
     var user = "<pane title=\"\(title.replacingOccurrences(of: "\"", with: "'"))\">\n\(screen)\n</pane>\n\n"
     user += "<transcript>\(transcript)</transcript>"
@@ -86,10 +89,27 @@ enum AiService {
   }
 
   private static func apiKey() -> String? {
+    if let key = keychainKey() { return key }
     if let key = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"], !key.isEmpty { return key }
     let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/vrcode/anthropic-api-key")
     let key = (try? String(contentsOf: file, encoding: .utf8))?.components(separatedBy: .newlines).first?
       .trimmingCharacters(in: .whitespaces)
     return key?.isEmpty == false ? key : nil
+  }
+
+  /// The key stored with `security add-generic-password -s dev.improve.vrcode -a anthropic-api-key -w`.
+  private static func keychainKey() -> String? {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: "dev.improve.vrcode",
+      kSecAttrAccount as String: "anthropic-api-key",
+      kSecReturnData as String: true,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+    ]
+    var item: CFTypeRef?
+    guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data,
+      let key = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty
+    else { return nil }
+    return key
   }
 }

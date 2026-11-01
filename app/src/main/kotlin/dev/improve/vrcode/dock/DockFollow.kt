@@ -6,19 +6,21 @@ import kotlin.math.abs
 import kotlin.math.exp
 
 /**
- * Lazy follow, so the dock does not feel welded to the face. It stays put while the head turns
- * less than [yawDeadZoneDeg] or moves less than [moveDeadZoneM] from where the dock last settled.
- * Beyond that it eases toward [DockPlacement.pose] with an exponential time constant of
- * [timeConstantS] until it catches up, then rests again. It appears in place without animating,
- * and snaps after a recenter or teleport.
+ * Lazy follow, so the dock's bar does not feel welded to the face. It stays put while the gaze
+ * turns less than [yawDeadZoneDeg] sideways or [pitchDeadZoneDeg] up or down, or the head moves less
+ * than [moveDeadZoneM], from where it last settled. Beyond that it eases toward [DockPlacement.pose]
+ * with an exponential time constant of [timeConstantS] until it catches up, then rests again. It
+ * appears in place without animating, and snaps after a recenter or teleport.
  */
 internal class DockFollow(
   private val yawDeadZoneDeg: Float = 14f,
+  private val pitchDeadZoneDeg: Float = 10f,
   private val moveDeadZoneM: Float = 0.10f,
   private val timeConstantS: Float = 0.45f,
 ) {
   private var eye: Vector3? = null
   private var yawDeg = 0f
+  private var pitchDeg = 0f
   private var settling = false
 
   /** The dock's current pose, or null until the first update after [reset]. */
@@ -27,23 +29,28 @@ internal class DockFollow(
 
   fun update(head: Pose, dtS: Float): Pose {
     val targetYaw = DockPlacement.yawDegrees(head)
+    val targetPitch = DockPlacement.pitchDegrees(head)
     val current = eye
     if (current == null || (head.t - current).length() > SNAP_M) {
       eye = head.t
       yawDeg = targetYaw
+      pitchDeg = targetPitch
       settling = false
     } else {
       val yawError = wrap(targetYaw - yawDeg)
+      val pitchError = targetPitch - pitchDeg
       val moveError = (head.t - current).length()
-      if (abs(yawError) > yawDeadZoneDeg || moveError > moveDeadZoneM) settling = true
+      if (abs(yawError) > yawDeadZoneDeg || abs(pitchError) > pitchDeadZoneDeg || moveError > moveDeadZoneM) settling = true
       if (settling) {
         val step = 1f - exp(-dtS.coerceIn(0f, MAX_STEP_S) / timeConstantS)
         yawDeg = wrap(yawDeg + yawError * step)
+        pitchDeg += pitchError * step
         eye = current + (head.t - current) * step
-        if (abs(yawError) * (1f - step) < SETTLED_DEG && moveError * (1f - step) < SETTLED_M) settling = false
+        val left = 1f - step
+        if (abs(yawError) * left < SETTLED_DEG && abs(pitchError) * left < SETTLED_DEG && moveError * left < SETTLED_M) settling = false
       }
     }
-    return DockPlacement.poseAt(eye ?: head.t, yawDeg).also { pose = it }
+    return DockPlacement.poseAt(eye ?: head.t, yawDeg, pitchDeg).also { pose = it }
   }
 
   fun reset() {

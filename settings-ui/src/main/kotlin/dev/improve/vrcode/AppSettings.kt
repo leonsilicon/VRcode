@@ -8,7 +8,8 @@ data class AppSettings(
   val windowDistanceM: Float = 1.4f,
   val autoConnect: Boolean = true,
   val windowStyle: WindowStyle = WindowStyle.MacOS,
-  val voiceProp: VoiceProp = VoiceProp.Microphone,
+  val textMicProp: VoiceProp = VoiceProp.Microphone,
+  val aiMicProp: VoiceProp = VoiceProp.NewsMicrophone,
   val terminalTheme: TerminalTheme = TerminalTheme.Mac,
   val terminalFontSize: Float = DEFAULT_FONT_SIZE,
   val terminalCursor: TerminalCursor = TerminalCursor.Terminal,
@@ -40,7 +41,14 @@ class SettingsStore(private val preferences: SharedPreferences) {
     windowDistanceM = preferences.getFloat("window_distance_m", 1.4f),
     autoConnect = preferences.getBoolean("auto_connect", true),
     windowStyle = WindowStyle.fromStorage(preferences.getString("window_style", null)),
-    voiceProp = VoiceProp.fromStorage(preferences.getString("voice_prop", null)),
+    textMicProp = VoiceProp.fromStorage(preferences.getString("text_mic_prop", null)),
+    // The old setting only rendered on the left hand. Keep custom props, while upgrading
+    // its old classic default (also saved by unrelated settings changes) to the AI default.
+    aiMicProp = VoiceProp.fromStorage(
+      preferences.getString("ai_mic_prop", null)
+        ?: preferences.getString("voice_prop", null)?.takeUnless { it == "microphone" },
+      fallback = VoiceProp.NewsMicrophone,
+    ),
     terminalTheme = TerminalTheme.fromStorage(preferences.getString("terminal_theme", null)),
     terminalFontSize = preferences.getFloat("terminal_font_size", AppSettings.DEFAULT_FONT_SIZE),
     terminalCursor = TerminalCursor.fromStorage(preferences.getString("terminal_cursor", null)),
@@ -56,7 +64,9 @@ class SettingsStore(private val preferences: SharedPreferences) {
       .putFloat("window_distance_m", s.windowDistanceM)
       .putBoolean("auto_connect", s.autoConnect)
       .putString("window_style", s.windowStyle.storageValue)
-      .putString("voice_prop", s.voiceProp.storageValue)
+      .putString("text_mic_prop", s.textMicProp.storageValue)
+      .putString("ai_mic_prop", s.aiMicProp.storageValue)
+      .remove("voice_prop")
       .putString("terminal_theme", s.terminalTheme.storageValue)
       .putFloat("terminal_font_size", s.terminalFontSize)
       .putString("terminal_cursor", s.terminalCursor.storageValue)

@@ -12,7 +12,7 @@ class AppSettingsTest {
   }
 
   @Test fun sanitizingPreservesValidUserChoices() {
-    val chosen = AppSettings(passthrough = false, windowDistanceM = 2.1f, autoConnect = false, windowStyle = WindowStyle.Windows, voiceProp = VoiceProp.Banana, defaultWindowMode = WindowMode.Follow,
+    val chosen = AppSettings(passthrough = false, windowDistanceM = 2.1f, autoConnect = false, windowStyle = WindowStyle.Windows, textMicProp = VoiceProp.Banana, aiMicProp = VoiceProp.Megaphone, defaultWindowMode = WindowMode.Follow,
       pointerCursor = PointerCursorStyle.Crosshair, pointerCursorSize = 1.5f)
     assertEquals(chosen, chosen.sanitized())
   }
@@ -33,10 +33,13 @@ class AppSettingsTest {
   }
 
   @Test fun missingOrUnknownVoicePropFallsBackToMicrophone() {
-    assertEquals(VoiceProp.Microphone, AppSettings().voiceProp)
+    assertEquals(VoiceProp.Microphone, AppSettings().textMicProp)
+    assertEquals(VoiceProp.NewsMicrophone, AppSettings().aiMicProp)
     assertEquals(VoiceProp.Microphone, VoiceProp.fromStorage(null))
     assertEquals(VoiceProp.Microphone, VoiceProp.fromStorage("removed-prop"))
     for (prop in VoiceProp.entries) assertEquals(prop, VoiceProp.fromStorage(prop.storageValue))
+    assertEquals(VoiceProp.NewsMicrophone, VoiceProp.fromStorage(null, VoiceMic.Ai.defaultProp))
+    assertEquals(VoiceProp.NewsMicrophone, VoiceProp.fromStorage("removed-prop", VoiceMic.Ai.defaultProp))
   }
 
   @Test fun savedBoomboxSelectionMigratesToNewsMicrophone() {

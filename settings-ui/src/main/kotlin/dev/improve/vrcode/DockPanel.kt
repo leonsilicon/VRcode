@@ -1,6 +1,11 @@
 package dev.improve.vrcode
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.border
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,106 +44,130 @@ import androidx.compose.ui.unit.sp
 /** IDs belong to the live bridge, never a locally stored terminal list. */
 data class DockWindow(val id: Int, val title: String)
 
-/** The same panel is mounted in the headset and exercised on a regular Android emulator. */
+enum class DockOptionKind { Connection, Window, Keyboard, Arrange, Settings }
+
+/** One option of the raised dock. */
+data class DockOption(val label: String, val kind: DockOptionKind, val selected: Boolean = false, val enabled: Boolean = true)
+
+private val DockAccent = Color(0xFF4C8DFF)
+
+/**
+ * The collapsed dock, like an iPhone mini's home bar: a short, faint, rounded bar. A hand near it
+ * makes it bulge ([bulge], 0..1) and shows an up-chevron; swiping up lifts it ([swipe], 0..1)
+ * until the dock rises. It draws nothing else and takes no clicks: the app tracks the fingertip.
+ */
 @Composable
-fun DockPanel(
-  windows: List<DockWindow>,
-  focusedWindow: Int?,
-  connected: Boolean,
-  keyboardShown: Boolean,
-  onWindow: (Int) -> Unit,
-  onKeyboard: () -> Unit,
-  onArrange: () -> Unit,
-  onSettings: () -> Unit,
-  onConnection: () -> Unit,
-) {
+fun DockBar(bulge: Float, swipe: Float, barFraction: Float = 0.7f) {
+  val b by animateFloatAsState(bulge.coerceIn(0f, 1f), spring(dampingRatio = 0.6f, stiffness = 500f), label = "bulge")
+  val s by animateFloatAsState(swipe.coerceIn(0f, 1f), spring(stiffness = 700f), label = "swipe")
   VrcodeTheme {
-    Surface(
-      Modifier.fillMaxSize().padding(4.dp).testTag("vrcode-dock"),
-      shape = RoundedCornerShape(28.dp), color = Color(0xF21A202B),
-      contentColor = Color(0xFFE4EAF5), border = BorderStroke(1.dp, Color(0x40FFFFFF)),
-    ) {
-      Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box(
-          Modifier.width(42.dp).fillMaxHeight().clip(RoundedCornerShape(16.dp))
-            .clickable(role = Role.Button, onClick = onConnection).testTag("dock-connection")
-            .semantics { contentDescription = if (connected) "Mac connected. Open connection settings" else "Connect to your Mac" },
-          contentAlignment = Alignment.Center,
-        ) {
-          Box(Modifier.size(10.dp).clip(CircleShape).background(if (connected) Color(0xFF8CDCB0) else Color(0xFFE8B86D)))
-        }
-        DockDivider()
-        Row(
-          Modifier.weight(1f).fillMaxHeight().horizontalScroll(rememberScrollState()).selectableGroup().testTag("dock-windows"),
-          horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
-        ) {
-          if (windows.isEmpty()) {
-            Text(if (connected) "No terminal windows" else "Connect your Mac", Modifier.padding(horizontal = 12.dp),
-              fontSize = 13.sp, color = Color(0xFFB9C5D8), maxLines = 1)
-          }
-          for ((index, window) in windows.withIndex()) {
-            val selected = window.id == focusedWindow
-            val title = window.title.ifBlank { "Terminal ${index + 1}" }
-            val tile = dockTile(selected).width(100.dp).testTag("dock-window-${window.id}")
-              .semantics { contentDescription = "Show $title" }
-              .selectable(selected, enabled = connected, role = Role.Tab, onClick = { onWindow(window.id) })
-            DockTile(title, tile, selected = selected, enabled = connected) { TerminalGlyph() }
-          }
-        }
-        DockDivider()
-        DockTile("Keyboard", dockTile(keyboardShown).width(68.dp).testTag("dock-keyboard")
-          .semantics { contentDescription = "Toggle floating keyboard" }
-          .toggleable(keyboardShown, role = Role.Switch, onValueChange = { onKeyboard() }), selected = keyboardShown) { KeyboardGlyph() }
-        DockTile("Arrange", dockTile(false).width(64.dp).testTag("dock-arrange")
-          .semantics { contentDescription = "Arrange terminal windows in front of you" }
-          .clickable(enabled = connected && windows.isNotEmpty(), role = Role.Button, onClick = onArrange),
-          enabled = connected && windows.isNotEmpty()) { Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(24.dp)) }
-        DockTile("Settings", dockTile(false).width(64.dp).testTag("dock-settings")
-          .semantics { contentDescription = "Open VRcode settings" }
-          .clickable(role = Role.Button, onClick = onSettings)) { Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(24.dp)) }
+    BoxWithConstraints(Modifier.fillMaxSize().testTag("vrcode-dock-bar"), contentAlignment = Alignment.Center) {
+      val barHeight = 4.dp + 4.dp * b
+      Box(
+        Modifier.offset(y = -(maxHeight * 0.3f) * s)
+          .width(maxWidth * barFraction * (1f + 0.15f * b))
+          .height(barHeight)
+          .clip(CircleShape)
+          .background(Color.White.copy(alpha = 0.3f + 0.5f * maxOf(b, s))),
+      )
+      if (b > 0.05f) {
+        Text("⌃", Modifier.offset(y = -(maxHeight * 0.32f) - (maxHeight * 0.2f) * s), color = Color.White.copy(alpha = 0.7f * b),
+          fontSize = 12.sp, fontWeight = FontWeight.Bold)
       }
     }
   }
 }
 
 /**
- * The collapsed dock: a thin, faint line that is always rendered while VRcode runs, so the user can
- * tell it loaded without it drawing the eye. The whole (otherwise transparent) panel is the touch
- * target, so the line is easy to point at or press even though it is only a few millimetres tall.
+ * The raised dock: a row of options at [rowY] (fractions of the panel's height from its top) with
+ * the bar at its top centre ([grabberY]) as a grabber to swipe it back down. [xs] are the options'
+ * centres as fractions of the panel's width. While an option is pressed ([pressing]) it follows the
+ * finger ([fingerX]) with a knob, lifts with the flick ([lift], 0..1) and shows "flick to open".
  */
 @Composable
-fun DockPill(connected: Boolean, onExpand: () -> Unit) {
+fun DockBody(
+  options: List<DockOption>,
+  xs: List<Float>,
+  highlighted: Int?,
+  pressing: Boolean,
+  fingerX: Float,
+  lift: Float,
+  grabberBulge: Float,
+  grabberSwipe: Float,
+  rowY: Float,
+  grabberY: Float,
+  bodyTop: Float,
+  barFraction: Float,
+  hint: String?,
+) {
+  val l by animateFloatAsState(lift.coerceIn(0f, 1f), spring(stiffness = 800f), label = "lift")
+  val g by animateFloatAsState(grabberBulge.coerceIn(0f, 1f), spring(dampingRatio = 0.6f, stiffness = 500f), label = "grab")
   VrcodeTheme {
-    Box(
-      Modifier.fillMaxSize().clickable(role = Role.Button, onClick = onExpand).testTag("vrcode-dock-pill")
-        .semantics { contentDescription = if (connected) "Show dock. Mac connected" else "Show dock. Mac not connected" },
-      contentAlignment = Alignment.Center,
-    ) {
-      Box(Modifier.fillMaxWidth(0.88f).height(5.dp).clip(CircleShape).background(Color(0x73FFFFFF)))
+    BoxWithConstraints(Modifier.fillMaxSize().testTag("vrcode-dock")) {
+      val w = maxWidth
+      val h = maxHeight
+      // The body behind the row and grabber.
+      Box(
+        Modifier.offset(y = h * bodyTop).fillMaxWidth().height(h * (1f - bodyTop)).clip(RoundedCornerShape(22.dp))
+          .background(Color(0xE61A202B)).border(BorderStroke(1.dp, Color(0x30FFFFFF)), RoundedCornerShape(22.dp)),
+      )
+      // Grabber: the bar, now at the top centre; swipe down on it to lower the dock.
+      Box(
+        Modifier.offset(x = w * (0.5f - barFraction * (1f + 0.15f * g) / 2f), y = h * grabberY - 2.dp + h * 0.08f * grabberSwipe)
+          .width(w * barFraction * (1f + 0.15f * g)).height(4.dp + 3.dp * g).clip(CircleShape)
+          .background(Color.White.copy(alpha = 0.35f + 0.45f * maxOf(g, grabberSwipe))),
+      )
+      val icon = (h * 0.24f).coerceAtMost(w * 0.11f)
+      for ((i, option) in options.withIndex()) {
+        val x = xs.getOrElse(i) { 0.5f }
+        val picked = i == highlighted
+        val scale = if (picked) 1.25f else 1f
+        val rise = if (picked && pressing) h * 0.22f * l else 0.dp
+        val size = icon * scale
+        Box(
+          Modifier.offset(x = w * x - size / 2, y = h * rowY - size / 2 - rise).size(size).clip(CircleShape)
+            .background(if (picked) DockAccent else if (option.selected) Color(0xFF2C4263) else Color(0x33FFFFFF))
+            .testTag("dock-option-$i"),
+          contentAlignment = Alignment.Center,
+        ) {
+          val glyph = Modifier.size(size * 0.55f)
+          when (option.kind) {
+            DockOptionKind.Window -> TerminalGlyph(glyph)
+            DockOptionKind.Keyboard -> KeyboardGlyph(glyph)
+            DockOptionKind.Arrange -> Icon(Icons.Default.Refresh, contentDescription = null, modifier = glyph, tint = Color.White)
+            DockOptionKind.Settings -> Icon(Icons.Default.Settings, contentDescription = null, modifier = glyph, tint = Color.White)
+            DockOptionKind.Connection ->
+              Box(Modifier.size(size * 0.3f).clip(CircleShape).background(if (option.enabled) Color(0xFF8CDCB0) else Color(0xFFE8B86D)))
+          }
+        }
+        if (picked) {
+          // The label and the flick cue above the picked option.
+          Text(
+            if (pressing) "↑ ${option.label}" else option.label,
+            Modifier.offset(x = w * x - w * 0.15f, y = h * rowY - size / 2 - rise - h * 0.2f).width(w * 0.3f),
+            color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+            overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+          )
+        }
+      }
+      if (pressing) {
+        // The knob under the finger, on the row.
+        Box(Modifier.offset(x = w * fingerX - 4.dp, y = h * rowY + icon / 2 + 3.dp).size(8.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.8f)))
+      }
+      if (hint != null) {
+        Text(hint, Modifier.offset(y = h * bodyTop - h * 0.16f).fillMaxWidth(), color = Color(0xFFB9C5D8), fontSize = 10.sp,
+          textAlign = TextAlign.Center, maxLines = 1)
+      }
     }
   }
 }
 
-private fun dockTile(selected: Boolean): Modifier = Modifier.fillMaxHeight().clip(RoundedCornerShape(18.dp))
-  .background(if (selected) Color(0xFF2C4263) else Color.Transparent)
+
+
 
 @Composable
-private fun DockTile(label: String, modifier: Modifier, selected: Boolean = false, enabled: Boolean = true, icon: @Composable () -> Unit) {
-  Column(modifier.padding(horizontal = 5.dp, vertical = 5.dp), horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.Center) {
-    Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) { icon() }
-    Text(label, Modifier.padding(top = 4.dp), fontSize = 11.sp, fontWeight = FontWeight.Medium,
-      color = if (enabled) Color(0xFFE4EAF5) else Color(0xFF788497), maxLines = 1, overflow = TextOverflow.Ellipsis)
-    Box(Modifier.padding(top = 4.dp).size(4.dp).clip(CircleShape).background(if (selected) Color(0xFFA9C7FF) else Color.Transparent))
-  }
-}
-
-@Composable
-private fun DockDivider() = Box(Modifier.width(1.dp).height(36.dp).background(Color(0x30FFFFFF)))
-
-@Composable
-private fun TerminalGlyph() {
-  Canvas(Modifier.size(24.dp)) {
+private fun TerminalGlyph(modifier: Modifier = Modifier.size(24.dp)) {
+  Canvas(modifier) {
     val tint = Color(0xFFA9C7FF)
     val stroke = size.width * 0.065f
     drawRoundRect(tint, Offset(stroke, stroke * 2), Size(size.width - stroke * 2, size.height - stroke * 4), CornerRadius(stroke * 2), style = Stroke(stroke))
@@ -149,8 +178,8 @@ private fun TerminalGlyph() {
 }
 
 @Composable
-private fun KeyboardGlyph() {
-  Canvas(Modifier.size(24.dp)) {
+private fun KeyboardGlyph(modifier: Modifier = Modifier.size(24.dp)) {
+  Canvas(modifier) {
     val tint = Color(0xFFE4EAF5)
     val stroke = size.width * 0.06f
     drawRoundRect(tint, Offset(stroke, size.height * 0.18f), Size(size.width - stroke * 2, size.height * 0.64f), CornerRadius(stroke * 2), style = Stroke(stroke))

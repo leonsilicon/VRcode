@@ -24,7 +24,7 @@ class PieSelection(val menu: RadialMenu) {
   var highlighted: Int? = null
     private set
 
-  /** The highlighted item once the hand reaches it; the caller runs it at once. */
+  /** The highlighted item once the hand reaches it; eligible for hover dwell. */
   var reached: Int? = null
     private set
 

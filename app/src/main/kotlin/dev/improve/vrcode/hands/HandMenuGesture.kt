@@ -59,6 +59,13 @@ class HandMenuGesture {
   var down = false
     private set
 
+  /**
+   * This frame's own pinch reading, before the release grace. While it is off the fingers may be
+   * separating, which moves the pinch point, so the selection should hold still.
+   */
+  var pinchReading = false
+    private set
+
   private var needsRelease = false
   private var upSinceMs = NOT_UP
   private var lastTrackedMs = Long.MIN_VALUE / 2
@@ -75,6 +82,7 @@ class HandMenuGesture {
       source = MiddlePinch.Source.None
       if (down) needsRelease = true
       down = false
+      pinchReading = false
       upSinceMs = NOT_UP
       if (!open) return Event.None
       open = false
@@ -97,6 +105,7 @@ class HandMenuGesture {
     val wasDown = down
     // A new pinch must not be an index pinch; a held one only yields once the index takes over.
     val reading = !fist && MiddlePinch.down(frame, wasDown) && !(if (wasDown) indexTakesOver else indexPinch)
+    pinchReading = reading
     if (reading || !wasDown) upSinceMs = NOT_UP else if (upSinceMs == NOT_UP) upSinceMs = nowMs
     down = reading || (wasDown && nowMs - upSinceMs < RELEASE_GRACE_MS)
     progress = if (fist) 0f else MiddlePinch.progress(frame)

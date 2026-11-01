@@ -37,7 +37,9 @@ import dev.improve.xmux.window.frame.WindowChrome
 import java.util.Locale
 
 enum class SettingsPage(val title: String) { Workspace("Workspace"), Appearance("Appearance"), Customization("Customization"), Connection("Connection") }
-enum class CustomizationTab(val title: String) { Pointer("Pointer"), Microphone("Microphone") }
+enum class CustomizationTab(val title: String, val mic: VoiceMic? = null) {
+  Pointer("Pointer"), TextMic("Text mic", VoiceMic.Text), AiMic("AI mic", VoiceMic.Ai)
+}
 
 private val colors = darkColorScheme(
   primary = Color(0xFFA9C7FF),
@@ -170,7 +172,8 @@ fun SettingsPanel(
                   SettingsPage.Customization -> {
                     when (customizationTab) {
                       CustomizationTab.Pointer -> PointerCursorControls(settings, onChange)
-                      CustomizationTab.Microphone -> MicrophoneControls(settings, onChange)
+                      CustomizationTab.TextMic -> MicrophoneControls(VoiceMic.Text, settings, onChange)
+                      CustomizationTab.AiMic -> MicrophoneControls(VoiceMic.Ai, settings, onChange)
                     }
                   }
                   SettingsPage.Connection -> {
@@ -195,22 +198,23 @@ fun SettingsPanel(
 }
 
 @Composable
-private fun MicrophoneControls(settings: AppSettings, onChange: (AppSettings) -> Unit) {
-  Text("Microphone", style = MaterialTheme.typography.headlineSmall)
-  Text("Hold up your left hand to preview your voice prop. It stays attached while this tab is open, even with an open hand. Previewing does not record audio.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-  Text("Voice prop", style = MaterialTheme.typography.titleLarge)
+private fun MicrophoneControls(mic: VoiceMic, settings: AppSettings, onChange: (AppSettings) -> Unit) {
+  Text("${mic.label} · ${mic.hand.replaceFirstChar { it.uppercase() }} hand", style = MaterialTheme.typography.headlineSmall)
+  Text(mic.detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
+  Text("Hold up your ${mic.hand} hand to preview. Previewing does not record audio.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+  Text("Mic appearance", style = MaterialTheme.typography.titleLarge)
   Column(Modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
     for (row in VoiceProp.entries.chunked(2)) {
       Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         for (prop in row) {
-          VoicePropOption(prop, settings.voiceProp == prop, Modifier.weight(1f)) {
-            onChange(settings.copy(voiceProp = prop))
+          VoicePropOption(prop, mic.prop(settings) == prop, Modifier.weight(1f)) {
+            onChange(mic.withProp(settings, prop))
           }
         }
       }
     }
   }
-  Text("Same gesture, different personality. The listening indicator and transcript work with every prop.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+  Text("Changes only the ${mic.label.lowercase()}'s appearance. Each mic keeps its own selection.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable

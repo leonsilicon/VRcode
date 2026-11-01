@@ -64,3 +64,14 @@ test("cmux generator preserves catalog metadata, operation classes and external 
     expect(files["settings-ui/src/main/assets/cmux-catalog.LICENSE"]).toBe("fixture license\n");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("Mac LaunchAgent restarts the installed app copy with escaped arguments", async () => {
+  const { launchAgentPlist, LABEL } = await import("../run-mac-service");
+  const plist = launchAgentPlist("/Users/x/Library/Application Support/dev.improve.vrcode/VRcode Mac.app/Contents/MacOS/vrcode-mac", ["--cmux-session", "a&b<c>"], "/tmp/vrcode-mac.log");
+  expect(plist).toContain(`<key>Label</key><string>${LABEL}</string>`);
+  expect(plist).toContain("<key>RunAtLoad</key><true/>");
+  expect(plist).toContain("<key>KeepAlive</key><true/>");
+  expect(plist).toContain("<string>/Users/x/Library/Application Support/dev.improve.vrcode/VRcode Mac.app/Contents/MacOS/vrcode-mac</string>");
+  expect(plist).toContain("<string>a&amp;b&lt;c&gt;</string>");
+  expect(plist).not.toContain("mac/.build");
+});

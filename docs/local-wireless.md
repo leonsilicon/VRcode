@@ -18,6 +18,17 @@ Build and start the background Mac app (the bundle is necessary for macOS Blueto
 bun scripts/run-mac-service.ts --bluetooth
 ```
 
+For everyday use, install both Mac services so they start at login and restart if they exit:
+
+```sh
+bun run mac:install                                              # relay 7274 + speech 7273
+~/Developer/github/leonsilicon/xmux/target/debug/xmux-bridge service install --session main  # 7272
+```
+
+`mac:install` copies the packaged app out of `mac/.build`, so later rebuilds and tests never replace
+the running binary. Re-run it after rebuilding; `bun run mac:uninstall` removes it. Logs go to
+`~/Library/Logs/vrcode-mac.log` and `~/Library/Logs/xmux-bridge.log`.
+
 Keep the normal xmux bridge running as well. To add the relay alongside an already-running speech
 service, use `bun scripts/run-mac-service.ts --link-only --bluetooth` instead. Without `--link-only`,
 the service also starts speech on loopback port 7273. The relay listens on port 7274 and advertises
@@ -31,10 +42,13 @@ With the debug Quest app installed and an authorized ADB connection available:
 bun scripts/quest-link.ts pair
 ```
 
-In Quest Settings → Connection, choose **Import from connected Mac**. The helper copies the pairing
-configuration directly into the debug app's private storage, without printing the bearer key or
-using the clipboard. The app encrypts the saved configuration with Android Keystore, then deletes
-the import file. This provisioning path uses `run-as`, so release apps use the manual path below.
+The debug app imports the key automatically and connects: within about two seconds when it is
+running, otherwise at its next launch. **Import from connected Mac** in Settings → Connection does
+the same by hand. The helper copies the pairing configuration directly into the debug app's private
+storage (owner-only, renamed into place), without printing the bearer key or using the clipboard.
+The app encrypts the saved configuration with Android Keystore, then deletes the import file. Only
+the app itself or `run-as` from an ADB-authorized Mac can write that file, so release apps use the
+manual path below. The pairing survives `adb install -r`; uninstalling or clearing app data loses it.
 
 Alternatively run the built `vrcode-mac --link-info --link-host MAC_ADDRESS` and paste the resulting
 `vrcode:` connection key into the Quest's Mac connection key field, then Save Mac. The key contains
@@ -42,10 +56,34 @@ the host, port, certificate fingerprint, and a random 32-byte bearer secret. Tre
 share it only with the intended Quest. It stays stable across restarts. It is unrelated to the
 six-digit xmux terminal pairing code.
 
-Leave the selector at Automatic and press Connect. Network discovery can update a changing Mac
-address; you can also enter an address or choose a discovered Mac. If xmux asks for its own pairing,
-the terminal pairing code remains visible in the connection pane. Existing debug-only `address`
-intents remain available for legacy diagnostics; they are not the normal app connection path.
+Leave the selector at Automatic. Saving or importing a key connects immediately; afterwards the app
+connects on every launch while **Connect on launch** is on. You can also enter an address or choose
+a discovered Mac. If xmux asks for its own pairing, the terminal pairing code remains visible in the
+connection pane. Existing debug-only `address` intents remain available for legacy diagnostics;
+they are not the normal app connection path. A launch with `address` skips the relay at startup,
+but a key provisioned later by `quest-link pair` still switches the app to the relay.
+
+### How launch-time connection stays reliable
+
+- **Address candidates.** The key lists every Mac IPv4 address at pairing time (`hosts`). Network
+  routes try Bonjour results for the paired Mac, the last address that worked, the key's `host` and
+  the remaining `hosts`. Attempts start 300 ms apart and run concurrently; the first that passes
+  the certificate pin wins and becomes the remembered address. Explicit network modes put the
+  entered address first.
+- **Discovery by identity.** The Mac's Bonjour TXT record carries `fp=<certificate SHA-256>`, so a
+  renamed instance (`Mac (2)`) or another relay advertising the same name cannot hide or replace
+  the paired Mac. Adverts without `fp` (older Mac builds) still match by name. Bonjour does not cross
+  routed subnets (for example campus Wi-Fi where the Quest and Mac get different /19 networks); there
+  the remembered and listed addresses are what reconnects.
+- **Prompt retries.** Retries back off from one to five seconds indefinitely, but Wi-Fi becoming
+  available or the app resuming retries immediately and restarts discovery if it had stopped.
+- **Always-on Mac.** With `mac:install` and the xmux LaunchAgent, a reboot, logout or crash does not
+  leave the Quest waiting for a service that someone has to restart. The relay exits if its
+  listener fails (for example a port conflict) so launchd restarts it.
+
+If the Mac's address changes to one the key never listed, and Bonjour cannot reach it, the USB or
+Wi-Fi debugging routes still connect when their mappings exist. Otherwise run `quest-link pair`
+again; the running app picks up the new key without a tap.
 
 ## Modes
 

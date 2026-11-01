@@ -11,14 +11,14 @@ enum class VoiceProp(
   @DrawableRes val preview: Int,
 ) {
   Microphone("microphone", "Classic microphone", "A silver grille and cyan ring.", R.drawable.voice_prop_microphone),
-  NewsMicrophone("news-microphone", "News microphone", "You're live. Make headlines.", R.drawable.voice_prop_news_microphone),
+  NewsMicrophone("news-microphone", "News microphone", "An OpenAI logo on the cube.", R.drawable.voice_prop_news_microphone),
   Megaphone("megaphone", "Megaphone", "Make an announcement.", R.drawable.voice_prop_megaphone),
   Banana("banana", "Banana Phone", "Your daily serving of dictation.", R.drawable.voice_prop_banana);
 
   val assetPath: String get() = "voice-props/$storageValue.glb"
 
   companion object {
-    fun fromStorage(value: String?): VoiceProp =
-      if (value == "boombox") NewsMicrophone else entries.firstOrNull { it.storageValue == value } ?: Microphone
+    fun fromStorage(value: String?, fallback: VoiceProp = Microphone): VoiceProp =
+      if (value == "boombox") NewsMicrophone else entries.firstOrNull { it.storageValue == value } ?: fallback
   }
 }

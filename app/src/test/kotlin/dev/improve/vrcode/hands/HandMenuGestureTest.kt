@@ -86,6 +86,20 @@ class HandMenuGestureTest {
   private var clockMs = 0L
   private fun HandMenuGesture.step(frame: HandAim.Frame?, afterMs: Long = 14L) = update(frame, clockMs.also { clockMs += afterMs })
 
+  /** Feeds [frame] every 14 ms until an event other than None, or [maxMs]; returns it and the time it took. */
+  private fun HandMenuGesture.hold(frame: HandAim.Frame, maxMs: Long = 500L): Pair<Event, Long> {
+    val start = clockMs
+    while (clockMs - start <= maxMs) {
+      val at = clockMs
+      val event = step(frame)
+      if (event != Event.None) return event to at - start
+    }
+    return Event.None to clockMs - start
+  }
+
+  /** Releases for long enough to count (see [HandMenuGesture.RELEASE_GRACE_MS]). */
+  private fun HandMenuGesture.release(f: HandAim.Frame = frame(middle = 0f)): Event = hold(f).first
+
   @Test
   fun thePalmNormalComesFromThePalmJointForEitherHand() {
     val toUser = PalmShape.normal(palmToUser)
@@ -106,7 +120,9 @@ class HandMenuGestureTest {
     assertEquals(MiddlePinch.Source.Runtime, g.source)
     // A one-frame dropout of the discrete signal with the strength still high keeps it held.
     assertEquals(Event.None, g.step(frame(middle = 0.8f)))
-    assertEquals(Event.Released, g.step(frame(middle = 0.2f)))
+    val (event, tookMs) = g.hold(frame(middle = 0.2f))
+    assertEquals(Event.Released, event)
+    assertTrue(tookMs >= HandMenuGesture.RELEASE_GRACE_MS)
     assertFalse(g.open)
   }
 
@@ -146,17 +162,71 @@ class HandMenuGestureTest {
     // Tip radii 8 mm each: surfaces touch at 16 mm, plus 6 mm slack to start.
     assertEquals(Event.Opened, g.step(frame(joints = joints(middleGapM = 0.02f), flags = withheld)))
     assertEquals(Event.None, g.step(frame(joints = joints(middleGapM = 0.03f), flags = withheld))) // release slack holds
-    assertEquals(Event.Released, g.step(frame(joints = joints(middleGapM = 0.045f), flags = withheld)))
+    assertEquals(Event.Released, g.release(frame(joints = joints(middleGapM = 0.045f), flags = withheld)))
   }
 
   @Test
-  fun aDominantIndexPinchCancelsAndNeedsAFreshPinch() {
+  fun anIndexPinchThatTakesOverCancelsAndNeedsAFreshPinch() {
     val g = HandMenuGesture()
     g.step(frame())
     g.step(frame(flags = pinch, middle = 1f))
-    assertEquals(Event.Cancelled, g.step(frame(flags = pinch or INDEX_PINCHING, middle = 0.6f, index = 1f)))
+    val indexOnly = frame(flags = AIM_VALID or INDEX_PINCHING, middle = 0.6f, index = 1f)
+    // One frame of it is a tracking flicker while the hand moves, not a change of pinch.
+    assertEquals(Event.None, g.step(indexOnly))
     assertEquals(Event.None, g.step(frame(flags = pinch, middle = 1f)))
-    g.step(frame(middle = 0.1f))
+    assertTrue(g.open)
+    val (event, tookMs) = g.hold(indexOnly)
+    assertEquals(Event.Cancelled, event)
+    assertEquals(HandMenuGesture.CancelReason.IndexPinch, g.cancelReason)
+    assertTrue(tookMs >= HandMenuGesture.RELEASE_GRACE_MS)
+    assertEquals(Event.None, g.release())
+    assertEquals(Event.Opened, g.step(frame(flags = pinch, middle = 1f)))
+  }
+
+  @Test
+  fun bothFingersReadingAsPinchedKeepsTheMenuOpen() {
+    val g = HandMenuGesture()
+    g.step(frame())
+    g.step(frame(flags = pinch, middle = 1f))
+    // The index sits beside the middle finger: a middle pinch can saturate both strengths.
+    assertEquals(Event.None, g.hold(frame(flags = pinch or INDEX_PINCHING, middle = 1f, index = 1f), maxMs = 300L).first)
+    assertTrue(g.open)
+  }
+
+  @Test
+  fun briefPinchDropoutsWhileMovingDoNotEndTheMenu() {
+    val g = HandMenuGesture()
+    g.step(frame())
+    g.step(frame(flags = pinch, middle = 1f))
+    repeat(4) {
+      // ~40 ms of the runtime losing the pinch, then ~40 ms of it back: hand motion does this.
+      repeat(3) { assertEquals(Event.None, g.step(frame(middle = 0.1f))) }
+      // Still open, but the reading is off: the selection holds still meanwhile.
+      assertTrue(g.open)
+      assertFalse(g.pinchReading)
+      repeat(3) { assertEquals(Event.None, g.step(frame(flags = pinch, middle = 1f))) }
+      assertTrue(g.pinchReading)
+    }
+    assertTrue(g.open)
+    assertEquals(Event.Released, g.release())
+  }
+
+  @Test
+  fun afterAnItemRunsTheHintStaysHiddenAndAFlickerDoesNotReopen() {
+    val g = HandMenuGesture()
+    g.step(frame())
+    g.step(frame(flags = pinch, middle = 1f))
+    g.cancel() // the hand reached an item, which ran; the pinch is still held
+    assertEquals(Event.None, g.step(frame(flags = pinch, middle = 1f)))
+    assertFalse(g.hint)
+    // A one-frame dropout of the still-held pinch neither re-arms nor reopens the menu.
+    assertEquals(Event.None, g.step(frame(middle = 0.1f)))
+    assertEquals(Event.None, g.step(frame(flags = pinch, middle = 1f)))
+    assertFalse(g.open)
+    assertFalse(g.hint)
+    g.release()
+    g.step(frame(middle = 0f))
+    assertTrue(g.hint)
     assertEquals(Event.Opened, g.step(frame(flags = pinch, middle = 1f)))
   }
 
@@ -179,6 +249,15 @@ class HandMenuGestureTest {
   }
 
   @Test
+  fun closingIntoAFistCancelsInsteadOfPicking() {
+    val g = HandMenuGesture()
+    g.step(frame())
+    g.step(frame(flags = pinch, middle = 1f))
+    assertEquals(Event.Cancelled, g.hold(frame(joints = fist(), flags = pinch, middle = 1f)).first)
+    assertEquals(HandMenuGesture.CancelReason.Fist, g.cancelReason)
+  }
+
+  @Test
   fun aSingleDroppedFrameDoesNotCloseTheMenu() {
     val g = HandMenuGesture()
     g.step(frame())
@@ -186,7 +265,7 @@ class HandMenuGestureTest {
     repeat(3) { assertEquals(Event.None, g.step(null)) } // ~40 ms: the runtime drops frames like this
     assertTrue(g.open)
     assertEquals(Event.None, g.step(frame(flags = pinch, middle = 1f)))
-    assertEquals(Event.Released, g.step(frame(middle = 0f)))
+    assertEquals(Event.Released, g.release())
   }
 
   @Test
@@ -196,9 +275,10 @@ class HandMenuGestureTest {
     g.step(frame(flags = pinch, middle = 1f))
     g.step(null, afterMs = HandMenuGesture.TRACKING_GAP_MS)
     assertEquals(Event.Cancelled, g.step(null))
+    assertEquals(HandMenuGesture.CancelReason.TrackingLost, g.cancelReason)
     assertFalse(g.open)
     assertEquals(Event.None, g.step(frame(flags = pinch, middle = 1f)))
-    g.step(frame(middle = 0f))
+    assertEquals(Event.None, g.release())
     assertEquals(Event.Opened, g.step(frame(flags = pinch, middle = 1f)))
   }
 
@@ -231,7 +311,7 @@ class HandMenuGestureTest {
     g.cancel() // e.g. the hand moved onto an item, which ran
     assertFalse(g.open)
     assertEquals(Event.None, g.step(frame(flags = pinch, middle = 1f)))
-    assertEquals(Event.None, g.step(frame(middle = 0f)))
+    assertEquals(Event.None, g.release())
     assertEquals(Event.Opened, g.step(frame(flags = pinch, middle = 1f)))
   }
 }
