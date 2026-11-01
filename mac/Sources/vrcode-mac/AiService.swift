@@ -1,8 +1,9 @@
 import Foundation
 import Security
 
-/// The model providers the left-fist "speak to the AI" mode can use. The headset picks one in
-/// Settings and names it in each AI_REQUEST (`provider`); the news mic's flag shows its logo.
+/// The model providers the left-fist "speak to the AI" mode can use. The headset picks one and one
+/// of its [models] in Settings and names both in each AI_REQUEST (`provider`, `model`); the news
+/// mic's flag shows the provider's logo.
 enum AiProvider: String, CaseIterable {
   case claude, openai, gemini
 
@@ -14,13 +15,28 @@ enum AiProvider: String, CaseIterable {
     }
   }
 
-  /// Each provider's model, chosen for short, latency-sensitive output at low effort.
-  var model: String {
+  /// The models the headset's Settings offer (`AiModel` in settings-ui's AiProvider.kt lists the
+  /// same ids). All run at low effort for short, latency-sensitive output.
+  var models: [String] {
     switch self {
-    case .claude: return "claude-opus-5-5"
+    case .claude: return ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]
+    case .openai: return ["gpt-6-luna", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra"]
+    case .gemini: return ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-4-argon"]
+    }
+  }
+
+  /// The model used when a request names none (an older headset build) or one not in [models].
+  var defaultModel: String {
+    switch self {
+    case .claude: return "claude-sonnet-5-5"
     case .openai: return "gpt-6.1-sol"
     case .gemini: return "gemini-3.8-flash"
     }
+  }
+
+  /// [requested] when this provider offers it, else [defaultModel].
+  func model(_ requested: String?) -> String {
+    requested.flatMap { models.contains($0) ? $0 : nil } ?? defaultModel
   }
 
   /// The Keychain item's account (service `dev.improve.vrcode`) and the matching file name in
@@ -54,10 +70,11 @@ enum AiProvider: String, CaseIterable {
   static func from(_ value: String?) -> AiProvider { value.flatMap(AiProvider.init(rawValue:)) ?? .claude }
 }
 
-/// The left-fist "speak to the AI" mode: turns what the user said into the exact text to type into
-/// one terminal pane, using that pane's screen as context. Calls the chosen provider's API over raw
-/// HTTP (no official Swift SDKs). The headset stages the result for review; nothing here types into
-/// a terminal.
+/// The left-fist "speak to the AI" mode: turns what the user said into the keystrokes to send to
+/// one terminal pane (text and key presses such as Enter or Ctrl-C, see [AiKeystroke]), using that
+/// pane's visible screen and cursor as context. The model decides whether to press Enter. Calls the
+/// chosen provider's API over raw HTTP (no official Swift SDKs). The headset types the result;
+/// nothing here types into a terminal.
 ///
 /// Each provider's API key comes from the macOS Keychain (generic password, service
 /// `dev.improve.vrcode`, account [AiProvider.keyAccount]), else its environment variable (for `swift
@@ -70,60 +87,109 @@ enum AiService {
   }
 
   private static let system = """
-    You turn a developer's spoken request into the exact text to type into one terminal pane. They \
-    are in VR, speaking instead of typing. You get the pane's visible screen and a transcript of what \
-    they said; speech recognition may mishear technical words, so correct them using the screen and \
-    common developer vocabulary.
+    You turn a developer's spoken request into the keystrokes to send to one terminal pane. They are \
+    in VR, speaking instead of typing. You get everything currently on the pane's screen, the line \
+    the cursor is on (▮ marks the cursor), and a transcript of what they said; speech recognition may \
+    mishear technical words, so correct them using the screen and common developer vocabulary.
 
-    - If the pane shows a shell prompt, reply with one shell command (a short pipeline is fine) that \
-    does what they asked. Use the screen for paths, branch names, file names and earlier commands.
-    - If the pane shows a coding agent (Claude Code, Codex or similar) or another program waiting for \
-    text, reply with the text to send it. For an agent, write a clear prompt that keeps everything \
-    they asked for and nothing they didn't.
-    - If they are clearly dictating literal text, return that text, fixing only recognition errors.
+    Work out what the pane is showing and send what does what they asked there:
+    - A shell prompt: one shell command (a short pipeline is fine). Use the screen for paths, branch \
+    names, file names and earlier commands.
+    - A coding agent (Claude Code, Codex or similar) waiting for input: a clear prompt that keeps \
+    everything they asked for and nothing they didn't.
+    - A menu, permission or yes/no question, pager, editor or other full-screen program: the keys \
+    that answer or navigate it (an option's number or letter, arrows, y, q, escape, ...).
+    - A running command they want stopped: ctrl+c.
+    - Literal dictation ("type ..."): that text, fixing only recognition errors.
+    If text is already typed at the cursor and they want something else, clear it first (ctrl+u at a \
+    shell prompt).
 
-    Reply with only the text to type: no explanation, quotes or code fences, and no trailing newline \
-    (the user reviews it and presses Enter themselves). Latency-sensitive: begin your visible answer \
+    You decide whether to press Enter. Press it when they want the command run, the prompt sent or \
+    the question answered, which is the usual case. Leave it off when they said to just type, write \
+    or prepare it, or when the command deletes files or data, force-pushes, or is otherwise hard to \
+    undo and they did not clearly ask to run it: then it waits at the prompt for them to check.
+
+    Reply with only a JSON array of steps, in order: no explanation or code fences. A step is \
+    {"text": "..."}, typed exactly as given, or {"key": "..."}, one key press: enter, tab, backtab, \
+    escape, backspace, delete, up, down, left, right, home, end, pageup, pagedown, space, f1 to f24, \
+    or a letter, digit or punctuation key, optionally with ctrl+, alt+ or shift+ (ctrl+c, ctrl+u, \
+    alt+left). Text never contains a line break; Enter is always its own key step. For example \
+    [{"text": "git status"}, {"key": "enter"}]. Latency-sensitive: begin your visible answer \
     immediately.
     """
 
-  /// The text to type for [transcript], given the pane's [screen] text and window [title].
-  static func complete(provider: AiProvider, transcript: String, screen: String, title: String) async throws -> String {
+  /// What the AI sees of the target pane: everything on its screen (one line per row, top to
+  /// bottom), its window title, and the cursor's row (an index into [screen]'s lines) and column
+  /// (in cells) when it is visible.
+  struct Pane {
+    var screen: String
+    var title: String
+    var cursorRow: Int?
+    var cursorCol: Int = 0
+  }
+
+  /// The keystrokes to send for [transcript], given the target [pane], from [model] (one of
+  /// [provider]'s [AiProvider.models]).
+  static func complete(provider: AiProvider, model: String, transcript: String, pane: Pane) async throws -> [AiKeystroke] {
     guard let key = apiKey(provider) else {
       throw Failure(description: "\(provider.label) is off: add \(provider.keyName) in VRcode Mac (Keychain item dev.improve.vrcode / \(provider.keyAccount))")
     }
-    var user = "<pane title=\"\(title.replacingOccurrences(of: "\"", with: "'"))\">\n\(screen)\n</pane>\n\n"
-    user += "<transcript>\(transcript)</transcript>"
+    let user = prompt(transcript: transcript, pane: pane)
     let text: String
     switch provider {
-    case .claude: text = try await claude(key: key, user: user)
-    case .openai: text = try await openai(key: key, user: user)
-    case .gemini: text = try await gemini(key: key, user: user)
+    case .claude: text = try await claude(key: key, model: model, user: user)
+    case .openai: text = try await openai(key: key, model: model, user: user)
+    case .gemini: text = try await gemini(key: key, model: model, user: user)
     }
-    let cleaned = stripFences(text).trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !cleaned.isEmpty else { throw Failure(description: "\(provider.label) returned nothing") }
-    return cleaned
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw Failure(description: "\(provider.label) returned nothing") }
+    let steps = try AiKeystroke.parse(text)
+    guard !steps.isEmpty else { throw Failure(description: "\(provider.label) found nothing to type") }
+    return steps
+  }
+
+  /// The user turn: the pane's screen, its cursor line with ▮ at the cursor, and the transcript.
+  static func prompt(transcript: String, pane: Pane) -> String {
+    var user = "<pane title=\"\(pane.title.replacingOccurrences(of: "\"", with: "'"))\">\n\(pane.screen)\n</pane>\n\n"
+    if let line = cursorLine(pane) { user += "<cursor_line>\(line)</cursor_line>\n\n" }
+    user += "<transcript>\(transcript)</transcript>"
+    return user
+  }
+
+  /// The screen line the cursor is on with ▮ inserted at the cursor (padding a short line with
+  /// spaces); nil when the cursor is hidden or off the screen text.
+  static func cursorLine(_ pane: Pane) -> String? {
+    guard let row = pane.cursorRow, row >= 0 else { return nil }
+    let lines = pane.screen.components(separatedBy: "\n")
+    // The headset drops blank rows below the cursor, so a cursor just past the text is on a blank line.
+    guard row <= lines.count else { return nil }
+    var line = Array(row < lines.count ? lines[row] : "")
+    let col = max(0, pane.cursorCol)
+    if line.count < col { line += Array(repeating: " ", count: col - line.count) }
+    line.insert("▮", at: col)
+    return String(line)
   }
 
   // MARK: Providers
 
   /// Claude Messages API.
-  private static func claude(key: String, user: String) async throws -> String {
-    let body: [String: Any] = [
-      "model": AiProvider.claude.model,
+  private static func claude(key: String, model: String, user: String) async throws -> String {
+    var body: [String: Any] = [
+      "model": model,
       "max_tokens": 2048,
-      // Short, latency-sensitive output: thinking can't be disabled on Claude Opus 5.5; low effort keeps it brief.
+      // Short, latency-sensitive output. Thinking is adaptive and stays on (these models reject
+      // disabling it); low effort keeps it brief.
       "output_config": ["effort": "low"],
-      // A safety-classifier decline is retried server-side on the model Anthropic recommends.
-      "fallbacks": "default",
       "system": system,
       "messages": [["role": "user", "content": user]],
     ]
-    let json = try await post(.claude, "https://api.anthropic.com/v1/messages", body: body, headers: [
-      "x-api-key": key,
-      "anthropic-version": "2026-10-21",
-      "anthropic-beta": "server-side-fallback-2026-07-01",
-    ])
+    var headers = ["x-api-key": key, "anthropic-version": "2026-10-21"]
+    // A safety-classifier decline is retried server-side on the model Anthropic recommends. Claude
+    // Haiku 5.5 has no server-side fallback, so its declines just come back as a refusal.
+    if model != "claude-haiku-5-5" {
+      body["fallbacks"] = "default"
+      headers["anthropic-beta"] = "server-side-fallback-2026-07-01"
+    }
+    let json = try await post(.claude, "https://api.anthropic.com/v1/messages", body: body, headers: headers)
     // A decline arrives as HTTP 200 with stop_reason "refusal": check before reading content.
     if json["stop_reason"] as? String == "refusal" {
       throw Failure(description: "Claude declined this request; paste what you said instead")
@@ -133,9 +199,9 @@ enum AiService {
   }
 
   /// OpenAI Responses API.
-  private static func openai(key: String, user: String) async throws -> String {
+  private static func openai(key: String, model: String, user: String) async throws -> String {
     let body: [String: Any] = [
-      "model": AiProvider.openai.model,
+      "model": model,
       "instructions": system,
       "input": user,
       "reasoning": ["effort": "low"],
@@ -157,14 +223,14 @@ enum AiService {
     return text
   }
 
-  /// Gemini generateContent API.
-  private static func gemini(key: String, user: String) async throws -> String {
+  /// Gemini generateContent API. Every offered model accepts the `low` thinking level.
+  private static func gemini(key: String, model: String, user: String) async throws -> String {
     let body: [String: Any] = [
       "system_instruction": ["parts": [["text": system]]],
       "contents": [["role": "user", "parts": [["text": user]]]],
       "generationConfig": ["maxOutputTokens": 2048, "thinkingConfig": ["thinkingLevel": "low"]],
     ]
-    let url = "https://generativelanguage.googleapis.com/v1beta/models/\(AiProvider.gemini.model):generateContent"
+    let url = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent"
     let json = try await post(.gemini, url, body: body, headers: ["x-goog-api-key": key])
     if let blocked = (json["promptFeedback"] as? [String: Any])?["blockReason"] as? String {
       throw Failure(description: "Gemini declined this request (\(blocked)); paste what you said instead")

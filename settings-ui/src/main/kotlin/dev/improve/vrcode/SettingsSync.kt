@@ -21,9 +21,14 @@ object SettingsSync {
       "window_distance_m" to s.windowDistanceM,
       "auto_connect" to s.autoConnect,
       "window_style" to s.windowStyle.storageValue,
+      "window_opacity" to s.windowOpacity,
       "text_mic_prop" to s.textMicProp.storageValue,
       "ai_mic_prop" to s.aiMicProp.storageValue,
       "ai_provider" to s.aiProvider.storageValue,
+      AiProvider.Claude.modelKey to s.claudeModel.id,
+      AiProvider.ChatGpt.modelKey to s.chatGptModel.id,
+      AiProvider.Gemini.modelKey to s.geminiModel.id,
+      "ai_thinking" to s.aiThinking.storageValue,
       "terminal_theme" to s.terminalTheme.storageValue,
       "terminal_font_size" to s.terminalFontSize,
       "terminal_cursor" to s.terminalCursor.storageValue,
@@ -32,6 +37,7 @@ object SettingsSync {
       "default_terminal_rows" to s.defaultTerminalSize.rows,
       "pointer_cursor" to s.pointerCursor.storageValue,
       "pointer_cursor_size" to s.pointerCursorSize,
+      "quick_inputs" to s.quickInputs.storageValues,
     )
   }
 
@@ -46,9 +52,12 @@ object SettingsSync {
     float("window_distance_m")?.let { s = s.copy(windowDistanceM = it) }
     bool("auto_connect")?.let { s = s.copy(autoConnect = it) }
     enum("window_style", WindowStyle.entries) { it.storageValue }?.let { s = s.copy(windowStyle = it) }
+    float("window_opacity")?.let { s = s.copy(windowOpacity = it) }
     enum("text_mic_prop", VoiceProp.entries) { it.storageValue }?.let { s = s.copy(textMicProp = it) }
     enum("ai_mic_prop", VoiceProp.entries) { it.storageValue }?.let { s = s.copy(aiMicProp = it) }
     enum("ai_provider", AiProvider.entries) { it.storageValue }?.let { s = s.copy(aiProvider = it) }
+    for (provider in AiProvider.entries) enum(provider.modelKey, provider.models) { it.id }?.let { s = s.withAiModel(it) }
+    enum("ai_thinking", AiThinking.entries) { it.storageValue }?.let { s = s.copy(aiThinking = it) }
     enum("terminal_theme", TerminalTheme.entries) { it.storageValue }?.let { s = s.copy(terminalTheme = it) }
     float("terminal_font_size")?.let { s = s.copy(terminalFontSize = it.roundToInt().toFloat()) }
     enum("terminal_cursor", TerminalCursor.entries) { it.storageValue }?.let { s = s.copy(terminalCursor = it) }
@@ -57,6 +66,10 @@ object SettingsSync {
     int("default_terminal_rows")?.let { s = s.copy(defaultTerminalSize = s.defaultTerminalSize.copy(rows = it)) }
     enum("pointer_cursor", PointerCursorStyle.entries) { it.storageValue }?.let { s = s.copy(pointerCursor = it) }
     float("pointer_cursor_size")?.let { s = s.copy(pointerCursorSize = it) }
+    // Eight entries, clockwise from the top, "" where empty; anything else is ignored.
+    (values["quick_inputs"] as? List<*>)?.takeIf { it.size == QuickInputSlot.entries.size }?.let { list ->
+      s = s.copy(quickInputs = QuickInputRing.fromStorageValues(list.map { it as? String }))
+    }
     return s.sanitized()
   }
 
@@ -69,6 +82,17 @@ object SettingsSync {
     item("slider", "key" to key, "label" to label, "min" to min, "max" to max, "step" to step, "unit" to unit, "decimals" to decimals, "scale" to scale)
   private fun hex(color: Long) = String.format(Locale.US, "#%06X", color and 0xFFFFFF)
 
+  /** The left index-pinch ring: one input (or nothing) per direction, as [QuickInputControls] shows it. */
+  private fun quickInputSections(): List<Map<String, Any?>> = listOf(
+    section(QUICK_INPUTS_TITLE, listOf(
+      item("quick_inputs", "key" to "quick_inputs",
+        "slots" to QuickInputSlot.entries.map { linkedMapOf("id" to it.name, "label" to it.label) },
+        "options" to QuickInput.entries.map { option(it.storageValue, it.label, it.detail) }),
+      item("note", "text" to QUICK_INPUTS_NOTE),
+      item("reset", "label" to "Restore default quick inputs", "values" to mapOf("quick_inputs" to QuickInputRing.Default.storageValues)),
+    ), detail = QUICK_INPUTS_DETAIL, tab = CustomizationTab.QuickInputs.name),
+  )
+
   private fun micSections(mic: VoiceMic, key: String): List<Map<String, Any?>> {
     val tab = if (mic == VoiceMic.Text) CustomizationTab.TextMic else CustomizationTab.AiMic
     val intro = section("${mic.label} · ${mic.hand.replaceFirstChar { it.uppercase() }} hand", listOf(
@@ -77,8 +101,14 @@ object SettingsSync {
     ), tab = tab.name)
     val provider = if (mic != VoiceMic.Ai) null else section("AI provider", listOf(
       item("choice", "key" to "ai_provider", "options" to AiProvider.entries.map { option(it.storageValue, it.label, it.company) }),
+      // One model choice per provider, each shown only while its provider is selected.
+      *AiProvider.entries.map { ai ->
+        item("choice", "key" to ai.modelKey, "label" to "Model", "options" to ai.models.map { option(it.id, it.label, it.detail) },
+          "shownWhen" to mapOf("ai_provider" to ai.storageValue))
+      }.toTypedArray(),
+      item("choice", "key" to "ai_thinking", "label" to "Thinking", "options" to AiThinking.entries.map { option(it.storageValue, it.label, it.detail) }),
       item("api_key", "providerKey" to "ai_provider"),
-      item("note", "text" to "Your Mac sends what you say to the chosen provider, using its API key on this Mac. The news microphone shows its logo."),
+      item("note", "text" to "With thinking on, your Mac runs the provider's agent (Claude Code, Codex or Gemini CLI, signed in with its own login) in the pane's folder: it reads your project, never changes it, and its keystrokes run in your terminal. A quick answer uses the provider's API key on this Mac instead. The news microphone shows the provider's logo."),
     ), tab = tab.name)
     val look = section("Mic appearance", listOf(
       item("choice", "key" to key, "options" to VoiceProp.entries.map { option(it.storageValue, it.label, it.detail) }),
@@ -114,8 +144,12 @@ object SettingsSync {
           )),
         )
         SettingsPage.Appearance -> listOf(
-          section("Window style", listOf(item("choice", "key" to "window_style", "options" to WindowStyle.entries.map { option(it.storageValue, it.label, it.detail) })),
-            detail = "Choose the look of your terminal windows. Applies to open and new windows."),
+          section("Window style", listOf(
+            item("choice", "key" to "window_style", "options" to WindowStyle.entries.map { option(it.storageValue, it.label, it.detail) }),
+            slider("window_opacity", "Window opacity", AppSettings.MIN_WINDOW_OPACITY, AppSettings.MAX_WINDOW_OPACITY,
+              AppSettings.WINDOW_OPACITY_STEP, "%", scale = 100),
+            item("note", "text" to WINDOW_OPACITY_NOTE),
+          ), detail = "Choose the look of your terminal windows. Applies to open and new windows."),
           section("Terminal", listOf(
             item("choice", "key" to "terminal_theme", "label" to "Color theme", "options" to TerminalTheme.entries.map {
               option(it.storageValue, it.label, it.detail, mapOf("colors" to mapOf("background" to hex(it.background), "foreground" to hex(it.foreground), "accent" to hex(it.accent))))
@@ -133,7 +167,7 @@ object SettingsSync {
             slider("pointer_cursor_size", "Pointer size", AppSettings.MIN_POINTER_SIZE, AppSettings.MAX_POINTER_SIZE, 0.25f, "%", scale = 100)
               .apply { put("hiddenWhen", mapOf("pointer_cursor" to PointerCursorStyle.None.storageValue)) },
           ), detail = "Choose the cursor where your right hand points. Pinch to click and drag with any option.", tab = CustomizationTab.Pointer.name),
-        ) + micSections(VoiceMic.Text, "text_mic_prop") + micSections(VoiceMic.Ai, "ai_mic_prop")
+        ) + micSections(VoiceMic.Text, "text_mic_prop") + micSections(VoiceMic.Ai, "ai_mic_prop") + quickInputSections()
         SettingsPage.Connection -> listOf(
           section("Your Mac", listOf(item("toggle", "key" to "auto_connect", "label" to "Connect on launch", "detail" to "Reconnect to your Mac when VRcode starts."))),
         )

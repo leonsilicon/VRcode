@@ -94,9 +94,9 @@ sealed class FingerPinch(
   /** Midway between the thumb tip and this fingertip, in the joints' space. */
   fun point(joints: FloatArray): FloatArray = PalmShape.pinchPoint(joints, tip)
 
-  /** Where a hint for this finger sits: [aboveM] beyond its tip and [outM] off the palm. */
-  fun hintPoint(joints: FloatArray, palm: FloatArray, aboveM: Float, outM: Float): FloatArray =
-    PalmShape.aboveTip(joints, palm, tip, aboveM, outM)
+  /** Where a hint for this finger sits: on its pad, [backM] back from its tip and [outM] off the palm. */
+  fun hintPoint(joints: FloatArray, palm: FloatArray, backM: Float, outM: Float): FloatArray =
+    PalmShape.onFingertip(joints, palm, tip, backM, outM)
 
   companion object {
     /** Pinch strength that keeps an already-held pinch down when the discrete signal drops. */

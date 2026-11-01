@@ -9,7 +9,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Flicking up on a window in the dock brings that window to just above the dock, gliding there over
+ * Touching a window in the dock brings that window to just above the dock, gliding there over
  * [durationMs] so the user sees where it came from. One recall runs at a time; the window keeps its
  * own Fixed/Follow mode afterwards (the caller re-anchors it each frame).
  */

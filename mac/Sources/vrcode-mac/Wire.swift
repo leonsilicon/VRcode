@@ -20,6 +20,10 @@ enum Kind: UInt8 {
   case settingsSet = 14
   /// VRcode Mac app -> Mac -> Quest: `{"action":"arrange_windows"}`.
   case settingsAction = 15
+  /// Mac -> Quest, while an agent AI_REQUEST runs: `{"kind":"status"|"thinking"|"step","text":…}`.
+  case aiProgress = 16
+  /// Quest -> Mac: stop the agent running for this AI_REQUEST id (no reply).
+  case aiCancel = 17
 }
 
 let protocolVersion: UInt16 = 1

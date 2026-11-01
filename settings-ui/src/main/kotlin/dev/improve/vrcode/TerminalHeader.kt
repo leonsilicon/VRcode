@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -60,10 +61,27 @@ fun windowOutline(focused: Boolean, theme: TerminalTheme): BorderStroke =
 
 const val FOCUSED_OUTLINE_DP = 3
 
+/** Title text of an unfocused window, as a fraction of the focused title's opacity. */
+const val INACTIVE_TITLE_ALPHA = 0.5f
+
+/** Header slot content (toolbar buttons) and the spinner of an unfocused window. */
+const val INACTIVE_TOOLBAR_ALPHA = 0.5f
+
 /**
- * The style is read during composition so existing panels update without being remounted. An
- * unfocused window's traffic lights turn gray like an inactive Mac window's, regaining their color
- * while hovered.
+ * The style is read during composition so existing panels update without being remounted.
+ *
+ * An unfocused window looks like an inactive Mac window: gray traffic lights that regain their color
+ * while hovered, a dimmed title and toolbar, and a title bar flattened toward the body color. Windows
+ * style dims its title and controls the same way. [badge] is status that must stay readable on any
+ * window (where voice is about to type, for instance), so it is never dimmed.
+ *
+ * [onActivate] runs when the title bar is pressed outside a button that takes the press, which
+ * brings a background window forward the way clicking a Mac title bar does.
+ *
+ * A spinner at the top right, level with the traffic lights, shows while the window is attaching
+ * ([TerminalWindowState.loading]) or while the link to the Mac lags ([lagging]), so slow keys and
+ * output have a visible cause. It is never dimmed, and its place is always reserved, so the header's
+ * buttons do not move under the ray when it appears.
  */
 @Composable
 fun VrcodeWindowHeader(
@@ -74,7 +92,17 @@ fun VrcodeWindowHeader(
   fullscreen: Boolean = false,
   hoverState: TerminalHeaderHover? = null,
   focused: Boolean = true,
+  badge: @Composable () -> Unit = {},
+  onActivate: (() -> Unit)? = null,
+  lagging: Boolean = false,
 ) {
+  // Observes the press without consuming it, so the drag below still sees it.
+  val activateModifier = if (onActivate == null) Modifier else Modifier.pointerInput(onActivate) {
+    awaitEachGesture {
+      awaitFirstDown()
+      onActivate()
+    }
+  }
   val dragModifier = if (onDrag == null) Modifier else Modifier.pointerInput(onDrag) {
     awaitEachGesture {
       // Child buttons consume their down event first; a press on them never starts a move.
@@ -89,73 +117,113 @@ fun VrcodeWindowHeader(
       }
     }
   }
-  Box(Modifier.fillMaxWidth().then(dragModifier).testTag("vrcode-title-bar")) {
+  Box(Modifier.fillMaxWidth().then(activateModifier).then(dragModifier).testTag("vrcode-title-bar")) {
     when (style) {
-      WindowStyle.MacOS -> MacOSHeader(state, chrome, fullscreen, hoverState, focused)
-      WindowStyle.Windows -> WindowsHeader(state, chrome, fullscreen)
+      WindowStyle.MacOS -> MacOSHeader(state, chrome, fullscreen, hoverState, focused, badge, lagging)
+      WindowStyle.Windows -> WindowsHeader(state, chrome, fullscreen, focused, badge, lagging)
     }
   }
 }
 
-/** Reserve room for actions so long titles cannot cover the mode toggle or settings. */
+/** An inactive Mac title bar loses its contrast with the window body. */
+private fun headerColor(chrome: WindowChrome, focused: Boolean): Color =
+  if (focused) Color(chrome.headerColor) else lerp(Color(chrome.headerColor), Color(chrome.bodyColor), 0.5f)
+
+private fun titleColor(chrome: WindowChrome, focused: Boolean): Color =
+  Color(chrome.titleColor).let { if (focused) it else it.copy(alpha = it.alpha * INACTIVE_TITLE_ALPHA) }
+
+/** Diameter of the header's status spinner; its place is reserved whether or not it shows. */
+const val STATUS_SPINNER_DP = 22
+
+/** Attaching or a lagging link: the spinner at the header's right end. */
 @Composable
-private fun MacOSHeader(state: TerminalWindowState, chrome: WindowChrome, fullscreen: Boolean, hoverState: TerminalHeaderHover?, focused: Boolean) {
-  // The inactive gray sits between the header and title colors, so it reads on light and dark themes.
-  val inactive = if (focused) null else lerp(Color(chrome.headerColor), Color(chrome.titleColor), 0.32f)
-  Row(
-    Modifier.fillMaxWidth().height(chrome.headerHeightDp.dp)
-      .background(Color(chrome.headerColor)).padding(horizontal = 16.dp).testTag("xmux-header"),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    Row(
-      Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.25f))
-        .border(1.dp, Color.White.copy(alpha = 0.09f), CircleShape)
-        .padding(horizontal = 4.dp, vertical = 2.dp).testTag("vrcode-traffic-lights"),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      TrafficLight(0xFFFF5F57, "Close", "xmux-close", chrome.onClose, hoverState, inactive)
-      TrafficLight(0xFFFEBC2E, "Minimize", "xmux-minimize", chrome.onMinimize, hoverState, inactive)
-      TrafficLight(0xFF28C840, if (fullscreen) "Restore window" else "Maximize", "xmux-zoom", chrome.onZoom, hoverState, inactive)
-    }
-    chrome.leadingSlot()
-    Text(
-      state.title, Modifier.weight(1f).padding(horizontal = 12.dp).testTag("xmux-title"),
-      color = Color(chrome.titleColor), fontSize = 15.sp, fontWeight = FontWeight.Medium,
-      maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-    )
-    chrome.trailingSlot()
-    if (state.loading) {
+private fun StatusSpinner(state: TerminalWindowState, lagging: Boolean, chrome: WindowChrome, modifier: Modifier) {
+  Box(modifier.size(STATUS_SPINNER_DP.dp).testTag("vrcode-status-slot"), contentAlignment = Alignment.Center) {
+    if (state.loading || lagging) {
+      val label = if (state.loading) "Connecting" else "Connection is slow"
       CircularProgressIndicator(
-        Modifier.padding(start = 8.dp).size(16.dp).testTag("xmux-spinner"),
-        color = Color(0xFFA0A0A0), strokeWidth = 2.dp,
+        Modifier.fillMaxSize().testTag("xmux-spinner").semantics { contentDescription = label },
+        color = Color(chrome.titleColor).copy(alpha = 0.85f), strokeWidth = 2.5.dp,
       )
     }
   }
 }
 
-/** [inactive] is the gray an unfocused window shows until the light is hovered; null when focused. */
+/** Slot content in a row, dimmed while the window is unfocused. */
 @Composable
-private fun TrafficLight(color: Long, label: String, tag: String, onClick: (() -> Unit)?, hoverState: TerminalHeaderHover?, inactive: Color?) {
+private fun Toolbar(focused: Boolean, tag: String, content: @Composable () -> Unit) {
+  Row(Modifier.alpha(if (focused) 1f else INACTIVE_TOOLBAR_ALPHA).testTag(tag), verticalAlignment = Alignment.CenterVertically) {
+    content()
+  }
+}
+
+/** Reserve room for actions so long titles cannot cover the mode toggle or settings. */
+@Composable
+private fun MacOSHeader(state: TerminalWindowState, chrome: WindowChrome, fullscreen: Boolean, hoverState: TerminalHeaderHover?,
+  focused: Boolean, badge: @Composable () -> Unit, lagging: Boolean) {
+  // The inactive gray sits between the header and title colors, so it reads on light and dark themes.
+  val inactive = if (focused) null else lerp(Color(chrome.headerColor), Color(chrome.titleColor), 0.32f)
+  Row(
+    Modifier.fillMaxWidth().height(chrome.headerHeightDp.dp)
+      .background(headerColor(chrome, focused)).padding(horizontal = 16.dp).testTag("xmux-header"),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    TrafficLights(chrome, fullscreen, hoverState, inactive)
+    Toolbar(focused, "vrcode-leading-toolbar", chrome.leadingSlot)
+    Text(
+      state.title, Modifier.weight(1f).padding(horizontal = 12.dp).testTag("xmux-title"),
+      color = titleColor(chrome, focused), fontSize = 15.sp, fontWeight = FontWeight.Medium,
+      maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+    )
+    badge()
+    Toolbar(focused, "vrcode-trailing-toolbar", chrome.trailingSlot)
+    StatusSpinner(state, lagging, chrome, Modifier.padding(start = 10.dp))
+  }
+}
+
+@Composable
+private fun TrafficLights(chrome: WindowChrome, fullscreen: Boolean, hoverState: TerminalHeaderHover?, inactive: Color?) {
+  val tag = "vrcode-traffic-lights"
   val interaction = remember { MutableInteractionSource() }
   val hovered by interaction.collectIsHoveredAsState()
-  val pressed by interaction.collectIsPressedAsState()
-  val expanded = onClick != null && (hovered || pressed || hoverState?.hovered == tag)
-  val expansion by animateFloatAsState(if (expanded) 1f else 0f, tween(160), label = "$tag expansion")
+  val expanded = hovered || hoverState?.hovered == tag
+  val expansion by animateFloatAsState(if (expanded) 1f else 0f, tween(160), label = "Traffic lights expansion")
   DisposableEffect(hoverState, tag) { onDispose { hoverState?.remove(tag) } }
-  // Reserve the expanded footprint: aiming never moves a neighbor or the title under the ray.
-  val base = Modifier.width(64.dp).height(48.dp).testTag(tag)
-    .onGloballyPositioned { hoverState?.place(tag, it.boundsInRoot()) }.semantics {
+  // Reserve room for the expanded group so the title and other header actions stay put.
+  Box(Modifier.size(200.dp, 52.dp), contentAlignment = Alignment.CenterStart) {
+    Row(
+      Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.25f))
+        .border(1.dp, Color.White.copy(alpha = 0.09f), CircleShape)
+        .testTag(tag).onGloballyPositioned { hoverState?.place(tag, it.boundsInRoot()) }
+        .hoverable(interaction).padding(horizontal = 4.dp, vertical = 2.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      TrafficLight(0xFFFF5F57, "Close", "xmux-close", chrome.onClose, expansion, inactive)
+      TrafficLight(0xFFFEBC2E, "Minimize", "xmux-minimize", chrome.onMinimize, expansion, inactive)
+      TrafficLight(0xFF28C840, if (fullscreen) "Restore window" else "Maximize", "xmux-zoom", chrome.onZoom,
+        expansion, inactive)
+    }
+  }
+}
+
+/** [inactive] is the gray an unfocused window shows until the group is hovered; null when focused. */
+@Composable
+private fun TrafficLight(color: Long, label: String, tag: String, onClick: (() -> Unit)?,
+  expansion: Float, inactive: Color?) {
+  val interaction = remember { MutableInteractionSource() }
+  val pressed by interaction.collectIsPressedAsState()
+  val base = Modifier.width((40f + 24f * expansion).dp).height((32f + 16f * expansion).dp).testTag(tag).semantics {
     contentDescription = label
     if (onClick == null) disabled()
   }
   Box(
-    if (onClick == null) base else base.hoverable(interaction).clickable(
+    if (onClick == null) base else base.clickable(
       interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick),
     contentAlignment = Alignment.Center,
   ) {
     val fill = if (inactive == null) Color(color) else lerp(inactive, Color(color), expansion)
-    // Inactive Mac lights are plain circles; the glyph returns with the color on hover.
-    val glyph = if (inactive == null) 1f else expansion
+    // Mac lights are plain circles at rest, colored or gray; the glyphs appear while the group is hovered.
+    val glyph = expansion
     Box(
       Modifier.size((28f + 32f * expansion).dp, (28f + 16f * expansion).dp)
         .clip(CircleShape).background(fill.copy(alpha = if (onClick == null) 0.4f else 1f))
@@ -216,30 +284,28 @@ fun WindowModeButton(mode: WindowMode, theme: TerminalTheme = TerminalTheme.Mac,
 }
 
 @Composable
-private fun WindowsHeader(state: TerminalWindowState, chrome: WindowChrome, fullscreen: Boolean) {
+private fun WindowsHeader(state: TerminalWindowState, chrome: WindowChrome, fullscreen: Boolean, focused: Boolean,
+  badge: @Composable () -> Unit, lagging: Boolean) {
+  val ink = titleColor(chrome, focused)
   Row(
     Modifier.fillMaxWidth().height(chrome.headerHeightDp.dp)
-      .background(Color(chrome.headerColor)).testTag("vrcode-windows-header"),
+      .background(headerColor(chrome, focused)).testTag("vrcode-windows-header"),
     verticalAlignment = Alignment.CenterVertically,
   ) {
     Spacer(Modifier.width(8.dp))
-    chrome.leadingSlot()
+    Toolbar(focused, "vrcode-leading-toolbar", chrome.leadingSlot)
     Text(
       state.title,
       Modifier.weight(1f).padding(horizontal = 12.dp).testTag("xmux-title"),
-      color = Color(chrome.titleColor), fontSize = 15.sp, fontWeight = FontWeight.Medium,
+      color = ink, fontSize = 15.sp, fontWeight = FontWeight.Medium,
       maxLines = 1, overflow = TextOverflow.Ellipsis,
     )
-    chrome.trailingSlot()
-    if (state.loading) {
-      CircularProgressIndicator(
-        Modifier.padding(horizontal = 12.dp).size(16.dp).testTag("xmux-spinner"),
-        color = Color(0xFFA0A0A0), strokeWidth = 2.dp,
-      )
-    }
-    WindowsControl("Minimize", "xmux-minimize", Color(chrome.titleColor), chrome.onMinimize)
-    WindowsControl(if (fullscreen) "Restore window" else "Maximize", "xmux-zoom", Color(chrome.titleColor), chrome.onZoom)
-    WindowsControl("Close", "xmux-close", Color(chrome.titleColor), chrome.onClose)
+    badge()
+    Toolbar(focused, "vrcode-trailing-toolbar", chrome.trailingSlot)
+    StatusSpinner(state, lagging, chrome, Modifier.padding(horizontal = 10.dp))
+    WindowsControl("Minimize", "xmux-minimize", ink, chrome.onMinimize)
+    WindowsControl(if (fullscreen) "Restore window" else "Maximize", "xmux-zoom", ink, chrome.onZoom)
+    WindowsControl("Close", "xmux-close", ink, chrome.onClose)
   }
 }
 

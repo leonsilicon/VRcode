@@ -82,11 +82,12 @@ private val TOGGLE_SIZE = 46.dp
 
 /**
  * The current voice pane. While its fist is closed it shows the live transcript, where it will be
- * typed ([target], the focused window's title) and push buttons the other hand presses: this mic's
- * Enter-after toggle in the bottom corner nearest that hand ([freeHandLeft]: bottom left for the
- * right, text mic; bottom right for the left, AI mic), and Cancel (type nothing) and Clear (start
- * over, still listening) at the far end. A pane that could not be typed shows why, with Delete and
- * Paste beside the same toggle.
+ * typed ([target], the focused window's title) and push buttons the other hand presses: on a
+ * dictation, the text mic's Enter-after toggle in the bottom corner nearest that hand
+ * ([freeHandLeft]: bottom left, as the right fist holds the text mic), and Cancel (type nothing)
+ * and Clear (start over, still listening) at the far end. An AI pane has no toggle: the AI's
+ * keystrokes, shown once it answers, include Enter when it chose to press it. A pane that could not
+ * be typed shows why, with Delete and Paste.
  */
 @Composable
 fun VoiceBubble(
@@ -139,17 +140,17 @@ fun VoiceBubble(
     val scroll = rememberScrollState()
     val committed = joinText(note.committed, note.liveFinal)
     LaunchedEffect(committed, note.liveVolatile) { scroll.scrollTo(scroll.maxValue) }
-    val aiText = note.aiText
-    if (ai && aiText != null) {
-      // The text a paste types, above what was said.
-      BasicText(aiText, style = TextStyle(color = Color.White, fontSize = 15.sp, lineHeight = 20.sp, fontFamily = FontFamily.Monospace))
+    val aiKeys = note.aiKeys
+    if (ai && aiKeys != null) {
+      // The keystrokes a paste sends, above what was said.
+      BasicText(keystrokeText(aiKeys), style = TextStyle(color = Color.White, fontSize = 15.sp, lineHeight = 20.sp, fontFamily = FontFamily.Monospace))
       Spacer(Modifier.height(4.dp))
     }
     note.notice?.takeIf { committed.isNotEmpty() || note.liveVolatile.isNotBlank() }?.let {
       BasicText(it, style = TextStyle(color = Editing, fontSize = 12.sp))
       Spacer(Modifier.height(2.dp))
     }
-    val heard = if (ai && aiText != null) Dim else Color.White
+    val heard = if (ai && aiKeys != null) Dim else Color.White
     BasicText(
       buildAnnotatedString {
         withStyle(SpanStyle(color = heard)) { append(committed) }
@@ -165,7 +166,9 @@ fun VoiceBubble(
       modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll),
     )
     Spacer(Modifier.height(6.dp))
-    val toggle = @Composable { EnterToggle(on = voice.enterAfter(note.mode), cornerLeft = freeHandLeft, onToggle = onToggleEnter) }
+    // Only the text mic has an Enter-after toggle: the AI chooses Enter itself.
+    val enterToggle: @Composable () -> Unit = { EnterToggle(on = voice.enterAfterDictation, cornerLeft = freeHandLeft, onToggle = onToggleEnter) }
+    val toggle = enterToggle.takeUnless { ai }
     if (listening) {
       // Pressed with the free hand while the other one holds the fist.
       ButtonRow(freeHandLeft, toggle) {
@@ -175,21 +178,36 @@ fun VoiceBubble(
     } else if (note.phase != Phase.Thinking && note.phase != Phase.Finalizing) {
       ButtonRow(freeHandLeft, toggle) {
         TouchButton("Delete", "voice-delete") { voice.remove(note) }
-        if (note.output.isNotBlank()) TouchButton("Paste to focused", "voice-paste", selected = true) { onPasteFocused(note) }
+        if (note.output.isNotEmpty()) TouchButton("Paste to focused", "voice-paste", selected = true) { onPasteFocused(note) }
       }
     }
   }
 }
 
-/** The pane's bottom row: [toggle] in the corner nearest the free hand, the other buttons at the far end. */
+/**
+ * The pane's bottom row: [toggle] (if any) in the corner nearest the free hand, the other buttons
+ * at the far end.
+ */
 @Composable
-private fun ButtonRow(toggleLeft: Boolean, toggle: @Composable () -> Unit, others: @Composable RowScope.() -> Unit) {
+private fun ButtonRow(toggleLeft: Boolean, toggle: (@Composable () -> Unit)?, others: @Composable RowScope.() -> Unit) {
   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-    if (toggleLeft) toggle() else others()
+    if (toggleLeft) toggle?.invoke() else others()
     Spacer(Modifier.weight(1f))
-    if (toggleLeft) others() else toggle()
+    if (toggleLeft) others() else toggle?.invoke()
   }
 }
+
+/** The AI's keystrokes as the pane shows them: text as typed, each key press as a chip (⏎, ⌃C, Esc). */
+internal fun keystrokeText(steps: List<Keystroke>) =
+  buildAnnotatedString {
+    for (step in steps) {
+      when (step) {
+        is Keystroke.Text -> append(step.text)
+        is Keystroke.Press ->
+          withStyle(SpanStyle(color = Color.White, background = AiBadge, fontWeight = FontWeight.Bold)) { append(" ${step.label} ") }
+      }
+    }
+  }
 
 private fun statusLine(note: VoiceNote, listening: Boolean, editing: Boolean, selected: Boolean, target: String?): String {
   val into = target?.ifBlank { "the focused pane" } ?: "no terminal open"
@@ -319,7 +337,7 @@ private fun ReturnIcon(color: Color) {
 }
 
 /** How a terminal window's header marks it as where voice goes. */
-enum class VoiceTarget { Focused, Dictating, TalkingToAi, Typing }
+enum class VoiceTarget { Focused, Dictating, TalkingToAi, Thinking, Typing }
 
 /**
  * A badge for a terminal window's header: a dot on the focused window (where voice and keys go),
@@ -334,6 +352,7 @@ fun VoiceTargetBadge(target: VoiceTarget?, level: () -> Float) {
       VoiceTarget.Focused -> Accent to null
       VoiceTarget.Dictating -> Live to "Dictating"
       VoiceTarget.TalkingToAi -> AiBadge to "Talking to AI"
+      VoiceTarget.Thinking -> AiBadge to "Thinking…"
       VoiceTarget.Typing -> AiBadge to "Typing…"
     }
   val listening = target == VoiceTarget.Dictating || target == VoiceTarget.TalkingToAi

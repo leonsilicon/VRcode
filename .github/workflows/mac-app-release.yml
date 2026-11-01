@@ -28,6 +28,7 @@ concurrency:
 
 env:
   TAURI_CLI_VERSION: 2.12.4
+  VARLOCK_VERSION: 1.23.0
 
 jobs:
   release:
@@ -150,7 +151,8 @@ jobs:
           for name in APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
             [ -n "${!name}" ] || unset "$name"
           done
-          bun scripts/run-mac-service.ts --package-only
+          # .env.schema declares these; varlock validates them and redacts the sensitive ones.
+          bunx "varlock@$VARLOCK_VERSION" run -- bun scripts/run-mac-service.ts --package-only
 
       - name: Test
         working-directory: mac-app/src-tauri

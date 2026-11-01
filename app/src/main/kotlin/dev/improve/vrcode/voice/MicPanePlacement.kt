@@ -8,7 +8,7 @@ import kotlin.math.exp
 /**
  * Where the live voice pane floats: just above the mic in the fist that holds it, upright and
  * turned toward the eyes, so the free hand can press its buttons without reaching for the dock.
- * Its corner nearest the free hand carries the Enter-after toggle.
+ * On a dictation, its corner nearest the free hand carries the text mic's Enter-after toggle.
  */
 internal object MicPanePlacement {
   /** How far the mic's top reaches along the grip's +Y (the props' speech ends sit 14-21 cm up). */
@@ -57,11 +57,13 @@ internal object MicPanePlacement {
  * Eases the pane toward its target so it neither jitters with hand tracking nor drifts away from
  * a fingertip mid-press: it rests until the target moves more than [deadZoneM], then follows with
  * an exponential time constant of [timeConstantS] until it catches up. The first update (and a
- * jump of more than [SNAP_M], such as tracking coming back elsewhere) places it at once.
+ * jump of more than [snapM], such as tracking coming back elsewhere) places it at once. Terminal
+ * windows in Follow mode use it, with a wider dead zone, to follow the user's position.
  */
 internal class PaneFollow(
   private val deadZoneM: Float = 0.02f,
   private val timeConstantS: Float = 0.12f,
+  private val snapM: Float = 0.6f,
 ) {
   var position: Vector3? = null
     private set
@@ -70,7 +72,7 @@ internal class PaneFollow(
 
   fun update(target: Vector3, dtS: Float): Vector3 {
     val current = position
-    if (current == null || (target - current).length() > SNAP_M) {
+    if (current == null || (target - current).length() > snapM) {
       settling = false
       return target.also { position = it }
     }
@@ -88,7 +90,6 @@ internal class PaneFollow(
   }
 
   private companion object {
-    const val SNAP_M = 0.6f
     /** A stalled frame must not throw the pane across the view. */
     const val MAX_STEP_S = 0.1f
     const val SETTLED_M = 0.003f

@@ -56,21 +56,7 @@ fn provider(id: &str) -> Result<(&'static str, &'static str), String> {
 
 /// Which providers have a key. Reads attributes only, so it never prompts.
 pub fn saved_keys() -> BTreeMap<&'static str, bool> {
-    PROVIDERS
-        .iter()
-        .map(|(id, account, _)| {
-            let saved = ItemSearchOptions::new()
-                .class(ItemClass::generic_password())
-                .service(SERVICE)
-                .account(account)
-                .load_attributes(true)
-                .limit(1)
-                .search()
-                .map(|items| !items.is_empty())
-                .unwrap_or(false);
-            (*id, saved)
-        })
-        .collect()
+    PROVIDERS.iter().map(|(id, account, _)| (*id, item_exists(SERVICE, account))).collect()
 }
 
 pub fn set_api_key(provider_id: &str, key: &str, helper: &Path) -> Result<(), String> {
@@ -79,27 +65,48 @@ pub fn set_api_key(provider_id: &str, key: &str, helper: &Path) -> Result<(), St
     if key.is_empty() || key.chars().any(char::is_whitespace) {
         return Err("The key must be one word with no spaces.".into());
     }
-    delete_api_key(provider_id)?;
+    set_item(SERVICE, account, label, key.as_bytes(), helper)
+}
+
+pub fn delete_api_key(provider_id: &str) -> Result<(), String> {
+    let (account, _) = provider(provider_id)?;
+    delete_item(SERVICE, account)
+}
+
+fn item_exists(service: &str, account: &str) -> bool {
+    ItemSearchOptions::new()
+        .class(ItemClass::generic_password())
+        .service(service)
+        .account(account)
+        .load_attributes(true)
+        .limit(1)
+        .search()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+}
+
+/// Replaces the item, trusting this app and `helper` to read it without a prompt.
+fn set_item(service: &str, account: &str, label: &str, secret: &[u8], helper: &Path) -> Result<(), String> {
+    delete_item(service, account)?;
     unsafe {
         let access = access_for(helper, label)?;
         let attributes = CFDictionary::from_CFType_pairs(&[
             (key_of(kSecClass), CFString::wrap_under_get_rule(kSecClassGenericPassword).as_CFType()),
-            (key_of(kSecAttrService), CFString::new(SERVICE).as_CFType()),
+            (key_of(kSecAttrService), CFString::new(service).as_CFType()),
             (key_of(kSecAttrAccount), CFString::new(account).as_CFType()),
             (key_of(kSecAttrLabel), CFString::new(label).as_CFType()),
-            (key_of(kSecValueData), CFData::from_buffer(key.as_bytes()).as_CFType()),
+            (key_of(kSecValueData), CFData::from_buffer(secret).as_CFType()),
             (key_of(kSecAttrAccess), access),
         ]);
         status(SecItemAdd(attributes.as_concrete_TypeRef(), ptr::null_mut()), "save the key")
     }
 }
 
-pub fn delete_api_key(provider_id: &str) -> Result<(), String> {
-    let (account, _) = provider(provider_id)?;
+fn delete_item(service: &str, account: &str) -> Result<(), String> {
     unsafe {
         let query = CFDictionary::from_CFType_pairs(&[
             (key_of(kSecClass), CFString::wrap_under_get_rule(kSecClassGenericPassword).as_CFType()),
-            (key_of(kSecAttrService), CFString::new(SERVICE).as_CFType()),
+            (key_of(kSecAttrService), CFString::new(service).as_CFType()),
             (key_of(kSecAttrAccount), CFString::new(account).as_CFType()),
         ]);
         match SecItemDelete(query.as_concrete_TypeRef()) {
@@ -143,6 +150,60 @@ fn status(code: OSStatus, action: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes, reads back, replaces and deletes a throwaway login-Keychain item through the same
+    /// access-list path as the API keys. Run on a Mac: cargo test -- --ignored keychain
+    #[test]
+    #[ignore]
+    fn live_keychain_round_trip() {
+        let service = format!("dev.improve.vrcode.test-{}", std::process::id());
+        let helper = std::env::current_exe().unwrap();
+        let read = || security_framework::passwords::get_generic_password(&service, "probe").ok();
+        assert!(!item_exists(&service, "probe"));
+        set_item(&service, "probe", "VRcode keychain test", b"first", &helper).unwrap();
+        assert!(item_exists(&service, "probe"));
+        assert_eq!(read().as_deref(), Some(&b"first"[..]), "a trusted app reads it without a prompt");
+        set_item(&service, "probe", "VRcode keychain test", b"second", &helper).unwrap();
+        assert_eq!(read().as_deref(), Some(&b"second"[..]), "saving again replaces it");
+        delete_item(&service, "probe").unwrap();
+        assert!(!item_exists(&service, "probe"));
+        delete_item(&service, "probe").unwrap();
+    }
+
+    /// A separately signed binary named in the access list (`/usr/bin/security` standing in for
+    /// the bundled vrcode-mac) reads the item without a prompt. Without the list it would block on
+    /// a Keychain dialog. Run on a Mac: cargo test -- --ignored keychain
+    #[test]
+    #[ignore]
+    fn live_keychain_trusts_the_helper() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        let service = format!("dev.improve.vrcode.test-helper-{}", std::process::id());
+        let helper = Path::new("/usr/bin/security");
+        set_item(&service, "probe", "VRcode keychain test", b"shared", helper).unwrap();
+        let mut child = Command::new(helper)
+            .args(["find-generic-password", "-s", &service, "-a", "probe", "-w"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let mut out = String::new();
+        std::io::Read::read_to_string(child.stdout.as_mut().unwrap(), &mut out).unwrap();
+        delete_item(&service, "probe").unwrap();
+        assert!(status.is_some(), "the helper was asked for permission instead of being trusted");
+        assert_eq!(out.trim(), "shared");
+    }
 
     #[test]
     fn providers_map_to_the_accounts_the_service_reads() {

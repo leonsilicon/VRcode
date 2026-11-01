@@ -34,6 +34,30 @@ private val CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
 interface ByteCarrier : Closeable { val input: InputStream; val output: OutputStream }
 
+/** A device bonded with the Quest, as the search for the paired Mac sees it. */
+data class BondedDevice(val address: String, val name: String, val computer: Boolean, val hasLinkService: Boolean)
+
+/**
+ * The bonded devices that may be the paired Mac, most likely first: the address that worked last,
+ * then devices whose cached SDP records list the VRcode service, then computers named like the Mac,
+ * then other computers. Headphones, controllers and keyboards are never tried. Which one really is
+ * the Mac is decided by the relay's certificate pin, not by this order.
+ */
+fun macCandidates(bonded: List<BondedDevice>, remembered: String, macName: String): List<String> {
+  fun normal(name: String) = name.lowercase().replace('’', '\'').trim()
+  return bonded.mapNotNull { device ->
+    when {
+      remembered.isNotBlank() && device.address.equals(remembered, ignoreCase = true) -> 0
+      device.hasLinkService -> 1
+      device.computer && normal(device.name) == normal(macName) -> 2
+      device.computer -> 3
+      else -> null
+    }?.let { it to device.address.uppercase() }
+  }.sortedBy { it.first }.map { it.second }.distinct().take(MAX_MAC_CANDIDATES)
+}
+
+private const val MAX_MAC_CANDIDATES = 3
+
 /** Adapts native byte streams to a local TCP socket so JSSE can run real TLS over Bluetooth. */
 class CarrierSocket(private val carrier: ByteCarrier) : Closeable {
   private val executor = Executors.newFixedThreadPool(3)
@@ -80,6 +104,24 @@ object BluetoothCarriers {
   }
 
   fun paired(context: Context): List<Pair<String, String>> = adapter(context).bondedDevices.map { (it.name ?: "Bluetooth device") to it.address }
+
+  /**
+   * Bonded devices that may be the paired Mac ([macCandidates]), so Automatic can use Bluetooth with
+   * no address configured. Empty when Bluetooth is off or not permitted.
+   */
+  fun bondedMacs(context: Context, remembered: String, macName: String): List<String> = runCatching {
+    macCandidates(adapter(context).bondedDevices.map { device ->
+      BondedDevice(device.address, device.name.orEmpty(),
+        computer = device.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.COMPUTER,
+        hasLinkService = device.uuids.orEmpty().any { it.uuid == LINK_SERVICE })
+    }, remembered, macName)
+  }.getOrDefault(emptyList())
+
+  /** Whether BLE scanning can run now (Bluetooth on and Nearby devices allowed). */
+  fun canScan(context: Context): Boolean = runCatching {
+    adapter(context)
+    context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+  }.getOrDefault(false)
 
   fun classic(context: Context, address: String): ByteCarrier {
     require(BluetoothAdapter.checkBluetoothAddress(address)) { "Choose a paired Mac Bluetooth address first." }

@@ -105,18 +105,50 @@ The menu-bar item (a headset visor) has:
   icon;
 - **Open VRcode Mac…**, **Restart Services** and **Quit VRcode Mac**.
 
-Opening the app again (Finder, Spotlight, `open`) also shows the window. The window shows:
+Opening the app again (Finder, Spotlight, `open`) also shows the window. Its sidebar has **Status**
+(below) and then the **Quest settings** pages.
+
+### Quest settings
+
+The window shows the Quest's own settings, with the same pages, tabs, sections, labels and controls
+as the headset's settings panel, and changes them from the Mac:
+
+- **Schema.** The Quest describes its settings page (`SettingsSync.kt`), so a new theme, mic or
+  provider appears here without a Mac release.
+- **Connection.** The app is one more client of `vrcode-mac` on 127.0.0.1:`--port` (default 7273).
+  It sends `HELLO {"client":"vrcode-mac-app"}`, mirrors every `SETTINGS`, sends `SETTINGS_SET` and
+  `SETTINGS_ACTION`, and reconnects when the service restarts. See "Settings mirroring" in
+  [the protocol](vrcode-protocol.md) and `mac-app/src-tauri/src/settings.rs`.
+- **Rendering.** Each item type gets its own control:
+  - toggle: a switch;
+  - choice: option cards, with colour swatches for themes;
+  - slider: shown as value × `scale` with `unit`;
+  - presets: chips, selected when every value matches;
+  - reset and action: buttons;
+  - note: text;
+  - api_key: the Keychain field for the provider selected on the Quest.
+
+  `hiddenWhen` hides an item, and unknown item types are skipped.
+- **While the Quest is away.** The page shows its last-known settings and says so. A change is kept
+  as `pending`, marked "Applies when the Quest reconnects", and delivered on reconnect. Actions,
+  such as Arrange windows here, need the Quest connected.
+- **First run.** Before the Quest has connected once, the sidebar says its settings will appear
+  then.
+- **Live test.** `VRCODE_SETTINGS_PORT=7273 cargo test -- --ignored live` in `mac-app/src-tauri`
+  checks the round trip against a running service and Quest.
+
+### Status
 
 | Section | What it shows and does |
 |---|---|
 | Services | state, pid, uptime, restarts, last exit and arguments of each helper; Restart per helper or all; whether the LaunchAgent is installed |
 | Headset pairing | the served session and address; waiting headsets; enter the six-digit code the headset shows and Approve, or Reject; paired headsets with Unpair. It uses the bundled `xmux-bridge status --json`, `pair CODE`, `pair --reject` and `unpair ID`. When a headset starts waiting, the window opens on this section with the code field focused |
 | Permissions | Screen & System Audio Recording and Accessibility (granted or not, **Allow…** asks macOS and opens the list), plus shortcuts to the Bluetooth and Local Network lists |
-| AI provider keys | saves or removes the Keychain items `dev.improve.vrcode` / `anthropic-api-key`, `openai-api-key` and `gemini-api-key` that `AiService.swift` reads (Claude, ChatGPT, Gemini; the provider is picked on the Quest) |
+| AI provider keys | saves or removes the Keychain items `dev.improve.vrcode` / `anthropic-api-key`, `openai-api-key` and `gemini-api-key` that `AiService.swift` reads (Claude, ChatGPT, Gemini; the provider is picked on the Quest). Only the AI mic's Quick answer uses them: with thinking on (the default) the service runs Claude Code, Codex or Gemini CLI, which use their own logins (`claude`, `codex login`, `gemini`), so sign in to the provider's CLI on this Mac ([protocol](vrcode-protocol.md)) |
 | Log | both helpers' output and the app's own notes; the bridge's "run `xmux pair`" hint reads "approve it in VRcode Mac under Headset pairing" here |
 
-Settings still come from the Quest. This window covers what has to happen on the Mac: permissions,
-headset approval and the AI provider keys.
+The Quest stays the source of truth for its settings; the Mac shows them and requests changes.
+Permissions, headset approval and the AI provider keys can only be handled on the Mac.
 
 ## Permissions and identity
 
@@ -164,7 +196,24 @@ and creates a **draft** release by default, so the build can be checked before p
 also bundle a different xmux branch, tag or commit (`xmux_ref`, default `main`). It refuses a
 version that is already tagged or released.
 
-### Secrets (repository settings, or `gh secret set`)
+### Secrets (GitHub repository secrets)
+
+The values live in `leonsilicon/VRcode`'s repository secrets; nothing else stores them.
+`.env.schema` (varlock) declares them, marks the sensitive ones, and documents each. The workflow
+runs the build through `varlock run`, which validates them and redacts them from output. Local
+builds need none of them.
+
+**Current state (set 2026-11-01).** The repository has `APPLE_CERTIFICATE`,
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID`:
+
+- **Certificate.** "Developer ID Application: Leon Si", valid until March 2031.
+- **Notarization.** It uses the Apple ID set.
+- **Source.** They were copied from the KeyChord organization's secrets, which Chord's releases
+  use, by a one-off workflow on a temporary `KeyChord/Chord` branch. The workflow used a temporary
+  token secret; the branch, the token and the run were deleted afterwards.
+
+GitHub never returns a secret's value, so to refresh them, either repeat that copy or set new values
+as below.
 
 | Name | What |
 |---|---|
@@ -174,7 +223,7 @@ version that is already tagged or released.
 | or `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | notarization with an Apple ID: the address, an app-specific password, and the team (`M76P5G9HXK`) |
 | variable `APPLE_SIGNING_IDENTITY` (optional) | pins the identity, e.g. `Developer ID Application: Leon Si (M76P5G9HXK)`; without it the certificate's own identity is used |
 
-To create them:
+To create them from scratch:
 
 1. **Export the certificate.** In Keychain Access → login → My Certificates, select
    "Developer ID Application: Leon Si (M76P5G9HXK)", choose File → Export Items… → `.p12` and set a

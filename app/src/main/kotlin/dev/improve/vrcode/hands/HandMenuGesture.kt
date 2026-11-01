@@ -32,7 +32,7 @@ class HandMenuGesture(val finger: FingerPinch = MiddlePinch) {
     private set
 
   /**
-   * Show the hint above the pinching fingertip: the palm faces the user closely enough for a pinch
+   * Show the hint on the pinching fingertip: the palm faces the user closely enough for a pinch
    * to open the menu, the menu is not open, and no pinch is still held from the last one.
    */
   var hint = false
@@ -110,7 +110,7 @@ class HandMenuGesture(val finger: FingerPinch = MiddlePinch) {
     if (reading || !wasDown) upSinceMs = NOT_UP else if (upSinceMs == NOT_UP) upSinceMs = nowMs
     down = reading || (wasDown && nowMs - upSinceMs < RELEASE_GRACE_MS)
     progress = if (fist) 0f else finger.progress(frame)
-    hintPoint = finger.hintPoint(joints, frame.palm, aboveM = HINT_ABOVE_M, outM = HINT_OUT_M)
+    hintPoint = finger.hintPoint(joints, frame.palm, backM = HINT_BACK_M, outM = HINT_OUT_M)
     hint = canOpen && !otherPinch && !fist && !open && !needsRelease
 
     if (open) {
@@ -148,8 +148,9 @@ class HandMenuGesture(val finger: FingerPinch = MiddlePinch) {
   companion object {
     const val OPEN_FACING_DEGREES = 55f
     const val KEEP_FACING_DEGREES = 75f
-    const val HINT_ABOVE_M = 0.025f
-    const val HINT_OUT_M = 0.01f
+    /** The hint's centre: on the fingertip's pad, back from the tip and just off the skin. */
+    const val HINT_BACK_M = 0.01f
+    const val HINT_OUT_M = 0.009f
     /** Untracked frames shorter than this keep the menu and pinch as they were. */
     const val TRACKING_GAP_MS = 200L
     /**

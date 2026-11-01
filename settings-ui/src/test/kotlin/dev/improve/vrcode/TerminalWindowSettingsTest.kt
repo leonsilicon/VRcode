@@ -27,4 +27,19 @@ class TerminalWindowSettingsTest {
     assertEquals(AppSettings.MIN_FONT_SIZE, TerminalWindowSettings(fontSize = 0f).sanitized().fontSize)
     assertEquals(AppSettings.MAX_FONT_SIZE, TerminalWindowSettings(fontSize = 100f).sanitized().fontSize)
   }
+
+  @Test fun eachWindowCanOverrideTheAppOpacityAndOtherwiseFollowsIt() {
+    val defaults = AppSettings(windowOpacity = 0.6f)
+    val solid = TerminalWindowSettings(opacity = 1f)
+    assertEquals(1f, solid.resolve(defaults).windowOpacity)
+    assertEquals(0.6f, TerminalWindowSettings().resolve(defaults).windowOpacity)
+    // Changing the app default moves windows without their own opacity only.
+    val changed = defaults.copy(windowOpacity = 0.45f)
+    assertEquals(1f, solid.resolve(changed).windowOpacity)
+    assertEquals(0.45f, TerminalWindowSettings(theme = TerminalTheme.Nord).resolve(changed).windowOpacity)
+    // Bad values fall back or clamp like the app setting.
+    assertNull(TerminalWindowSettings(opacity = Float.NaN).sanitized().opacity)
+    assertEquals(0.6f, TerminalWindowSettings(opacity = Float.NaN).resolve(defaults).windowOpacity)
+    assertEquals(AppSettings.MIN_WINDOW_OPACITY, TerminalWindowSettings(opacity = 0.01f).resolve(defaults).windowOpacity)
+  }
 }

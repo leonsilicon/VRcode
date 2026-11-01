@@ -1,9 +1,9 @@
 # Floating dock
 
 The dock works like an iPhone mini's home bar. At rest it is a short (7 cm), faint pill near the
-bottom of the view. A hand reaching it makes it bulge, and swiping up from it raises the dock.
-Options are pressed, slid along and flicked up. The bar stays visible at the top centre of the
-raised dock, and swiping down from it lowers the dock again.
+bottom of the view. A hand reaching it makes it bulge, and touching it raises the dock at once.
+Touching an option runs it. The bar stays where it is, underneath the raised
+options, and touching it again lowers the dock.
 
 ## Placement
 
@@ -25,40 +25,43 @@ way back to Settings and Arrange.
 
 ## Gestures
 
-`DockGesture` handles everything in dock-local coordinates: X right, Y up, and the dock's plane at
-Z = 0.
+Touches come from the Spatial SDK's Interaction SDK, the same direct touch that types on the
+floating keyboard: a fingertip touching a dock panel, or a pinching ray on it, reaches the panel's
+Compose content as an Android touch. `DockPanel.kt` reports each touch the moment it lands
+(`DockTouch`: down, move, up), without waiting for a release or a click. `DockGesture` handles them
+in dock-local coordinates: X right, Y up, and the dock's plane at Z = 0.
 
 | Step | What the user does | What happens |
 |---|---|---|
 | Hover | a fingertip comes within 6 cm of the bar, or a pointer aims at it | the bar brightens, widens and thickens, and shows a "⌃" cue |
-| Raise | press the bar and swipe up 3 cm | the dock rises; the bar's pill follows the finger up as it swipes |
-| Choose | press an option, then slide sideways | the option under the finger highlights; a knob tracks the finger |
-| Activate | flick up 4 cm from the highlighted option | the option lifts with an "↑ label" cue, runs, and the dock lowers |
-| Cancel | pull the finger back 7 cm from the plane | the press ends; the dock stays up |
-| Lower | press the grabber (the bar at the raised dock's top centre) and swipe down 3 cm, or leave the dock alone for 5 s | the dock lowers back to the bar |
+| Raise | touch the bar (or pinch on it with a ray) | the dock rises on contact, in the same frame; no swipe, release or click is needed |
+| Choose | bring a fingertip within 6 cm in front of an option, or aim a pointer at it | the option grows, turns blue and shows its label above the dock |
+| Activate | touch the option (or pinch on it with a ray) | it runs on contact and the dock lowers; no slide, flick or release is needed |
+| Lower | touch the bar again (it stays in place under the options; its cue turns to "⌄"), or leave the dock alone for 5 s | the dock lowers |
 
-For the first three raises, a hint reads "Press an icon, slide, then flick up". The picked
-option's label shows in a pill above the body, clear of the grabber, and gains an "↑" while it is
-pressed.
+![The raised dock](screenshots/dock-raised.png)
 
-![The raised dock with the hint and the picked option's label](screenshots/dock-raised.png)
+![A hand near the keyboard option shows its label](screenshots/dock-raised-hover.png)
 
-![An option pressed and flicking up](screenshots/dock-raised-flick.png)
+The SDK decides contact, so a fingertip has to reach a panel from in front, inside it; hands
+typing below the bar or a finger behind it do not touch it. The bar's panel is 12 × 6 cm, larger
+than the 7 cm pill. Only a touch's start counts. The touch that raises the dock never runs anything:
+it lands on the bar's panel, and the body appears above it, so running an option needs a new
+touch. For 400 ms after the bar raises or lowers the dock, further touches are ignored: direct
+touch can report a finger resting on the bar as a quick release and press, which must neither flip
+the dock straight back nor run an option. A touch that lands between two options runs the
+highlighted one.
 
-A touch counts only when the fingertip reaches the plane from in front, inside the part being
-pressed. That means the fingertip was more than 0.5 cm in front on the previous frame and is now
-within 1.2 cm in front of the plane to 4 cm through it. Three cases never press anything:
-- hands typing on a physical keyboard below the bar;
-- a finger coming from behind the dock;
-- a finger beyond the bar's ends.
+Pinching with a ray works the same way, because the SDK delivers it as the same touch: pinch on the
+bar to raise or lower the dock; pinch on an option to run it.
 
-After the swipe that raises the dock, the finger must leave and come back before it can press an
-option, so the raise itself never selects anything. A press is dropped if hand tracking is lost
-for 400 ms or the press lasts 10 s.
+The bulge and the option highlight are visual only. It comes from the index fingertips (`HandAim` joints, converted from
+OpenXR VIEW space with `viewToScene`) and from pointer rays at least 25 cm away, so the near rays of
+typing hands just below the dock do not light it up.
 
-Pointer rays work the same way. Pinch on the bar and aim upward to raise the dock; pinch on an
-option and aim up to activate it. Rays count only from at least 25 cm away. Typing hands just
-below the dock have rays that graze it, and those near rays are ignored.
+Before 2026-11-01 the app detected touches itself from the fingertip joints, without reflecting
+VIEW space's Z axis. Every fingertip was placed about 40 cm behind the head, so touching the bar
+did nothing and only a pinched ray could raise the dock.
 
 ## Options
 
@@ -68,16 +71,23 @@ The options are round icons in one row, 6 cm apart. The row shrinks the spacing 
 - **Connection** (a dot): opens Connection settings. Green means the terminal bridge is online;
   amber means it is unavailable. Keyboard, Arrange and Settings stay usable offline.
 - **One icon per live cmux window**, with the focused window highlighted. Titles and removals come
-  from xmux. Flicking up on a window glides it (280 ms) to sit just above the dock, its bottom edge
+  from xmux. Touching a window glides it (280 ms) to sit just above the dock, its bottom edge
   24 degrees above the bar, at the window's own distance and facing the eyes. This is how to recover
   a window that has gone out of view. The window is also focused in VRcode and in cmux. Its
   Fixed/Follow mode is preserved, and the dock never creates a second terminal or caches terminal
   state. Minimized windows remain in this strip; recalling one unhides it. Recalling any window
   leaves fullscreen, restoring the fullscreen window's previous placement and mode. Closing a
   screen through its header removes it from cmux and from this strip.
-- **Keyboard**: toggles the same floating keyboard as the right-hand pie. Its selected state
-  follows changes made from the pie and the keyboard's close button. The keyboard opens just above
-  the dock.
+- **Keyboard**: toggles the same keyboard as the right-hand pie and quick inputs. That is Meta's
+  system keyboard when possible: `KeyboardFeature` focuses the focused terminal window's view
+  (xmux's `ScreenView`, which takes typed text, backspace and keys through its Android input
+  connection) and asks Android to show the soft input, so Meta's keyboard types straight into the
+  focused pane. With no terminal window, while a voice pane is being edited, or if Android declines
+  (logged as `system keyboard for screen N: focused=… accepted=false`), VRcode's floating keyboard
+  opens just above the dock instead. The option's selected state follows the pie, the floating
+  keyboard's close button, and Meta's keyboard closing itself once the window has reported it
+  showing (`system keyboard closed`). Whether Meta's keyboard appears for a Spatial SDK panel needs
+  a headset check.
 - **Arrange**: runs the existing terminal arrangement action.
 - **Settings**: opens the existing panel and brings it back in front of the user, which also
   recovers a settings panel left out of view.
@@ -86,11 +96,16 @@ The options are round icons in one row, 6 cm apart. The row shrinks the spacing 
 
 The dock uses two pooled panels, independent of terminal reconnects:
 
-- **The bar.** A 10 × 5 cm panel, larger than the drawn pill so it is easier to hit. It is
-  hittable, so a pointer never clicks a terminal through it.
-- **The raised body.** A 48 × 17 cm panel shown only while raised. It is never hittable
-  (`MeshCollision.NoCollision`), so it can never swallow terminal input. `DockFeature.hitDistance`
-  treats it as foreground geometrically instead.
+- **The bar.** A 12 × 6 cm panel, larger than the drawn pill so it is easier to touch. It is
+  always shown and hittable, raised or not, so a pointer never clicks a terminal through it.
+- **The raised body.** A 48 × 15 cm panel above the bar, shown only while raised. It starts 1 cm
+  above the bar's panel, so the two never overlap: the options row is centred 8.5 cm above the bar,
+  and the space above the body holds the picked option's label.
+
+Panels showing are hittable (`MeshCollision.LineTest`); the hidden body is set to
+`MeshCollision.NoCollision`, so it never takes a touch or swallows terminal input.
+`DockFeature.hitDistance` also treats the visible dock (bar, and body while raised) as foreground
+geometrically.
 
 There is no invisible full-size quad in front of terminals. Terminal cursors, right-click and
 context-menu gestures, and left-pinch voice paste treat the visible dock as a foreground panel. They
@@ -114,13 +129,13 @@ type found`, 2026-11-01). Both dock panels set `IsdkGrabbable(enabled = false)` 
 |---|---|
 | `app/.../dock/DockPlacement.kt` | the placement, sizes, footprints, ray and distance math |
 | `app/.../dock/DockFollow.kt` | the lazy yaw, pitch and position follow |
-| `app/.../dock/DockGesture.kt` | `DockLayout` (option spacing) and the hover, swipe, press, slide and flick state machine |
+| `app/.../dock/DockGesture.kt` | `DockLayout` (option spacing), the hover and option highlight, and the bar toggle and option touches, fed by the panels' touches |
 | `app/.../dock/DockRecall.kt` | the window recall target and glide |
-| `app/.../dock/DockFeature.kt` | mounts the panels, reads xmux state and fingertips (from `HandAim` joints), dispatches the options |
-| `settings-ui/.../DockPanel.kt` | the platform-independent `DockBar` and `DockBody` Compose UI |
+| `app/.../dock/DockFeature.kt` | mounts the panels, queues their touches for the scene tick, switches which panel is hittable, reads xmux state and fingertips (from `HandAim` joints), dispatches the options |
+| `settings-ui/.../DockPanel.kt` | the platform-independent `DockBar` and `DockBody` Compose UI, and `DockTouch` reporting |
 
-`MainActivity` passes pointer rays with each hand's trigger and pinch state, ticks the dock before
-the other features, and applies the recall glide each frame.
+`MainActivity` passes each hand's pointer ray (for the bulge), ticks the dock before the other
+features, and applies the recall glide each frame.
 
 ## Existing projects checked
 
@@ -146,10 +161,10 @@ ANDROID_SERIAL=emulator-5554 ./gradlew :settings-ui:connectedDebugAndroidTest \
 
 | Test | Checks |
 |---|---|
-| `DockGestureTest` | option spacing; the hover bulge; swipe-up raising without pressing an option; press, slide and flick activating and lowering; pulling back cancelling; the grabber swipe-down; the idle timeout; hands below or behind never pressing; pinched pointers raising and activating; near rays being ignored; the recall target and glide |
+| `DockGestureTest` | option spacing; the hover bulge, including a fingertip given in VIEW space; a touch or pinch on the bar raising the dock in the first frame; touches on the hidden body doing nothing; a touch or pinch on an option running it at once and lowering the dock; a nearby fingertip highlighting an option, sticking until clearly nearer another; touches beside the row; touching the bar again lowering the dock; a finger resting on the bar neither flipping it back nor running an option; the idle timeout; near rays not bulging the bar; the body sitting above the bar without overlapping it; panel touches mapped to dock-local metres; the recall target and glide |
 | `DockPlacementTest` | the gaze-relative pose and its clamping, footprints, and bar and body ray hits |
 | `DockFollowTest` | the dead zones, easing, settling, following a large look down, wrap-around turns, snapping and stalled frames |
-| `DockPanelTest` | the bar at rest and bulging, and the raised body with its hint and flick cue, at the headset's pixel scale; it saves captures to the test app's external `screenshots` directory |
+| `DockPanelTest` | the bar at rest, bulging with its "⌃" cue, and raised with its "⌄" cue; the raised body without and with a hovered option's label, at the headset's pixel scale; that both panels report a touch on contact, before any release, at the right position. It saves captures to the test app's external `screenshots` directory |
 
 Verified on 2026-11-01:
 - `:app` compiled, and the app unit tests (119) and settings-ui tests passed.
@@ -158,10 +173,11 @@ Verified on 2026-11-01:
   from after that fix.
 
 Still needs a worn-headset check:
-- reaching the bar comfortably;
-- the swipe and flick thresholds;
+- that touching the bar raises the dock at once;
+- that touching an option runs it, and that hovering shows the right label first;
 - that typing hands never raise the dock.
 
 Capture the headset with `adb shell am startservice -n com.oculus.metacam/.capture.CaptureService -a
 TAKE_SCREENSHOT` while it is worn. Captures land in `/sdcard/Oculus/Screenshots`. `VrcodeDock` log
-lines report "dock raised", "dock option …" and "dock lowered".
+lines report "dock touch down on bar|body at x,y cm", "dock raised", "dock option …" and "dock
+lowered".

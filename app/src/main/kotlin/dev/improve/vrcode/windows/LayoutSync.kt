@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.util.Log
 import dev.improve.vrcode.WindowMode
 import com.meta.spatial.core.Pose
+import com.meta.spatial.core.Vector3
 import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -111,9 +112,9 @@ class LayoutSync(
   }
 
   /** A window cmux has no placement for appears at [world]. Before cmux answers, the placement is provisional. */
-  fun seed(screen: String, mode: WindowMode, world: Pose, head: Pose?) {
+  fun seed(screen: String, mode: WindowMode, world: Pose, user: Vector3?) {
     if (screen in layout.windows) return
-    layout = layout.seeded(screen, mode, world, head)
+    layout = layout.seeded(screen, mode, world, user)
     if (loaded) { dirty += screen; lastEditMs = nowMs() } else seeds += screen
   }
 

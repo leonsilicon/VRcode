@@ -17,10 +17,23 @@ object Kind {
   const val ERROR = 8
   const val CMUX_REQUEST = 9
   const val CMUX_EVENT = 10
-  /** Headset -> Mac: {transcript, screen, title}; the Mac answers with AI_RESULT or ERROR (same id). */
+  /**
+   * Headset -> Mac: {transcript, screen, title, cursor, provider, model, agent, terminal}; the Mac
+   * answers with AI_RESULT or ERROR (same id), after AI_PROGRESS frames when [agent] is true.
+   */
   const val AI_REQUEST = 11
-  /** Mac -> headset: {text, model}, the text to stage for the pane. */
+  /** Mac -> headset: {keys, text, summary?, provider, model}; keys are the steps to send the pane ({"text"} or {"key"}), in order. */
   const val AI_RESULT = 12
+  /** Headset -> Mac: {device, schema, values}, mirrored into VRcode Mac (SettingsLink). */
+  const val SETTINGS = 13
+  /** Mac -> headset: {values}, a partial settings update made in VRcode Mac. */
+  const val SETTINGS_SET = 14
+  /** Mac -> headset: {action}, e.g. "arrange_windows". */
+  const val SETTINGS_ACTION = 15
+  /** Mac -> headset, while an agent AI_REQUEST runs: {kind: "status" | "thinking" | "step", text}. */
+  const val AI_PROGRESS = 16
+  /** Headset -> Mac: stop the agent running for this AI_REQUEST id. No reply. */
+  const val AI_CANCEL = 17
 }
 
 class Frame(val kind: Int, val id: Int, val sequence: Int, val body: ByteArray)

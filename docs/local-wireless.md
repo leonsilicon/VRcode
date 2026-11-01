@@ -1,8 +1,12 @@
 # Switchable Mac ↔ Quest connections
 
 Connection settings now contains ten choices. **Automatic** is the default. It tries authenticated
-local Wi-Fi first, then a Quest Wi-Fi Direct group created by the app, USB, Wi-Fi ADB, an existing PAN network, and configured
-Bluetooth Classic / BLE adapters. Explicit choices stay on that route rather than silently using
+local Wi-Fi first, then a Quest Wi-Fi Direct group created by the app, USB, Wi-Fi ADB, an existing PAN
+network, then Bluetooth to the Mac. **Automatic does not need Wi-Fi**: once the Mac and the Quest are
+paired in the Quest's Bluetooth settings, it finds that Mac among the bonded devices (no address to
+enter), remembers it, and keeps the terminals and speech connected over Bluetooth whenever Wi-Fi is
+missing or cannot reach the Mac. BLE scanning is the last resort when no Mac is paired. Wi-Fi stays
+first because it is much faster. Explicit choices stay on that route rather than silently using
 another one. An unavailable route reports an error and can be cancelled.
 
 All new app routes carry both xmux and speech through a pinned TLS relay. Speech remains bound to
@@ -33,7 +37,8 @@ rebuilding; `bun run mac:uninstall` removes it. The log is `~/Library/Logs/vrcod
 To add the relay alongside an already-running speech
 service, use `bun scripts/run-mac-service.ts --link-only --bluetooth` instead. Without `--link-only`,
 the service also starts speech on loopback port 7273. The relay listens on port 7274 and advertises
-`_vrcode._tcp` using Bonjour. Bluetooth is opt-in on the Mac; omit `--bluetooth` for network-only use.
+`_vrcode._tcp` using Bonjour. `bun run mac:install` turns Bluetooth on; when running the script by
+hand, omit `--bluetooth` for network-only use.
 Allow the Mac's Bluetooth / local-network prompt when presented. The app lives in the menu bar; its
 window (permissions, headset pairing, API key, log) opens from there and when a headset waits to
 pair.
@@ -98,7 +103,7 @@ again; the running app picks up the new key without a tap.
 
 | Choice | Implemented route and setup |
 |---|---|
-| Automatic | Prefer Wi-Fi, then an app-created direct group, USB, Wi-Fi ADB, an existing PAN network, configured Classic, configured BLE. Every successful route authenticates the same Mac certificate and key. Retries use bounded backoff; a heartbeat detects dead links. It does not alter OS radio settings automatically. |
+| Automatic | Prefer Wi-Fi, then an app-created direct group, USB, Wi-Fi ADB, an existing PAN network, then Bluetooth Classic to the Mac bonded in the Quest's Bluetooth settings (found automatically: the remembered address, a device whose SDP record lists the VRcode service, then computers; never headphones or controllers), and BLE scanning only when no Mac is bonded. Every successful route authenticates the same Mac certificate and key. Retries use bounded backoff; a heartbeat detects dead links. It does not alter OS radio settings automatically. |
 | Local Wi-Fi | A TLS socket bound to the Quest's Wi-Fi network, discovered with Bonjour or entered manually. No cable, ADB, cloud service, or internet is required for application traffic. Peer isolation and firewalls can still block it. |
 | Mac Wi-Fi sharing | The same secure Wi-Fi transport with a guided Internet Sharing setup. Enable sharing on the Mac and join the Quest to that network. Apple's available upstream / downstream interfaces determine whether the Mac can host it; the app cannot create unsupported radio modes. |
 | Phone hotspot | The secure Wi-Fi transport with hotspot setup guidance. Join both devices to the phone's network. The hotspot must permit traffic between clients. |

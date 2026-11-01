@@ -36,18 +36,24 @@ travel on their own cmux control connection through the vrcode Mac service, whic
       "mode": "fixed",
       "position_m": [0.94, 1.56, 0.82],
       "orientation_xyzw": [0, 0.373, 0, 0.928],
-      "minimized": false
+      "minimized": false,
+      "scale": 1.25
     }
   }
 }
 ```
 
 - Keys under `windows` are cmux screen ids. xmux's `Screen.cmuxId` is the same id.
-- A `fixed` window's pose is in the scene's `LOCAL_FLOOR` space. A `follow` window's pose is
-  relative to the head.
+- A `fixed` window's pose is in the scene's `LOCAL_FLOOR` space. A `follow` window's
+  `position_m` is an offset from the user's position along the `LOCAL_FLOOR` axes, and its
+  `orientation_xyzw` is in `LOCAL_FLOOR`: it moves with the user but not with head rotation. The
+  user's position is the head's, eased (`SceneLayout.userFollow`: 40 cm dead zone, 0.3 s time
+  constant, snaps on a tracking jump over 3 m).
 - `fullscreen_screen_id` is optional. While it is set, that window is drawn head-locked to fill 74°
   by 58°, and every other window is hidden. Its own pose stays the one it returns to.
-- Size is not stored: a window's size follows its cmux terminal grid.
+- A window's pixel size is not stored: it follows its cmux terminal grid, which dragging an edge
+  changes. `scale` is the uniform enlargement from the corner handles on top of that, text
+  included (0.2 to 10). It is omitted when it is 1.
 - Unknown fields, at the top level or in a window, are written back unchanged. Another frontend or a
   later vrcode can add fields without this build dropping them.
 - A document with another `schema_version` or `space` is not overwritten. vrcode shows its default
@@ -59,7 +65,8 @@ travel on their own cmux control connection through the vrcode Mac service, whic
   projection. Windows wait up to 3 s for the first read before mounting, so they appear in place
   rather than jump. A screen without an entry gets the next free arc slot, and that slot is
   written back.
-- **User changes:** title-bar drags, ISDK grabs (detected as a pose the app did not set), Arrange,
+- **User changes:** title-bar drags, ISDK grabs (detected as a pose the app did not set), corner
+  scaling (a scale the app did not set), the pose an edge resize leaves, Arrange,
   dock recalls, minimize, fullscreen, and the Follow/Fixed toggle. Each change updates the local copy
   at once and is written once changes stop for 0.5 s, so a drag is one write rather than one per
   frame. `onPause` writes immediately.

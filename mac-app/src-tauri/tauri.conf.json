@@ -13,9 +13,9 @@
       {
         "label": "main",
         "title": "VRcode Mac",
-        "width": 600,
-        "height": 680,
-        "minWidth": 460,
+        "width": 820,
+        "height": 720,
+        "minWidth": 660,
         "minHeight": 480,
         "visible": false,
         "center": true

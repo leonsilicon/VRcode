@@ -26,6 +26,36 @@ class SettingsSyncTest {
     val themes = items().first { it["key"] == "terminal_theme" }["options"] as List<*>
     assertEquals(TerminalTheme.entries.size, themes.size)
     assertTrue(items().any { it["type"] == "api_key" && it["providerKey"] == "ai_provider" })
+    // Each provider's model list shows on the Mac only while that provider is selected.
+    for (provider in AiProvider.entries) {
+      val models = items().single { it["key"] == provider.modelKey }
+      assertEquals(mapOf("ai_provider" to provider.storageValue), models["shownWhen"])
+      assertEquals(provider.models.map { it.id }, (models["options"] as List<*>).map { (it as Map<*, *>)["value"] })
+    }
+  }
+
+  @Test fun aiModelsSyncPerProvider() {
+    val values = SettingsSync.values(AppSettings())
+    assertEquals("claude-sonnet-5-5", values["ai_model_claude"])
+    assertEquals("gpt-6.1-sol", values["ai_model_openai"])
+    assertEquals("gemini-3.8-flash", values["ai_model_gemini"])
+    val updated = SettingsSync.apply(AppSettings(), mapOf("ai_model_claude" to "claude-opus-5-5", "ai_model_gemini" to "gemini-4-argon"))
+    assertEquals(AiModel.ClaudeOpus, updated.aiModel())
+    assertEquals(AiModel.GeminiArgon, updated.aiModel(AiProvider.Gemini))
+    assertEquals(AiProvider.Claude, updated.aiProvider)
+    // Unknown ids and another provider's model are ignored.
+    val ignored = SettingsSync.apply(updated, mapOf("ai_model_claude" to "gpt-6.1-sol", "ai_model_openai" to "gpt-99"))
+    assertEquals(updated, ignored)
+  }
+
+  @Test fun aiThinkingDefaultsToAboveAndSyncs() {
+    assertEquals("above", SettingsSync.values(AppSettings())["ai_thinking"])
+    val choice = items().single { it["key"] == "ai_thinking" }
+    assertEquals(listOf("above", "below", "off"), (choice["options"] as List<*>).map { (it as Map<*, *>)["value"] })
+    assertEquals(AiThinking.Off, SettingsSync.apply(AppSettings(), mapOf("ai_thinking" to "off")).aiThinking)
+    assertEquals(AiThinking.Above, SettingsSync.apply(AppSettings(), mapOf("ai_thinking" to "sideways")).aiThinking)
+    assertFalse(AiThinking.Off.agent)
+    assertTrue(AiThinking.Below.agent)
   }
 
   @Test fun everyOfferedValueAppliesAndRoundTrips() {
@@ -45,19 +75,21 @@ class SettingsSyncTest {
       }
     }
     val custom = AppSettings(passthrough = false, terminalTheme = TerminalTheme.Nord, aiProvider = AiProvider.Gemini,
-      defaultTerminalSize = TerminalSize(100, 48), pointerCursorSize = 1.5f)
+      claudeModel = AiModel.ClaudeFable, geminiModel = AiModel.GeminiFlashLite,
+      defaultTerminalSize = TerminalSize(100, 48), pointerCursorSize = 1.5f, windowOpacity = 0.55f)
     assertEquals(custom, SettingsSync.apply(AppSettings(), SettingsSync.values(custom)))
   }
 
   @Test fun badValuesFromTheMacAreIgnoredOrClamped() {
     val base = AppSettings(terminalTheme = TerminalTheme.Dracula)
     val updated = SettingsSync.apply(base, mapOf("terminal_theme" to "nope", "passthrough" to "yes", "window_distance_m" to 99,
-      "default_terminal_cols" to 9999.0, "unknown" to 1, "terminal_font_size" to 27.6))
+      "default_terminal_cols" to 9999.0, "unknown" to 1, "terminal_font_size" to 27.6, "window_opacity" to 0.02))
     assertEquals(TerminalTheme.Dracula, updated.terminalTheme)
     assertTrue(updated.passthrough)
     assertEquals(AppSettings.MAX_DISTANCE, updated.windowDistanceM)
     assertEquals(TerminalSize.MAX_COLS, updated.defaultTerminalSize.cols)
     assertEquals(28f, updated.terminalFontSize)
+    assertEquals(AppSettings.MIN_WINDOW_OPACITY, updated.windowOpacity)
   }
 
   @Test fun resetsRestoreDefaults() {

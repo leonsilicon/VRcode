@@ -7,7 +7,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.meta.spatial.core.Pose
-import com.meta.spatial.isdk.IsdkPanelDimensions
+import com.meta.spatial.core.Vector3
 import dev.improve.vrcode.WindowMode
 import dev.improve.vrcode.cmux.CmuxLink
 import dev.improve.xmux.client.ScreenId
@@ -21,11 +21,12 @@ import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 
 /**
- * Draws one window per cmux screen where cmux's layout says it is. Placement, Fixed/Follow mode,
+ * Draws one window per cmux screen where cmux's layout says it is. Placement, scale, Fixed/Follow mode,
  * minimized and fullscreen live in a cmux `frontend_projection` ([LayoutSync]); each frame this
  * class applies that layout to the xmux windows, and turns the user's moves (title-bar drags,
- * grabs, Arrange, dock recalls, header buttons) into layout changes. Size is not part of it: a
- * window's size follows the cmux terminal grid. Main thread only.
+ * grabs, corner-handle scaling, Arrange, dock recalls, header buttons) into layout changes. A
+ * window's pixel size is not part of it: that follows the cmux terminal grid, which an edge drag
+ * changes ([EdgeResize]). Main thread only.
  */
 class TerminalWindows(
   private val xmux: XmuxSpatial,
@@ -42,8 +43,14 @@ class TerminalWindows(
   private var screensSinceMs: Long? = null
   /** The pose this class last gave each window; a different pose means the user grabbed it. */
   private val applied = mutableMapOf<ScreenWindow, Pose>()
+  /** Likewise the scale; a different one means the user dragged a corner handle. */
+  private val appliedScale = mutableMapOf<ScreenWindow, Float>()
   private val ticks = mutableMapOf<ScreenWindow, Int>()
   private val modes = mutableStateMapOf<ScreenId, WindowMode>()
+  /** The user's eased position, which every Follow window hangs from. */
+  private val userFollow = SceneLayout.userFollow()
+  private var user: Vector3? = null
+  private var lastTickMs: Long? = null
 
   /** The window shown fullscreen, as Compose state for headers. */
   var fullscreenScreen by mutableStateOf<ScreenId?>(null)
@@ -72,8 +79,10 @@ class TerminalWindows(
     link.close()
     sync.reset()
     applied.clear()
+    appliedScale.clear()
     ticks.clear()
     modes.clear()
+    resetUser()
     fullscreenScreen = null
   }
 
@@ -81,7 +90,8 @@ class TerminalWindows(
   fun tick(resumed: Boolean) {
     val s = session
     val head = head()
-    if (s != null) mountNewScreens(s, head)
+    val user = updateUser(head, resumed)
+    if (s != null) mountNewScreens(s, head, user)
     for (window in xmux.windows) {
       val screen = window.screen ?: continue
       val id = idOf(window) ?: continue
@@ -92,19 +102,21 @@ class TerminalWindows(
       if (id !in sync.layout.windows) {
         val pose = window.pose()
         if (age <= SETTLE_TICKS || pose == null || !resumed) continue
-        sync.seed(id, defaultMode(), pose, head)
+        sync.seed(id, defaultMode(), pose, user)
       }
+      applyScale(window, id, age)
       if (!resumed || !window.visible) { applied.remove(window); continue }
       val current = window.pose() ?: continue
       val last = applied[window]
-      if (last != null && age > SETTLE_TICKS && !same(last, current)) sync.edit { it.moved(id, current, head) }
+      if (last != null && age > SETTLE_TICKS && !same(last, current)) sync.edit { it.moved(id, current, user) }
       val (width, height) = size(window)
-      val desired = sync.layout.renderPose(id, head, width, height) ?: continue
+      val desired = sync.layout.renderPose(id, head, user, width, height) ?: continue
       if (!same(desired, current)) window.setPose(desired)
       applied[window] = desired
       publish(screen, id)
     }
     applied.keys.retainAll(xmux.windows.toSet())
+    appliedScale.keys.retainAll(xmux.windows.toSet())
     ticks.keys.retainAll(xmux.windows.toSet())
     modes.keys.retainAll(xmux.windows.mapNotNull { it.screen }.toSet())
     publishFullscreen()
@@ -114,11 +126,11 @@ class TerminalWindows(
   /** Saves unsaved changes now (the app may be killed while paused). */
   fun flush() = sync.flush(liveScreens())
 
-  /** The user moved [screen] to [world]; it stays there (relative to the head, if it follows). */
+  /** The user moved [screen] to [world]; it stays there (relative to the user, if it follows). */
   fun move(screen: ScreenId, world: Pose) {
     val window = windowOf(screen) ?: return
     val id = idOf(window) ?: return
-    sync.edit { it.moved(id, world, head()) }
+    sync.edit { it.moved(id, world, user ?: head()?.t) }
     window.setPose(world)
     applied[window] = world
   }
@@ -130,10 +142,21 @@ class TerminalWindows(
     applyVisibility()
     val windows = xmux.windows.filter { it.visible }
     for ((index, window) in windows.withIndex()) {
-      val spec = window.panelSize
-      move(window.screen ?: continue, WindowLayout.arc(head, index, windows.size, spec.widthM, spec.heightM,
-        distanceM().coerceAtLeast(spec.widthM / 2f + 0.1f)))
+      move(window.screen ?: continue, WindowLayout.arc(head, index, windows.size, window.widthM, window.heightM,
+        distanceM().coerceAtLeast(window.widthM / 2f + 0.1f)))
     }
+  }
+
+  /**
+   * A corner-handle scale the user made is saved (once the window has settled); otherwise the
+   * window takes cmux's scale, which another frontend or an earlier session may have set.
+   */
+  private fun applyScale(window: ScreenWindow, id: String, age: Int) {
+    val last = appliedScale[window]
+    if (last != null && age > SETTLE_TICKS && abs(window.scale - last) > SCALE_EPSILON) sync.edit { it.scaled(id, window.scale) }
+    val wanted = sync.layout.windows[id]?.scale ?: return
+    if (abs(window.scale - wanted) > SCALE_EPSILON) xmux.setScale(window, wanted)
+    appliedScale[window] = wanted
   }
 
   fun minimize(screen: ScreenId) = change(screen) { layout, id -> layout.minimized(id) }
@@ -148,10 +171,31 @@ class TerminalWindows(
     applyVisibility()
   }
 
-  fun setMode(screen: ScreenId, mode: WindowMode) = change(screen) { layout, id -> layout.withMode(id, mode, head()) }
+  fun setMode(screen: ScreenId, mode: WindowMode) = change(screen) { layout, id -> layout.withMode(id, mode, user ?: head()?.t) }
 
   fun close() {
     disconnect()
+  }
+
+  /**
+   * Eases the anchor toward the head's position. While paused it is cleared, so on resume the
+   * following windows reappear around the user wherever they are.
+   */
+  private fun updateUser(head: Pose?, resumed: Boolean): Vector3? {
+    if (!resumed || head == null) {
+      resetUser()
+      return null
+    }
+    val now = SystemClock.uptimeMillis()
+    val dtS = lastTickMs?.let { (now - it) / 1000f } ?: 0f
+    lastTickMs = now
+    return userFollow.update(head.t, dtS).also { user = it }
+  }
+
+  private fun resetUser() {
+    userFollow.reset()
+    user = null
+    lastTickMs = null
   }
 
   private fun change(screen: ScreenId, block: (SceneLayout, String) -> SceneLayout) {
@@ -186,7 +230,7 @@ class TerminalWindows(
    * New cmux screens get their saved placement, else the next free slot on the arc. Mounting waits
    * (up to [LOAD_WAIT_MS]) for cmux's layout, so restored windows appear in place rather than jump.
    */
-  private fun mountNewScreens(session: XmuxSession, head: Pose?) {
+  private fun mountNewScreens(session: XmuxSession, head: Pose?, user: Vector3?) {
     val screens = session.topology.value.screens
     if (screens.isEmpty()) return
     val now = SystemClock.uptimeMillis()
@@ -197,7 +241,7 @@ class TerminalWindows(
     for ((index, screen) in missing.withIndex()) {
       val width = xmux.spec.widthM
       val height = xmux.spec.heightM
-      val saved = sync.layout.renderPose(screen.cmuxId, head, width, height)
+      val saved = sync.layout.renderPose(screen.cmuxId, head, user, width, height)
       val placement = when {
         saved != null -> Placement.Fixed(saved)
         head != null -> Placement.Fixed(WindowLayout.arc(head, shown.size + index, screens.size, width, height,
@@ -221,13 +265,11 @@ class TerminalWindows(
   private fun idOf(window: ScreenWindow): String? =
     window.screen?.let { window.session?.topology?.value?.screen(it)?.cmuxId }
 
-  private fun size(window: ScreenWindow): Pair<Float, Float> {
-    val dimensions = window.entity?.tryGetComponent<IsdkPanelDimensions>()?.dimensions
-    return (dimensions?.x ?: window.panelSize.widthM) to (dimensions?.y ?: window.panelSize.heightM)
-  }
+  private fun size(window: ScreenWindow): Pair<Float, Float> = window.widthM to window.heightM
 
   private companion object {
     const val TAG = "VrcodeWindow"
+    const val SCALE_EPSILON = 0.001f
     /** Frames before a newly mounted window's pose is xmux's placement rather than its spawn pose. */
     const val SETTLE_TICKS = 3
     const val LOAD_WAIT_MS = 3000L

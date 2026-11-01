@@ -187,6 +187,52 @@ class CmuxFeature(
     }
   }
 
+  /**
+   * Runs [command] in the terminal keyboard input goes to when its shell waits at an empty prompt
+   * (no program running, nothing typed), and otherwise opens it in a new terminal as [newTerminal]
+   * does. A check that fails or cannot be read also opens a new terminal, so the command is never
+   * typed into a running program or after half-typed text.
+   */
+  fun runCommand(command: String, name: String) {
+    val window = xmux.focused?.takeIf { it.visible && it.session != null }
+      ?: xmux.windows.firstOrNull { it.visible && it.session != null }
+    val terminal = window?.focusedTerminal?.let { window?.session?.topology?.value?.terminals?.get(it)?.cmuxId }
+    if (terminal == null) return newTerminal(command, name)
+    val current = generation
+    scope.launch {
+      val busy = try { busyReason(terminal) }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { "could not be checked (${error.message})" }
+      if (current != generation) return@launch
+      if (busy != null) {
+        android.util.Log.i("vrcode", "$name: focused terminal $terminal $busy; opening a new terminal")
+        return@launch newTerminal(command, name)
+      }
+      try {
+        link.call("terminal.input.write", JSONObject().put("terminal", terminal).put("text", "$command\r"), mutation = true)
+        android.util.Log.i("vrcode", "$name: ran in the focused terminal $terminal at its empty prompt")
+      } catch (cancelled: CancellationException) { throw cancelled }
+      catch (error: Exception) {
+        android.util.Log.w("vrcode", "$name in the focused terminal $terminal failed", error)
+        if (current != generation) return@launch
+        open(window)
+        task?.join() // the panel's own refresh would otherwise replace this message
+        if (current == generation) status = "Could not run $name: ${error.message ?: "the action failed"}"
+      }
+    }
+  }
+
+  /** Why [terminal] (a cmux id) cannot take a typed command now, or null at an empty shell prompt. */
+  private suspend fun busyReason(terminal: String): String? {
+    val process = link.call("terminal.process.get", JSONObject().put("terminal", terminal)).getJSONObject("result")
+    val shell = process.optString("executable").ifEmpty { process.optJSONArray("argv")?.optString(0) }
+    val foreground = if (process.isNull("foreground_executable")) null else process.getString("foreground_executable")
+    if (!ShellPrompt.shellInForeground(shell, foreground)) return "is running ${foreground ?: "an unknown process"} (shell $shell)"
+    val screen = link.call("terminal.screen.read", JSONObject().put("terminal", terminal)).getJSONObject("result")
+    val empty = ShellPrompt.emptyPrompt(screen.getString("text"), screen.getInt("cursor_row"), screen.getInt("cursor_col"), screen.getInt("cols"))
+    return if (empty) null else "has text at its prompt (or no prompt it recognizes)"
+  }
+
   /** Screen/workspace creation has no size fields. Size only its returned terminal, once attached. */
   private suspend fun configureCreatedTerminal(created: JSONObject, size: TerminalSize, current: Int, focus: Boolean = false) {
     val cmuxScreen = created.getString("screen_id")

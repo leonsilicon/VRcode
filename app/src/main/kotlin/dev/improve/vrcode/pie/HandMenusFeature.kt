@@ -13,6 +13,8 @@ import com.meta.spatial.toolkit.Hittable
 import com.meta.spatial.toolkit.MeshCollision
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.Visible
+import dev.improve.vrcode.QuickInput
+import dev.improve.vrcode.QuickInputRing
 import dev.improve.vrcode.cmux.CmuxFeature
 import dev.improve.vrcode.hands.FingerPinch
 import dev.improve.vrcode.hands.HandAim
@@ -33,18 +35,21 @@ import kotlin.math.roundToInt
 
 /**
  * Palm menus on both hands: turn a palm toward yourself and touch the middle finger to the thumb
- * (index still up). Move onto an icon and hold the pinch there for one second to run it, or swipe on
- * outward to the far end of its pill to run it sooner. Reaching an icon alone runs nothing.
+ * (index still up). Move onto an icon: its label pill appears well out on its spoke, as far past the
+ * icon as the icon is from the pinch. Hold the pinch on the icon for one second (the label fills)
+ * to run it, or move on out to the label to run it at once. Reaching an icon alone runs nothing.
  * Releasing anywhere, the other finger's pinch, a fist or tracking loss cancels.
  *
- * - Left: Add terminal, Codex, Claude Code, each in a new cmux window ([CmuxFeature.newTerminal]),
- *   and Bring forward, which moves the focused window to straight in front of the user ([bringForward]).
+ * - Left: Add terminal, in a new cmux window ([CmuxFeature.newTerminal]); Codex and Claude Code, in
+ *   the focused terminal when its shell waits at an empty prompt, else in a new cmux window
+ *   ([CmuxFeature.runCommand]); and Bring forward, which moves the focused window to straight in front of the user ([bringForward]).
  * - Right: Keyboard, then Enter, Esc and Ctrl-C for the focused pane, and pasting or clearing voice
  *   panes.
  * - Left **index** pinch (the runtime's app menu gesture, which used to toggle Settings): quick
- *   inputs for the focused pane, laid out like the keys they send. Arrows sit at top, right, bottom
- *   and left; Esc top-left, Keyboard (shows the floating keyboard) top-right, Tab bottom-left and
- *   Enter bottom-right. The runtime draws its own menu glyph for this pose, so it gets no hint.
+ *   inputs for the focused pane, each in the direction Settings puts it ([quickInputs], eight
+ *   compass directions, any of them empty). By default Esc sits top-left, Ctrl-C top-right, Tab
+ *   bottom-left and Enter bottom-right. With every direction empty the pinch opens nothing. The
+ *   runtime draws its own menu glyph for this pose, so it gets no hint.
  *
  * Only one menu is open at a time, and none opens while voice is listening. While the right palm
  * faces the user the right-click (palm-away middle pinch) stands down; see [busy].
@@ -56,6 +61,8 @@ class HandMenusFeature(
   private val cmux: CmuxFeature,
   /** Moves the focused window to straight in front of the user. */
   private val bringForward: () -> Unit,
+  /** The quick inputs ring as Settings has it now; read every frame, so changes apply at once. */
+  private val quickInputs: () -> QuickInputRing,
   private val predictedTimeNs: () -> Long,
 ) {
   private val keyboard by lazy { KeyboardFeature(xmux, voiceFeature.voice) }
@@ -70,26 +77,35 @@ class HandMenusFeature(
       "New",
       listOf(
         PieItem("Add terminal", PieIcon.AddTerminal) { cmux.newTerminal() },
-        PieItem("Codex", PieIcon.Codex) { cmux.newTerminal("codex", name = "Codex") },
-        PieItem("Claude Code", PieIcon.Claude) { cmux.newTerminal("claude", name = "Claude Code") },
+        PieItem("Codex", PieIcon.Codex) { cmux.runCommand("codex", name = "Codex") },
+        PieItem("Claude Code", PieIcon.Claude) { cmux.runCommand("claude", name = "Claude Code") },
         PieItem("Bring forward", PieIcon.BringForward) { bringForward() },
       ),
     )
 
-  private val quickInputs =
+  /** The ring [quickRing] shows; replaced when Settings changes it. */
+  private var shownQuickInputs = quickInputs()
+
+  private val quickRing =
     HandMenu(
       leftHand,
       "quick inputs",
       "Input",
-      QuickInputs.entries.map { entry ->
-        PieItem(entry.label, entry.icon) {
-          val key = entry.key
-          if (key != null) focusedKey(Key(key)) else keyboard.show(headPose())
-        }
-      },
+      quickItems(shownQuickInputs),
       finger = IndexPinch,
       hints = false,
+      angles = quickAngles(shownQuickInputs),
     )
+
+  private fun quickItems(ring: QuickInputRing): List<PieItem> =
+    ring.placed.map { (_, input) -> PieItem(input.label, input.icon) { sendQuickInput(input) } }
+
+  private fun quickAngles(ring: QuickInputRing): List<Float> = ring.placed.map { (slot, _) -> slot.degrees }
+
+  private fun sendQuickInput(input: QuickInput) {
+    val key = input.key ?: return keyboard.show(headPose())
+    focusedKey(Key(key, if (input.ctrl) setOf(Modifier.Ctrl) else emptySet()))
+  }
 
   private val right =
     HandMenu(
@@ -117,17 +133,23 @@ class HandMenusFeature(
 
   fun toggleKeyboard() = keyboard.toggle(headPose())
 
-  private val menus = listOf(left, quickInputs, right)
+  private val menus = listOf(left, quickRing, right)
 
   fun onSceneReady() {
     val metresPerPx = xmux.config.windowWidthM / xmux.spec.widthPx
     menus.forEach { it.mount(metresPerPx) }
     keyboard.onSceneReady()
-    Log.i(TAG, "Palm quick actions ready: icon hover pills, dwell=${MenuDwell.DURATION_MS}ms or swipe to the pill's end, pinch release cancels; left index pinch = quick inputs")
+    Log.i(TAG, "Palm quick actions ready: icon, then its label pill ${(LABEL_START_M * 100).roundToInt()}cm out, dwell=${MenuDwell.DURATION_MS}ms on the icon or reach the label, pinch release cancels; left index pinch = quick inputs $shownQuickInputs")
   }
 
   fun onSceneTick(enabled: Boolean) {
     keyboard.onSceneTick()
+    val ring = quickInputs()
+    if (ring != shownQuickInputs) {
+      shownQuickInputs = ring
+      quickRing.setItems(quickItems(ring), quickAngles(ring))
+      Log.i(TAG, "left quick inputs changed: $ring")
+    }
     val head = headPose()
     // Dictation owns the hands while it listens (either hand's fist).
     val blocked =
@@ -188,23 +210,37 @@ class HandMenusFeature(
   /**
    * One ring on [hand], opened by a palm-facing pinch of [finger]: its gesture, selection and panels.
    * [name] labels its log lines; [hints] shows the fill-as-you-pinch hint above the fingertip.
+   * [angles] places each item, in degrees clockwise from the top; evenly spaced unless given.
    */
   private inner class HandMenu(
     private val hand: Hand,
     name: String,
     title: String,
-    private val items: List<PieItem>,
+    private var items: List<PieItem>,
     private val finger: FingerPinch = MiddlePinch,
     private val hints: Boolean = true,
+    angles: List<Float> = pieEvenAngles(items.size),
   ) {
     val gesture = HandMenuGesture(finger)
     private val side = hand.side
     private val label = "$side $name"
-    private val selection = PieSelection(RadialMenu(items.size, deadZoneM = DEAD_ZONE_M, reachM = REACH_M))
+    private var selection = selectionFor(angles)
     private val dwell = MenuDwell()
-    /** Per item: from reaching it to its expanded pill's far end, in metres (see [PieMenu]). */
-    private val swipeM = FloatArray(items.size) { SIZE_M * pieItemFarEnd(it, items.size) - REACH_M }
-    private val state = PieState(title, items, cancelFraction = 2f * DEAD_ZONE_M / SIZE_M)
+    private val state = PieState(title, items, cancelFraction = 2f * DEAD_ZONE_M / SIZE_M, angles = angles)
+
+    // An empty ring keeps a one-item selection it never opens (see the Opened event).
+    private fun selectionFor(angles: List<Float>) =
+      PieSelection(RadialMenu(angles.size.coerceAtLeast(1), deadZoneM = DEAD_ZONE_M, reachM = REACH_M, degrees = angles.ifEmpty { null }))
+
+    /** Replaces the items, each at its [angles] entry, closing the ring if it is open. */
+    fun setItems(items: List<PieItem>, angles: List<Float>) {
+      if (gesture.open) Log.i(TAG, "$label closed: its items changed ${selectionTrace()}")
+      gesture.cancel()
+      close()
+      this.items = items
+      selection = selectionFor(angles)
+      state.setItems(items, angles)
+    }
     private val hintState = PieHintState()
     private var panel: Entity? = null
     private var hintPanel: Entity? = null
@@ -254,7 +290,14 @@ class HandMenusFeature(
       val hintShown = hints && gesture.hint && !otherOpen && hideAtMs == 0L
       showHint(gesture.hintPoint?.takeIf { hintShown }?.let { viewToScene(head, it) }, head)
       when (event) {
-        HandMenuGesture.Event.Opened -> if (otherOpen || point == null) gesture.cancel() else open(point, head)
+        HandMenuGesture.Event.Opened -> when {
+          otherOpen || point == null -> gesture.cancel()
+          items.isEmpty() -> {
+            Log.i(TAG, "$label: nothing to open, every direction is empty (Settings → Customization → Quick inputs)")
+            gesture.cancel()
+          }
+          else -> open(point, head)
+        }
         HandMenuGesture.Event.Released -> {
           Log.i(TAG, "$label: released (cancelled) ${selectionTrace()}")
           close()
@@ -271,15 +314,19 @@ class HandMenusFeature(
             // the dwell rather than restart it; a real release or tracking loss closes the menu.
             val canHover = frame != null && gesture.pinchReading && point != null
             if (canHover) selection.update(point!!)
-            val rayItem = state.rayHovered
+            val rayRun = state.rayRun
+            val rayItem = rayRun ?: state.rayHovered
             val item = rayItem ?: selection.reached
-            // Only the pinching hand swipes, and only through the item it reached itself.
-            val along = if (rayItem == null && item != null) selection.along(item) / swipeM[item] else null
-            val completed = dwell.update(item, now, confirmed = canHover, along = along)
+            // On the hovered item's label pill (the pinch moved out past its start along the spoke, or
+            // the ray is on it): run it now. Short of it (on the icon) the second counts.
+            val onLabel = canHover && item != null &&
+              (rayRun == item || (rayItem == null && selection.along(item) >= LABEL_START_M))
+            val completed = if (onLabel) dwell.finish(item!!) ?: dwell.update(item, now, confirmed = canHover)
+              else dwell.update(item, now, confirmed = canHover)
             state.highlighted = dwell.hovered
             state.progress = dwell.progress
             completed?.let { reached ->
-              Log.i(TAG, "$label: dwell complete (swiped ${(dwell.swiped * 100).roundToInt()}%) ${selectionTrace()}")
+              Log.i(TAG, "$label: ${if (onLabel) "reached label" else "dwell complete"} ${selectionTrace()}")
               gesture.cancel() // the pinch is still held: the next menu needs a fresh one
               confirm(reached)
               run(reached)
@@ -302,6 +349,7 @@ class HandMenusFeature(
       state.highlighted = null
       state.chosen = null
       state.rayHovered = null
+      state.rayRun = null
       state.progress = 0f
       // Just behind the pinch point, so the hand stays in front of the ring.
       val position = at + selection.forward * BEHIND_HAND_M
@@ -325,6 +373,7 @@ class HandMenusFeature(
       state.highlighted = null
       state.chosen = null
       state.rayHovered = null
+      state.rayRun = null
       state.progress = 0f
       panel?.setComponent(Visible(false))
     }
@@ -429,12 +478,19 @@ class HandMenusFeature(
 
   private companion object {
     const val TAG = "vrcode"
-    const val SIZE_M = 0.26f
+    /**
+     * The menu panel's side. Icons sit [PIE_ITEM_RADIUS] of it out (6.7 cm); label pills begin
+     * [PIE_LABEL_START] of it out (13.4 cm) in every direction.
+     */
+    const val SIZE_M = 0.42f
     /** Matches the item ring drawn by [PieMenu]: the hand is "over" an item about 3/4 of the way out. */
     const val REACH_M = SIZE_M * PIE_ITEM_RADIUS * 0.75f
+    /** How far out along the hovered item's spoke the hand reaches its label pill, which runs it at once. */
+    const val LABEL_START_M = SIZE_M * PIE_LABEL_START
     const val DEAD_ZONE_M = 0.035f
     const val BEHIND_HAND_M = 0.04f
-    const val HINT_SIZE_M = 0.04f
+    /** About the size of the runtime's own menu glyph, and a fingertip's width. */
+    const val HINT_SIZE_M = 0.016f
     const val HINT_SMOOTHING = 0.6f
     /** How long a chosen item stays marked before the ring hides. */
     const val CONFIRM_MS = 250L

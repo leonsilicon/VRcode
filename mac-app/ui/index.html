@@ -7,9 +7,19 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<main>
+<div class="app">
+<nav class="sidebar" aria-label="Pages">
+  <div class="brand">VRcode Mac<small id="version"></small></div>
+  <div class="nav-group">This Mac</div>
+  <button class="nav-item active" data-page="mac" type="button">Status</button>
+  <div class="nav-group">Quest settings</div>
+  <div id="nav-quest"></div>
+  <p class="nav-note" id="quest-link">Connecting to the vrcode service…</p>
+</nav>
+
+<main id="page-mac" class="page">
   <header>
-    <h1>VRcode Mac<small id="version"></small></h1>
+    <h1>Status</h1>
     <span id="overall" class="pill">starting</span>
   </header>
 
@@ -87,6 +97,18 @@
     <pre id="log"></pre>
   </section>
 </main>
+
+<main id="page-quest" class="page hidden">
+  <header>
+    <h1 id="quest-title">Settings</h1>
+    <span id="quest-state" class="pill">offline</span>
+  </header>
+  <p class="banner hidden" id="quest-banner"></p>
+  <div class="tabs hidden" id="quest-tabs" role="tablist"></div>
+  <div id="quest-sections"></div>
+  <p class="message" id="quest-message"></p>
+</main>
+</div>
 
 <script>
 (() => {
@@ -231,7 +253,10 @@
   async function refresh() {
     if (polling || document.visibilityState !== "visible") return;
     polling = true;
-    try { render(await invoke("status", { since })); }
+    try {
+      render(await invoke("status", { since }));
+      await refreshQuest();
+    }
     catch (error) { console.error(error); }
     finally { polling = false; }
   }
@@ -261,14 +286,18 @@
     refresh();
   });
 
-  // One row per provider; built once so typing isn't reset by the 1 s refresh.
+  // ---- API keys (Status page, and the Quest's api_key item) ----
+
   const providers = [
     { id: "anthropic", name: "Claude (Anthropic)", account: "anthropic-api-key", placeholder: "sk-ant-…" },
     { id: "openai", name: "ChatGPT (OpenAI)", account: "openai-api-key", placeholder: "sk-…" },
     { id: "gemini", name: "Gemini (Google)", account: "gemini-api-key", placeholder: "AIza…" },
   ];
-  const keyRows = new Map();
-  for (const provider of providers) {
+  let apiKeysSaved = {};
+  const keyRows = new Set();
+
+  /** A key field for one provider. Built once, so typing isn't reset by the 1 s refresh. */
+  function keyRow(provider, messageId) {
     const row = el("div", "row key-row");
     const dot = el("span", "dot");
     const body = el("div", "grow");
@@ -288,34 +317,337 @@
     form.append(input, save, remove);
     body.append(form);
     row.append(dot, body);
-    $("api-keys").append(row);
-    keyRows.set(provider.id, { dot, state, remove });
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (!input.value.trim()) return message("api-key-message", `Paste the ${provider.name} key first.`, true);
+      if (!input.value.trim()) return message(messageId, `Paste the ${provider.name} key first.`, true);
       try {
         await invoke("set_api_key", { provider: provider.id, key: input.value });
         input.value = "";
-        message("api-key-message", `${provider.name} key saved. The service uses it on the next request.`);
+        message(messageId, `${provider.name} key saved. The service uses it on the next request.`);
       } catch (error) {
-        message("api-key-message", String(error), true);
+        message(messageId, String(error), true);
       }
       refresh();
     });
     remove.addEventListener("click", async () => {
-      try { await invoke("delete_api_key", { provider: provider.id }); message("api-key-message", `${provider.name} key removed.`); }
-      catch (error) { message("api-key-message", String(error), true); }
+      try { await invoke("delete_api_key", { provider: provider.id }); message(messageId, `${provider.name} key removed.`); }
+      catch (error) { message(messageId, String(error), true); }
       refresh();
     });
+    const entry = {
+      row,
+      update() {
+        const has = Boolean(apiKeysSaved[provider.id]);
+        setDot(dot, has);
+        state.textContent = has ? `Saved in the Mac's Keychain (${provider.account})` : "Not set";
+        remove.classList.toggle("hidden", !has);
+      },
+    };
+    keyRows.add(entry);
+    entry.update();
+    return row;
   }
 
+  for (const provider of providers) $("api-keys").append(keyRow(provider, "api-key-message"));
+
   function renderApiKeys(saved) {
-    for (const provider of providers) {
-      const { dot, state, remove } = keyRows.get(provider.id);
-      const has = Boolean(saved[provider.id]);
-      setDot(dot, has);
-      state.textContent = has ? `Saved (${provider.account})` : "Not set";
-      remove.classList.toggle("hidden", !has);
+    apiKeysSaved = saved;
+    for (const entry of keyRows) {
+      if (!entry.row.isConnected) { keyRows.delete(entry); continue; } // replaced on a Quest page
+      entry.update();
+    }
+  }
+
+  // ---- Quest settings, mirrored through the vrcode service ----
+  // The Quest describes its settings page (schema) and current values; this renders the same
+  // pages, tabs, sections and labels, and sends changes back (queued while the Quest is away).
+
+  let quest = null;
+  let questRevision = 0;
+  let schemaKey = "";
+  let lastErrorId = 0;
+  let activePage = "mac";
+  const activeTab = {};
+  let bindings = [];
+
+  const questValue = (key) => quest?.pending && key in quest.pending ? quest.pending[key] : quest?.values?.[key];
+  const isPending = (key) => Boolean(quest?.pending && key in quest.pending);
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const deviceName = () => (quest?.device ?? "").trim() || "Quest";
+
+  async function setValues(values) {
+    try { await invoke("settings_set", { values }); message("quest-message", ""); }
+    catch (error) { message("quest-message", String(error), true); }
+    setTimeout(refreshQuest, 150);
+  }
+
+  async function refreshQuest() {
+    const view = await invoke("settings", { since: questRevision });
+    if (!view) {
+      $("quest-link").textContent = "Quest settings aren't available in this mode.";
+      return;
+    }
+    if (view.error && view.error_id > lastErrorId) {
+      if (lastErrorId !== 0 || activePage !== "mac") message("quest-message", view.error, true);
+      lastErrorId = view.error_id;
+    }
+    if (view.settings) {
+      questRevision = view.revision;
+      quest = view.settings;
+      applyQuest();
+    }
+    const device = deviceName();
+    $("quest-link").textContent = !view.linked ? "Waiting for the vrcode service…"
+      : !quest?.schema ? "The Quest's settings appear here after it connects once."
+      : quest.connected ? `${device} connected` : `${device} offline · last-known settings`;
+  }
+
+  function applyQuest() {
+    const key = JSON.stringify(quest.schema ?? {});
+    if (key !== schemaKey) {
+      schemaKey = key;
+      buildNav();
+      if (activePage !== "mac") {
+        if ((quest.schema?.pages ?? []).some((page) => page.id === activePage)) renderPage(activePage);
+        else showPage("mac");
+      }
+    } else {
+      bindings.forEach((update) => update());
+    }
+    const device = deviceName();
+    $("quest-state").textContent = quest.connected ? `${device} connected` : `${device} offline`;
+    $("quest-state").className = `pill ${quest.connected ? "running" : "restarting"}`;
+    $("quest-banner").textContent = quest.connected ? ""
+      : `The ${device} is offline. These are its last-known settings; changes are kept and apply when it reconnects. Actions need the ${device}.`;
+    $("quest-banner").classList.toggle("hidden", Boolean(quest.connected));
+  }
+
+  function buildNav() {
+    $("nav-quest").replaceChildren(...(quest.schema?.pages ?? []).map((page) => {
+      const button = el("button", `nav-item${activePage === page.id ? " active" : ""}`, page.title);
+      button.type = "button";
+      button.dataset.page = page.id;
+      button.addEventListener("click", () => showPage(page.id));
+      return button;
+    }));
+  }
+
+  function showPage(id) {
+    activePage = id;
+    for (const button of document.querySelectorAll(".nav-item")) button.classList.toggle("active", button.dataset.page === id);
+    $("page-mac").classList.toggle("hidden", id !== "mac");
+    $("page-quest").classList.toggle("hidden", id === "mac");
+    message("quest-message", "");
+    if (id !== "mac") renderPage(id);
+  }
+  document.querySelector('.nav-item[data-page="mac"]').addEventListener("click", () => showPage("mac"));
+
+  function renderPage(id) {
+    const page = quest?.schema?.pages?.find((candidate) => candidate.id === id);
+    if (!page) return;
+    $("quest-title").textContent = page.title;
+    const tabs = page.tabs ?? [];
+    if (tabs.length && !tabs.some((tab) => tab.id === activeTab[id])) activeTab[id] = tabs[0].id;
+    $("quest-tabs").classList.toggle("hidden", !tabs.length);
+    $("quest-tabs").replaceChildren(...tabs.map((tab) => {
+      const button = el("button", `tab${activeTab[id] === tab.id ? " active" : ""}`, tab.title);
+      button.type = "button";
+      button.addEventListener("click", () => { activeTab[id] = tab.id; renderPage(id); });
+      return button;
+    }));
+    bindings = [];
+    const sections = (page.sections ?? []).filter((section) => !section.tab || !tabs.length || section.tab === activeTab[id]);
+    $("quest-sections").replaceChildren(...sections.map(renderSection));
+    bindings.forEach((update) => update());
+  }
+
+  function renderSection(section) {
+    const element = el("section", "quest-section");
+    if (section.title) element.append(el("h2", "", section.title));
+    if (section.detail) element.append(el("p", "note section-detail", section.detail));
+    for (const item of section.items ?? []) {
+      const rendered = renderItem(item);
+      if (!rendered) continue;
+      const wrapper = el("div", "item");
+      wrapper.append(rendered);
+      if (item.hiddenWhen || item.shownWhen) {
+        // hiddenWhen hides an item while every listed value matches; shownWhen shows it only then.
+        const matches = (when) => Object.entries(when).every(([key, value]) => same(questValue(key), value));
+        bindings.push(() => wrapper.classList.toggle("hidden",
+          (item.hiddenWhen ? matches(item.hiddenWhen) : false) || (item.shownWhen ? !matches(item.shownWhen) : false)));
+      }
+      element.append(wrapper);
+    }
+    return element;
+  }
+
+  function pendingBadge(keys) {
+    const badge = el("span", "badge hidden", "Applies when the Quest reconnects");
+    bindings.push(() => badge.classList.toggle("hidden", !keys.some(isPending)));
+    return badge;
+  }
+
+  function renderItem(item) {
+    switch (item.type) {
+      case "toggle": {
+        const row = el("label", "row setting");
+        const body = el("div", "grow");
+        body.append(el("div", "title", item.label ?? item.key), ...(item.detail ? [el("div", "detail", item.detail)] : []), pendingBadge([item.key]));
+        const input = el("input", "switch");
+        input.type = "checkbox";
+        input.setAttribute("role", "switch");
+        input.addEventListener("change", () => setValues({ [item.key]: input.checked }));
+        bindings.push(() => { input.checked = Boolean(questValue(item.key)); });
+        row.append(body, input);
+        return row;
+      }
+      case "choice": {
+        const box = el("div", "choice");
+        if (item.label) box.append(el("div", "title", item.label));
+        if (item.detail) box.append(el("div", "detail", item.detail));
+        const options = item.options ?? [];
+        const grid = el("div", `options cols-${options.length > 4 ? 3 : 2}`);
+        grid.setAttribute("role", "radiogroup");
+        for (const option of options) {
+          const button = el("button", "option");
+          button.type = "button";
+          button.setAttribute("role", "radio");
+          if (option.colors) {
+            const swatch = el("span", "swatch");
+            swatch.style.background = option.colors.background;
+            const lines = [option.colors.foreground, option.colors.accent].map((color) => {
+              const line = el("span", "swatch-line");
+              line.style.background = color;
+              return line;
+            });
+            swatch.append(...lines);
+            button.append(swatch);
+          }
+          const text = el("span", "option-text");
+          text.append(el("span", "option-label", option.label ?? String(option.value)));
+          if (option.detail) text.append(el("span", "option-detail", option.detail));
+          button.append(text);
+          button.addEventListener("click", () => setValues({ [item.key]: option.value }));
+          bindings.push(() => {
+            const selected = same(questValue(item.key), option.value);
+            button.classList.toggle("selected", selected);
+            button.setAttribute("aria-checked", String(selected));
+          });
+          grid.append(button);
+        }
+        box.append(grid, pendingBadge([item.key]));
+        return box;
+      }
+      case "slider": {
+        const box = el("div", "slider");
+        const head = el("div", "slider-head");
+        const shown = el("span", "slider-value");
+        head.append(el("span", "title", item.label ?? item.key), shown);
+        const input = el("input");
+        input.type = "range";
+        input.min = item.min;
+        input.max = item.max;
+        input.step = item.step ?? 1;
+        const format = (value) => `${(Number(value) * (item.scale ?? 1)).toFixed(item.decimals ?? 0)}${item.unit ?? ""}`;
+        let dragging = false;
+        let timer;
+        const send = () => { clearTimeout(timer); setValues({ [item.key]: Number(input.value) }); };
+        input.addEventListener("pointerdown", () => { dragging = true; });
+        input.addEventListener("input", () => {
+          shown.textContent = format(input.value);
+          clearTimeout(timer);
+          timer = setTimeout(send, 250);
+        });
+        input.addEventListener("change", () => { dragging = false; send(); });
+        bindings.push(() => {
+          if (dragging) return;
+          const value = questValue(item.key);
+          if (value !== undefined) input.value = value;
+          shown.textContent = format(input.value);
+        });
+        box.append(head, input, pendingBadge([item.key]));
+        return box;
+      }
+      case "presets": {
+        const chips = el("div", "chips");
+        for (const option of item.options ?? []) {
+          const chip = el("button", "chip", option.label);
+          chip.type = "button";
+          chip.addEventListener("click", () => setValues(option.values));
+          bindings.push(() => chip.classList.toggle("selected",
+            Object.entries(option.values ?? {}).every(([key, value]) => same(questValue(key), value))));
+          chips.append(chip);
+        }
+        return chips;
+      }
+      case "action": {
+        const button = el("button", "", item.label ?? item.action);
+        button.type = "button";
+        button.addEventListener("click", async () => {
+          try { await invoke("settings_action", { action: item.action }); message("quest-message", `${item.label ?? item.action}: sent to the Quest.`); }
+          catch (error) { message("quest-message", String(error), true); }
+        });
+        bindings.push(() => {
+          button.disabled = !quest?.connected;
+          button.title = quest?.connected ? "" : "Needs the Quest to be connected";
+        });
+        return button;
+      }
+      case "reset": {
+        const button = el("button", "", item.label ?? "Reset");
+        button.type = "button";
+        button.addEventListener("click", () => setValues(item.values ?? {}));
+        return button;
+      }
+      case "quick_inputs": {
+        // The Quest's left index-pinch ring as a keypad: one input, or none, per direction.
+        const slots = item.slots ?? [];
+        const grid = el("div", "keypad");
+        const current = () => {
+          const value = questValue(item.key);
+          return Array.isArray(value) && value.length === slots.length ? value : slots.map(() => "");
+        };
+        const layout = ["TopLeft", "Top", "TopRight", "Left", null, "Right", "BottomLeft", "Bottom", "BottomRight"];
+        for (const id of layout) {
+          const index = slots.findIndex((slot) => slot.id === id);
+          if (index < 0) { grid.append(el("div", "keypad-centre", id === null ? "Pinch" : "")); continue; }
+          const cell = el("label", "keypad-cell");
+          const select = el("select");
+          select.setAttribute("aria-label", slots[index].label);
+          select.append(new Option("Empty", ""), ...(item.options ?? []).map((option) => new Option(option.label, option.value)));
+          select.addEventListener("change", () => {
+            // As on the Quest: an input already on the ring swaps places with this direction's.
+            const next = [...current()];
+            const from = select.value ? next.indexOf(select.value) : -1;
+            if (from >= 0 && from !== index) next[from] = next[index];
+            next[index] = select.value;
+            setValues({ [item.key]: next });
+          });
+          bindings.push(() => { select.value = current()[index] ?? ""; });
+          cell.append(el("span", "keypad-label", slots[index].label), select);
+          grid.append(cell);
+        }
+        const box = el("div", "quick-inputs");
+        box.append(grid, pendingBadge([item.key]));
+        return box;
+      }
+      case "note":
+        return el("p", "note", item.text ?? "");
+      case "api_key": {
+        const box = el("div", "api-key");
+        let shownProvider;
+        bindings.push(() => {
+          const value = questValue(item.providerKey);
+          const id = value === "claude" ? "anthropic" : value;
+          if (id === shownProvider) return;
+          shownProvider = id;
+          const provider = providers.find((candidate) => candidate.id === id);
+          box.replaceChildren(...(provider ? [keyRow(provider, "quest-message")] : []));
+        });
+        return box;
+      }
+      default:
+        return null; // A newer Quest app's item type: skip it.
     }
   }
 

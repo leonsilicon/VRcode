@@ -96,9 +96,12 @@ class TerminalSelectionInput<T : Any>(
           return true
         }
         val hit = screen.hit(event.x, event.y) ?: return true
+        // Like a Mac window in the background, the first press only brings the window forward (and
+        // focuses the pane under it); the terminal gets neither the click nor a selection.
+        val background = !screen.active
         onFocus(hit.pane)
         screen.requestFocus()
-        if (hit.row < 0 || hit.col < 0) return true
+        if (background || hit.row < 0 || hit.col < 0) return true
         val target = targetAt(hit.pane) ?: return true
         val view = screen.gridView(hit.pane) ?: return true
         capture = Capture(target, hit.pane, view, view.grid,

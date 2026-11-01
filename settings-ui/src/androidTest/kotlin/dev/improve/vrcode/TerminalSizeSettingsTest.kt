@@ -74,7 +74,7 @@ class TerminalSizeSettingsTest {
     compose.onNodeWithTag("settings-terminal-size-value").assertTextEquals("Custom · 138 × 40")
     compose.runOnIdle {
       assertEquals(TerminalSize(138, 40), SettingsStore(preferences).load().defaultTerminalSize)
-      assertEquals(WindowMode.Fixed, SettingsStore(preferences).load().defaultWindowMode)
+      assertEquals(WindowMode.Follow, SettingsStore(preferences).load().defaultWindowMode)
     }
     compose.onNodeWithTag("settings-page-Appearance").performClick()
     compose.onNodeWithTag("settings-page-Workspace").performClick()

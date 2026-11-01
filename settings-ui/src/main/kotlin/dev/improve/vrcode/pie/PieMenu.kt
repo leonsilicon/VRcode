@@ -5,18 +5,14 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.hoverable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -40,8 +36,13 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
@@ -51,72 +52,175 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
 
-enum class PieIcon {
+/** An item's icon: a drawn glyph, or short [glyph] text for keys that read best as letters. */
+enum class PieIcon(val glyph: String? = null) {
   AddTerminal, Codex, Claude, BringForward, Keyboard, Enter, Escape, Tab, Interrupt, Paste, Clear,
-  ArrowUp, ArrowRight, ArrowDown, ArrowLeft,
+  ArrowUp, ArrowRight, ArrowDown, ArrowLeft, ShiftTab, Backspace,
+  CtrlD("^D"), CtrlZ("^Z"), CtrlL("^L"), CtrlR("^R"), PageUp("PgUp"), PageDown("PgDn"), Home("Home"), End("End"),
 }
 
 class PieItem(val label: String, val icon: PieIcon, val action: () -> Unit)
 
+/** [count] items evenly around the pie, item 0 at the top: each one's direction in degrees, clockwise. */
+fun pieEvenAngles(count: Int): List<Float> = List(count) { 360f * it / count }
+
 /**
  * What the pie shows: its [title], its items and the one the hand currently points at.
- * [cancelFraction] is the dead zone's diameter as a fraction of the pie's side.
+ * [cancelFraction] is the dead zone's diameter as a fraction of the pie's side. [angles] is each
+ * item's direction in degrees clockwise from the top; evenly spaced unless given.
  */
-class PieState(val title: String, val items: List<PieItem>, val cancelFraction: Float = 0.27f) {
+class PieState(
+  val title: String,
+  items: List<PieItem>,
+  val cancelFraction: Float = 0.17f,
+  angles: List<Float> = pieEvenAngles(items.size),
+) {
+  var items by mutableStateOf(items)
+    private set
+  var angles by mutableStateOf(angles)
+    private set
+
+  init {
+    require(items.size == angles.size) { "one angle per item" }
+  }
+
+  /** Item [index]'s direction in degrees, clockwise from the top. */
+  fun angleOf(index: Int): Float = angles.getOrElse(index) { 360f * index / items.size }
+
+  /** Replaces the items (each at its [angles] entry), clearing any hover or choice. */
+  fun setItems(items: List<PieItem>, angles: List<Float> = pieEvenAngles(items.size)) {
+    require(items.size == angles.size) { "one angle per item" }
+    highlighted = null
+    chosen = null
+    rayHovered = null
+    rayRun = null
+    progress = 0f
+    this.items = items
+    this.angles = angles
+  }
+
   var highlighted by mutableStateOf<Int?>(null)
   /** The item that just ran, shown briefly before the pie hides. */
   var chosen by mutableStateOf<Int?>(null)
-  /** Fill inside the hovered pill, driven by the same clock that launches its action. */
+  /** Fill inside the hovered item's label pill, driven by the clock that launches its action. */
   var progress by mutableFloatStateOf(0f)
+  /** The item the other hand's ray hovers (its icon, or the spoke out to its shown label), if any. */
   var rayHovered by mutableStateOf<Int?>(null)
+  /** The shown label pill the other hand's ray hovers, if any: that runs its item at once. */
+  var rayRun by mutableStateOf<Int?>(null)
 }
 
-/** Item centres sit this fraction of the pie's side from its centre. */
-const val PIE_ITEM_RADIUS = 0.36f
+/** Item icons' centres sit this fraction of the pie's side from its centre. */
+const val PIE_ITEM_RADIUS = 0.16f
 
-/** A hovered item's pill width, and every item's height (an icon's diameter), as fractions of the side. */
-const val PIE_PILL_WIDTH = 0.36f
-const val PIE_ITEM_HEIGHT = 0.14f
+/** An item icon's diameter, which is also its label pill's height, as a fraction of the side. */
+const val PIE_ITEM_HEIGHT = 0.072f
+
+/** The label pill's width, as a fraction of the side. */
+const val PIE_LABEL_WIDTH = 0.175f
 
 /**
- * How far item [index] of [count]'s expanded pill reaches from the pie's centre in the item's own
- * direction, as a fraction of the pie's side: where a swipe out through the pill ends. Side pills
- * slide inward to stay on the pie, as [PieMenu] draws them.
+ * How far from the pie's centre, along any item's spoke, its label pill begins: as far past the
+ * icon's centre as the icon's centre is from the pie's, so the label stands well clear of its icon.
+ * Reaching it runs the item at once.
  */
-fun pieItemFarEnd(index: Int, count: Int): Float {
-  val angle = 2 * Math.PI * index / count
-  val s = sin(angle).toFloat()
-  val c = cos(angle).toFloat()
-  val maxX = (1f - PIE_PILL_WIDTH) / 2
-  val x = (PIE_ITEM_RADIUS * s).coerceIn(-maxX, maxX)
-  val centre = x * s + PIE_ITEM_RADIUS * c * c
-  return centre + pillHalfExtent(PIE_PILL_WIDTH, PIE_ITEM_HEIGHT, s)
+const val PIE_LABEL_START = 2 * PIE_ITEM_RADIUS
+
+/**
+ * Each spoke, from the centre out: the item's icon and then, [PIE_LABEL_START] out, its label pill
+ * (the action's name, filling over the one-second dwell). The pill is a horizontal stadium placed so
+ * its nearest point along the spoke is [PIE_LABEL_START] out. Positions are fractions of the pie's
+ * side from its centre, x right and y up.
+ */
+fun pieLabelCentre(index: Int, count: Int): Pair<Float, Float> = pieLabelCentre(evenAngle(index, count))
+
+/** The label pill's centre on the spoke [degrees] clockwise from the top. */
+fun pieLabelCentre(degrees: Float): Pair<Float, Float> {
+  val (s, c) = spoke(degrees)
+  val d = PIE_LABEL_START + pillHalfExtent(PIE_LABEL_WIDTH, PIE_ITEM_HEIGHT, s)
+  return s * d to c * d
+}
+
+private fun evenAngle(index: Int, count: Int): Float = 360f * index / count
+
+/** A spoke [degrees] clockwise from the top: sin and cos of its angle. */
+private fun spoke(degrees: Float): Pair<Float, Float> {
+  val angle = Math.toRadians(degrees.toDouble())
+  return sin(angle).toFloat() to cos(angle).toFloat()
 }
 
 /** Half a horizontal stadium's ([width] by [height]) extent along a direction whose x part is [s]. */
 private fun pillHalfExtent(width: Float, height: Float, s: Float): Float = (width - height) / 2 * abs(s) + height / 2
 
+/** What the other hand's ray is on: [item], and whether that is its label (which runs it at once). */
+data class PieRayTarget(val item: Int, val onLabel: Boolean)
+
+/**
+ * What a ray at ([x], [y]) is on, or null. Positions are fractions of the pie's side from its
+ * centre, x right and y up; [angles] places each item and [highlighted] is the item whose label
+ * shows. Any item's icon counts. The shown label runs its item, and the stretch of spoke from the
+ * icon out to it keeps that item hovered, so the ray can cross the gap between them.
+ */
+fun pieRayTarget(x: Float, y: Float, angles: List<Float>, highlighted: Int?): PieRayTarget? {
+  val r = PIE_ITEM_HEIGHT / 2
+  for ((i, degrees) in angles.withIndex()) {
+    val (s, c) = spoke(degrees)
+    if (hypot(x - s * PIE_ITEM_RADIUS, y - c * PIE_ITEM_RADIUS) <= r) return PieRayTarget(i, onLabel = false)
+  }
+  val i = highlighted?.takeIf { it in angles.indices } ?: return null
+  val (lx, ly) = pieLabelCentre(angles[i])
+  val half = (PIE_LABEL_WIDTH - PIE_ITEM_HEIGHT) / 2
+  if (hypot(x - x.coerceIn(lx - half, lx + half), y - ly) <= r) return PieRayTarget(i, onLabel = true)
+  val (s, c) = spoke(angles[i])
+  val along = x * s + y * c
+  val across = abs(x * c - y * s)
+  return PieRayTarget(i, onLabel = false).takeIf { across <= r && along in PIE_ITEM_RADIUS..PIE_LABEL_START + r }
+}
+
 private val Item = Color(0xE6202227)
 private val Edge = Color(0x40FFFFFF)
 private val Picked = Color(0xFF4C8DFF)
+private val Raised = Color(0xF02C3648)
 
 /**
  * A pie of items around the pinch point: item 0 at the top, the rest clockwise, matching
- * [dev.improve.vrcode.hands.RadialMenu]. Icons expand into labeled pills on hover. The fill shows
- * the one-second dwell while pinching and sweeps outward, away from the centre, the way a swipe
- * through the pill speeds it up ([pieItemFarEnd]). The app runs items from the hand, so pills have
- * no click handler. The other hand's ray can hover too. The centre circle names the menu.
+ * [dev.improve.vrcode.hands.RadialMenu]. Each item is a circular icon. Hovering one reveals its
+ * label pill well out on its spoke ([pieLabelCentre]): it fills over the one-second dwell that runs
+ * the item, and reaching it runs the item at once. The icon itself never fills. The app runs items
+ * from the hand, so nothing here has a click handler. The other hand's ray can hover icons and
+ * labels too ([pieRayTarget]). The centre circle names the menu.
  */
 @Composable
 fun PieMenu(state: PieState) {
-  BoxWithConstraints(Modifier.fillMaxSize()) {
+  // Where the other hand's ray is, as fractions of the side from the centre (y up). One handler for
+  // the whole pie, so moving straight from an icon across the gap to its label is never missed, as
+  // it was with a hoverable per element (Compose sent no enter to the next sibling).
+  val ray = remember { mutableStateOf<Offset?>(null) }
+  val target = ray.value?.let { pieRayTarget(it.x, it.y, state.angles, state.highlighted) }
+  LaunchedEffect(target) {
+    state.rayHovered = target?.takeUnless { it.onLabel }?.item
+    state.rayRun = target?.takeIf { it.onLabel }?.item
+  }
+  BoxWithConstraints(
+    Modifier.fillMaxSize().pointerInput(Unit) {
+      awaitPointerEventScope {
+        while (true) {
+          val event = awaitPointerEvent()
+          val change = event.changes.firstOrNull() ?: continue
+          val gone = event.type == PointerEventType.Exit || (change.type == PointerType.Touch && !change.pressed)
+          val px = minOf(size.width, size.height).toFloat()
+          ray.value = if (gone) null else Offset((change.position.x - size.width / 2f) / px, (size.height / 2f - change.position.y) / px)
+        }
+      }
+    },
+  ) {
     val side = minOf(maxWidth, maxHeight)
     val radius = side * PIE_ITEM_RADIUS
-    val pillW = side * PIE_PILL_WIDTH
-    val chipH = side * PIE_ITEM_HEIGHT
-    val font = with(LocalDensity.current) { (chipH * 0.25f).toSp() }
+    val iconD = side * PIE_ITEM_HEIGHT
+    val font = with(LocalDensity.current) { (iconD * 0.27f).toSp() }
     Box(
       Modifier.align(Alignment.Center).size(side * state.cancelFraction).clip(CircleShape)
         .background(Color(0x66202227)).border(1.dp, Edge, CircleShape),
@@ -124,81 +228,91 @@ fun PieMenu(state: PieState) {
     ) {
       BasicText(state.title, style = TextStyle(color = Color.White.copy(alpha = 0.7f), fontSize = font * 0.8f, textAlign = TextAlign.Center))
     }
-    val count = state.items.size
+    val chosen = state.chosen
     for ((i, item) in state.items.withIndex()) {
-      val angle = 2 * Math.PI * i / count
-      val x = radius * sin(angle).toFloat()
-      val y = -radius * cos(angle).toFloat()
+      val degrees = state.angleOf(i)
+      val angle = Math.toRadians(degrees.toDouble())
       val picked = state.highlighted == i
-      val chosen = state.chosen
-      val expansion by animateFloatAsState(if (picked) 1f else 0f, tween(160), label = "quick action expansion")
-      val interaction = remember { MutableInteractionSource() }
-      val rayHovered by interaction.collectIsHoveredAsState()
-      LaunchedEffect(rayHovered) {
-        if (rayHovered) state.rayHovered = i else if (state.rayHovered == i) state.rayHovered = null
-      }
-      val shape = RoundedCornerShape(50)
-      val width = chipH + (pillW - chipH) * expansion
-      // Items at the sides (3 and 9 o'clock with eight items) would grow past the menu's edge:
-      // slide the pill inward as it widens.
-      val maxX = (side - width) / 2
+      val dim = if (chosen == null || chosen == i) 1f else 0.35f
       Box(
         Modifier.align(Alignment.Center)
-          .offset(x.coerceIn(-maxX, maxX), y)
-          .size(width, chipH)
-          .alpha(if (chosen == null || chosen == i) 1f else 0.35f)
-          .clip(shape)
-          .background(if (picked) Color(0xF02C3648) else Item)
-          .border(if (chosen == i) 3.dp else 1.dp, if (chosen == i) Color.White else if (picked) Picked else Edge, shape)
-          .hoverable(interaction)
-          .semantics(mergeDescendants = true) {
-            contentDescription = item.label
-            if (picked) progressBarRangeInfo = ProgressBarRangeInfo(state.progress, 0f..1f)
-          },
+          .offset(radius * sin(angle).toFloat(), -radius * cos(angle).toFloat())
+          .size(iconD)
+          .alpha(dim)
+          .clip(CircleShape)
+          .background(if (picked) Raised else Item)
+          .border(if (picked) 2.dp else 1.dp, if (picked) Picked else Edge, CircleShape)
+          .semantics { contentDescription = item.label },
         contentAlignment = Alignment.Center,
       ) {
-        if (picked) OutwardFill(angle, state.progress, Modifier.matchParentSize())
-        Row(
-          Modifier.fillMaxSize().padding(horizontal = chipH * 0.2f),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.Center,
+        PieIconImage(item.icon, Modifier.size(iconD * 0.5f))
+      }
+      // The hovered item's label fades in, out along its spoke.
+      val shown by animateFloatAsState(if (picked) 1f else 0f, tween(140), label = "quick action label")
+      if (shown > 0.01f) {
+        val shape = RoundedCornerShape(50)
+        val (lx, ly) = pieLabelCentre(degrees)
+        Box(
+          Modifier.align(Alignment.Center)
+            .offset(side * lx, -side * ly)
+            .size(side * PIE_LABEL_WIDTH, iconD)
+            .alpha(shown * dim)
+            .clip(shape)
+            .background(Raised)
+            .border(if (chosen == i) 3.dp else 1.dp, if (chosen == i) Color.White else Picked, shape)
+            .testTag(pieLabelTag(i))
+            .semantics(mergeDescendants = true) {
+              progressBarRangeInfo = ProgressBarRangeInfo(state.progress, 0f..1f)
+            },
+          contentAlignment = Alignment.Center,
         ) {
-          QuickActionIcon(item.icon, Modifier.size(chipH * 0.5f))
-          if (expansion > 0.01f) {
-            Spacer(Modifier.size(chipH * 0.1f * expansion))
-            BasicText(
-              item.label,
-              modifier = Modifier.weight(expansion).alpha(expansion),
-              maxLines = 1,
-              softWrap = false,
-              style = TextStyle(color = Color.White, fontSize = font, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center),
-            )
-          }
+          // Fill from the end nearest the icon.
+          PillFill(state.progress, fromRight = lx < -1e-3f, Modifier.matchParentSize())
+          BasicText(
+            item.label,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = iconD * 0.2f),
+            maxLines = 1,
+            softWrap = false,
+            style = TextStyle(color = Color.White, fontSize = font, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center),
+          )
         }
       }
     }
   }
 }
 
-/**
- * The hovered pill's fill: [progress] of it, swept from the end nearest the pie's centre to the far
- * end in the item's direction [angle] (radians, 0 at the top, clockwise), so it moves the way a swipe
- * through the pill does. The pill's own clip shapes it.
- */
+/** Test tag of item [index]'s label pill. */
+fun pieLabelTag(index: Int) = "pie-label-$index"
+
+/** [progress] of the pill filled from its left end, or from its right end when [fromRight]. */
 @Composable
-private fun OutwardFill(angle: Double, progress: Float, modifier: Modifier) {
+private fun PillFill(progress: Float, fromRight: Boolean, modifier: Modifier) {
   Canvas(modifier) {
-    val half = pillHalfExtent(size.width, size.height, sin(angle).toFloat())
-    val front = -half + 2 * half * progress.coerceIn(0f, 1f) // outward from the pill's centre
-    val beyond = size.width + size.height
-    // Turned by the item's angle, "outward" is up: fill everything below the front.
-    rotate(Math.toDegrees(angle).toFloat(), pivot = center) {
-      drawRect(
-        Picked.copy(alpha = 0.8f),
-        topLeft = Offset(center.x - beyond, center.y - front),
-        size = Size(2 * beyond, beyond + front),
-      )
-    }
+    val w = size.width * progress.coerceIn(0f, 1f)
+    drawRect(Picked.copy(alpha = 0.8f), topLeft = Offset(if (fromRight) size.width - w else 0f, 0f), size = Size(w, size.height))
+  }
+}
+
+/** [icon] in white, as the pie draws it; Settings' quick inputs editor shows the same icons. */
+@Composable
+fun PieIconImage(icon: PieIcon, modifier: Modifier) {
+  val glyph = icon.glyph
+  if (glyph == null) QuickActionIcon(icon, modifier) else GlyphIcon(glyph, modifier)
+}
+
+/** A key name as letters ("^D", "PgUp"), sized to [modifier]'s box and free to overhang it a little. */
+@Composable
+private fun GlyphIcon(text: String, modifier: Modifier) {
+  BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+    val size = with(LocalDensity.current) { (maxHeight * if (text.length <= 2) 0.8f else 0.5f).toSp() }
+    BasicText(
+      text,
+      // The item (or its Settings tile) already names the key; the glyph is decoration.
+      Modifier.wrapContentSize(unbounded = true).clearAndSetSemantics {},
+      maxLines = 1,
+      softWrap = false,
+      style = TextStyle(color = Color.White, fontSize = size, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center),
+    )
   }
 }
 
@@ -271,6 +385,17 @@ private fun QuickActionIcon(icon: PieIcon, modifier: Modifier) {
           line(3f, 12f, 17f, 12f); line(17f, 12f, 12f, 7f); line(17f, 12f, 12f, 17f)
           line(21f, 5f, 21f, 19f)
         }
+        PieIcon.ShiftTab -> {
+          // Tab, mirrored: back to the previous stop.
+          line(21f, 12f, 7f, 12f); line(7f, 12f, 12f, 7f); line(7f, 12f, 12f, 17f)
+          line(3f, 5f, 3f, 19f)
+        }
+        PieIcon.Backspace -> {
+          drawPath(Path().apply {
+            moveTo(8f, 5f); lineTo(21f, 5f); lineTo(21f, 19f); lineTo(8f, 19f); lineTo(2f, 12f); close()
+          }, ink, style = stroke)
+          line(11f, 9f, 17f, 15f); line(17f, 9f, 11f, 15f)
+        }
         PieIcon.ArrowUp, PieIcon.ArrowRight, PieIcon.ArrowDown, PieIcon.ArrowLeft -> {
           val turn = when (icon) {
             PieIcon.ArrowRight -> 90f
@@ -292,6 +417,9 @@ private fun QuickActionIcon(icon: PieIcon, modifier: Modifier) {
           line(5f, 6f, 6f, 21f); line(6f, 21f, 18f, 21f); line(18f, 21f, 19f, 6f)
           line(10f, 10f, 10f, 17f); line(14f, 10f, 14f, 17f)
         }
+        // Drawn as text by GlyphIcon.
+        PieIcon.CtrlD, PieIcon.CtrlZ, PieIcon.CtrlL, PieIcon.CtrlR, PieIcon.PageUp, PieIcon.PageDown,
+        PieIcon.Home, PieIcon.End -> Unit
       }
     }
   }
@@ -303,21 +431,19 @@ class PieHintState {
 }
 
 /**
- * The hint above either hand's middle fingertip while its palm faces the user, like the system's own
- * menu glyph: a ring whose centre fills as the thumb closes on the middle finger. Pinching opens
- * the palm menu.
+ * The hint on either hand's middle fingertip while its palm faces the user, sized like the system's
+ * own menu glyph: a ring whose centre fills as the thumb closes on the middle finger. Pinching opens
+ * the palm menu. Drawn in proportion to its panel, so the ring keeps its look at any hint size.
  */
 @Composable
 fun PieHint(state: PieHintState) {
-  Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-    Box(
-      Modifier.fillMaxSize(0.92f)
-        .clip(CircleShape)
-        .background(Color(0x99202227))
-        .border(2.dp, Color.White.copy(alpha = 0.85f), CircleShape),
-    )
+  Canvas(Modifier.fillMaxSize()) {
+    val r = size.minDimension / 2 * 0.92f
+    val ring = r * 0.12f
+    drawCircle(Color(0x99202227), radius = r)
+    drawCircle(Color.White.copy(alpha = 0.85f), radius = r - ring / 2, style = Stroke(ring))
     // A full pinch fills the ring completely, so "almost full" always means "not quite pinched".
     val p = state.progress
-    Box(Modifier.fillMaxSize(0.28f + 0.64f * p).clip(CircleShape).background(Picked.copy(alpha = 0.55f + 0.45f * p)))
+    drawCircle(Picked.copy(alpha = 0.55f + 0.45f * p), radius = r * (0.3f + 0.7f * p))
   }
 }

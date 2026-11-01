@@ -8,6 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.sin
 
 class TitleBarDragTest {
@@ -91,6 +92,63 @@ class TitleBarDragTest {
     val turned = titleBarDragPose(pose, anchor, anchor, wide, mpp, mpp, head)
     assertFacesHead(turned)
     assertVector(grabbed, grabPoint(turned, anchor, wide))
+  }
+
+  @Test fun pushingPlacesTheGrabPointOnTheHandRayAtTheNewDistanceFacingTheUser() {
+    val anchor = Offset(300f, 30f)
+    val hand = Vector3(0.2f, 1.35f, 0.3f)
+    val direction = Vector3(-0.1f, 0.25f, 1f)
+    val pushed = titleBarDepthPose(anchor, centre, mpp, mpp, head, hand, direction, radius = 2.5f)!!
+    assertFacesHead(pushed)
+    assertOnRay(grabPoint(pushed, anchor), hand, direction)
+    assertEquals(2.5f, (grabPoint(pushed, anchor) - head).length(), 0.0005f)
+    assertVector(grabPoint(pushed, anchor), titleBarGrabPoint(pushed, anchor, centre, mpp, mpp))
+  }
+
+  @Test fun pullingAWindowNoCloserThanTheHandHasNoPlacement() {
+    val hand = Vector3(0f, 1.4f, 0.5f)
+    assertEquals(null, titleBarDepthPose(Offset(500f, 20f), centre, mpp, mpp, head, hand, Vector3(0f, 0f, 1f), radius = 0.3f))
+  }
+
+  @Test fun depthHoldsUntilTheHandReachesThenScalesExponentially() {
+    val forward = Vector3(0f, 0f, 1f)
+    val depth = DragDepth(1.5f, Vector3(0f, -0.3f, 0.35f))
+    // Sideways sweeps and a small reach are an ordinary drag.
+    assertEquals(1.5f, depth.radius(Vector3(0.2f, -0.3f, 0.35f), forward, 0.45f, 4f), 0f)
+    assertEquals(1.5f, depth.radius(Vector3(0.2f, -0.3f, 0.37f), forward, 0.45f, 4f), 0f)
+    // Engaging at 3 cm starts from the current distance rather than jumping.
+    assertEquals(1.5f, depth.radius(Vector3(0.2f, -0.3f, 0.38f), forward, 0.45f, 4f), 0.0001f)
+    // A further 10 cm of reach moves the window e^0.35 further; pulling back the same returns it.
+    assertEquals(1.5f * exp(0.35f), depth.radius(Vector3(0.2f, -0.3f, 0.48f), forward, 0.45f, 4f), 0.0005f)
+    assertEquals(1.5f, depth.radius(Vector3(0.2f, -0.3f, 0.38f), forward, 0.45f, 4f), 0.0005f)
+    assertEquals(1.5f * exp(-0.35f), depth.radius(Vector3(0.2f, -0.3f, 0.28f), forward, 0.45f, 4f), 0.0005f)
+  }
+
+  @Test fun reachIsMeasuredAlongTheRayAsItTurns() {
+    val depth = DragDepth(1.5f, Vector3(0f, 0f, 0.4f))
+    // A quarter arc of the arm at constant reach, the ray pointing outward from the body as it turns.
+    var radius = 1.5f
+    for (degree in 1..90) {
+      val angle = Math.toRadians(degree.toDouble()).toFloat()
+      val outward = Vector3(sin(angle), 0f, cos(angle))
+      radius = depth.radius(outward * 0.4f, outward, 0.45f, 4f)
+    }
+    assertEquals(1.5f, radius, 0f)
+  }
+
+  @Test fun pastALimitPullingBackMovesTheWindowAtOnce() {
+    val forward = Vector3(0f, 0f, 1f)
+    val depth = DragDepth(3.5f, Vector3(0f, 0f, 0.3f))
+    assertEquals(4f, depth.radius(Vector3(0f, 0f, 0.7f), forward, 0.45f, 4f), 0f)
+    // Overshooting by 30 cm is not stored: 1 cm back already brings it nearer.
+    assertEquals(4f * exp(-0.035f), depth.radius(Vector3(0f, 0f, 0.69f), forward, 0.45f, 4f), 0.0005f)
+  }
+
+  @Test fun aWindowAlreadyBeyondTheLimitsIsNotSnappedOnGrab() {
+    val forward = Vector3(0f, 0f, 1f)
+    val depth = DragDepth(5f, Vector3(0f, 0f, 0.3f))
+    assertEquals(5f, depth.radius(Vector3(0f, 0f, 0.34f), forward, 0.45f, 4f), 0.0005f)
+    assertTrue(depth.radius(Vector3(0f, 0f, 0.3f), forward, 0.45f, 4f) < 5f)
   }
 
   private class Ray(val pose: Pose, val direction: Vector3)

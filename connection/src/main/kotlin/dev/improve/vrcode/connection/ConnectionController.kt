@@ -3,6 +3,7 @@ package dev.improve.vrcode.connection
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.util.Log
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -32,6 +33,8 @@ data class LinkStatus(val title: String = "Not connected", val detail: String = 
                       val attention: Boolean = false)
 
 /** No network of the kind the route needs (Wi-Fi, Bluetooth PAN) is connected on the Quest. */
+private const val TAG = "VrcodeConnection"
+
 private class MissingNetwork(message: String) : IllegalStateException(message)
 /** Every address of one route failed. [identity] is set when a Mac answered but was not the paired one or refused the key. */
 private class RouteFailure(message: String, val identity: Boolean) : java.io.IOException(message)
@@ -42,12 +45,16 @@ private fun Throwable.isIdentityFailure(): Boolean = this is RouteFailure && ide
     it.message?.let { text -> "did not authorize" in text || "not your paired Mac" in text } == true }
 
 /** The status after a full round of failed routes. */
-internal fun failureStatus(macName: String, automatic: Boolean, failures: List<String>, identity: Boolean, missingWifi: Boolean, missingNetwork: Boolean): LinkStatus {
+internal fun failureStatus(macName: String, automatic: Boolean, failures: List<String>, identity: Boolean, missingWifi: Boolean, missingNetwork: Boolean,
+                           bluetooth: Boolean = false): LinkStatus {
   val details = failures.joinToString("\n")
   return when {
     identity -> LinkStatus("Your Mac's connection key has changed",
       "A Mac answered but did not accept this Quest's key. Pair again: paste the Mac's current connection key below, " +
         "or run bun scripts/quest-link.ts pair.\n\n$details", busy = true, attention = true)
+    automatic && missingWifi && bluetooth -> LinkStatus("Make sure the VRcode Mac app is running",
+      "There is no Wi-Fi, and $macName did not answer over Bluetooth. Keep the Mac nearby with Bluetooth on and the VRcode " +
+        "Mac app running; the Quest connects automatically. Joining Wi-Fi also works, and is faster.\n\n$details", busy = true, attention = true)
     automatic && missingWifi -> LinkStatus("Connect the Quest to Wi-Fi",
       "VRcode reaches $macName over Wi-Fi and connects automatically once the Quest joins a network.\n\n$details", busy = true, attention = true)
     !automatic && missingNetwork -> LinkStatus("Could not connect", details, busy = true, attention = true)
@@ -190,6 +197,9 @@ class ConnectionController(
     job = scope.launch {
       var retry = 0
       while (isActive && thisGeneration == generation) {
+        // Automatic needs no Bluetooth setup: a Mac bonded in the Quest's Bluetooth settings is found
+        // here, so the link survives with no Wi-Fi at all. Wi-Fi stays first because it is faster.
+        val bluetoothMacs = if (selected.mode == ConnectionMode.Auto) BluetoothCarriers.bondedMacs(activity, selected.classicAddress, selected.name) else emptyList()
         val attempts = if (selected.mode == ConnectionMode.Auto) buildList {
           add(ConnectionMode.LocalWiFi)
           if (ownsGroup) add(ConnectionMode.WiFiDirect)
@@ -198,9 +208,11 @@ class ConnectionController(
           if (networks.allNetworks.any { networks.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) == true }) {
             add(ConnectionMode.BluetoothPAN)
           }
-          if (selected.classicAddress.isNotBlank()) add(ConnectionMode.BluetoothClassic)
-          if (selected.bleAddress.isNotBlank()) add(ConnectionMode.BluetoothLE)
+          if (selected.classicAddress.isNotBlank() || bluetoothMacs.isNotEmpty()) add(ConnectionMode.BluetoothClassic)
+          // BLE needs no pairing but scans for seconds, so it is the last resort when no Mac is bonded.
+          if (selected.bleAddress.isNotBlank() || (bluetoothMacs.isEmpty() && BluetoothCarriers.canScan(activity))) add(ConnectionMode.BluetoothLE)
         } else listOf(selected.mode)
+        if (retry == 0) Log.i(TAG, "routes: ${attempts.joinToString { it.title }}" + (if (bluetoothMacs.isEmpty()) "" else "; paired Mac candidates ${bluetoothMacs}"))
         var connected = false
         val failures = mutableListOf<String>()
         var identity = false
@@ -209,6 +221,7 @@ class ConnectionController(
         for (mode in attempts) {
           ensureActive()
           var tunnel: RelayTunnel? = null
+          var usedClassic: String? = null
           try {
             // Keep an actionable message (e.g. "Make sure the VRcode Mac app is running") on screen while retrying.
             if (!mutableStatus.value.attention) mutableStatus.value = LinkStatus("Connecting via ${mode.title}", "${selected.name} · attempt ${retry + 1}", busy = true)
@@ -232,7 +245,9 @@ class ConnectionController(
                   ConnectionMode.USB -> listOf("127.0.0.1" to 17274)
                   ConnectionMode.WiFiADB -> listOf("127.0.0.1" to 27274)
                   ConnectionMode.BluetoothClassic -> {
-                    carrier = CarrierSocket(BluetoothCarriers.classic(activity, selected.classicAddress)); listOf("127.0.0.1" to carrier.port)
+                    val (address, socket) = openClassic(bluetoothMacs.ifEmpty { listOf(selected.classicAddress) })
+                    usedClassic = address
+                    carrier = CarrierSocket(socket); listOf("127.0.0.1" to carrier.port)
                   }
                   ConnectionMode.BluetoothLE -> {
                     carrier = CarrierSocket(BluetoothCarriers.ble(activity, selected.bleAddress)); listOf("127.0.0.1" to carrier.port)
@@ -252,6 +267,11 @@ class ConnectionController(
             if (usedHost != "127.0.0.1" && usedHost != selected.lastHost && profile.value.fingerprint == selected.fingerprint) {
               update(profile.value.copy(lastHost = usedHost))
             }
+            // Remember the Mac's Bluetooth address, so the next fallback goes straight to it.
+            if (usedClassic != null && !usedClassic.equals(selected.classicAddress, true) && profile.value.fingerprint == selected.fingerprint) {
+              update(profile.value.copy(classicAddress = usedClassic!!))
+            }
+            Log.i(TAG, "connected via ${mode.title}" + (usedClassic?.let { " ($it)" } ?: if (usedHost != "127.0.0.1") " ($usedHost)" else ""))
             live = tunnel
             tunnel.start()
             onConnected(tunnel.bridgePort, tunnel.speechPort)
@@ -272,11 +292,22 @@ class ConnectionController(
           finally { tunnel?.close(); if (live === tunnel) live = null }
         }
         ensureActive()
-        if (!connected) mutableStatus.value = failureStatus(selected.name, selected.mode == ConnectionMode.Auto, failures, identity, missingWifi, missingNetwork)
+        if (!connected) mutableStatus.value = failureStatus(selected.name, selected.mode == ConnectionMode.Auto, failures, identity, missingWifi, missingNetwork,
+          bluetooth = ConnectionMode.BluetoothClassic in attempts || ConnectionMode.BluetoothLE in attempts)
         retry++
         withTimeoutOrNull(minOf(5000L, retry * 1000L)) { wake.receive() }
       }
     }
+  }
+
+  /** The first of [addresses] whose RFCOMM VRcode service answers, with its open carrier. */
+  private fun openClassic(addresses: List<String>): Pair<String, ByteCarrier> {
+    val errors = mutableListOf<String>()
+    for (address in addresses) {
+      try { return address to BluetoothCarriers.classic(activity, address) }
+      catch (error: Exception) { errors += "$address: ${error.cause?.message ?: error.message ?: "unavailable"}" }
+    }
+    throw IllegalStateException(errors.joinToString("; ").ifBlank { "No paired Mac" })
   }
 
   fun disconnect() {

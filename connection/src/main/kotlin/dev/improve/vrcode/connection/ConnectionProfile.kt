@@ -12,7 +12,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 enum class ConnectionMode(val title: String, val detail: String) {
-  Auto("Automatic (recommended)", "Prefer secure local Wi-Fi. Fall back to an available cable or configured Bluetooth connection."),
+  Auto("Automatic (recommended)", "Prefer secure local Wi-Fi. Without it, use a cable or Bluetooth to the Mac paired in the Quest's Bluetooth settings."),
   LocalWiFi("Local Wi-Fi", "Connect both devices to the same network."),
   MacHotspot("Mac Wi-Fi sharing", "Join the Wi-Fi network created by Internet Sharing on your Mac."),
   PhoneHotspot("Phone hotspot", "Join both devices to a hotspot that allows connections between them."),

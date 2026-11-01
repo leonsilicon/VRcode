@@ -3,6 +3,7 @@ package dev.improve.vrcode.speech
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import dev.improve.vrcode.voice.Keystroke
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
@@ -29,8 +30,11 @@ sealed interface SpeechEvent {
 
   data class Failure(val id: Int, val message: String) : SpeechEvent
 
-  /** The AI's text for an AI_REQUEST [id]. */
-  data class AiResult(val id: Int, val text: String) : SpeechEvent
+  /** The AI's keystrokes for an AI_REQUEST [id]: text and key presses, in order; [summary] says what they do (agent only). */
+  data class AiResult(val id: Int, val keys: List<Keystroke>, val summary: String = "") : SpeechEvent
+
+  /** What the agent for AI_REQUEST [id] is doing: a [kind] of "status", "thinking" (a chunk) or "step" (a tool call). */
+  data class AiProgress(val id: Int, val kind: String, val text: String) : SpeechEvent
 }
 
 /**
@@ -149,7 +153,8 @@ class SpeechLink(
       Kind.TRANSCRIPT ->
         post(SpeechEvent.Transcript(frame.id, json.optString("final"), json.optString("volatile"), json.optBoolean("done")), current)
       Kind.ERROR -> post(SpeechEvent.Failure(frame.id, json.optString("message", "speech service error")), current)
-      Kind.AI_RESULT -> post(SpeechEvent.AiResult(frame.id, json.optString("text")), current)
+      Kind.AI_RESULT -> post(SpeechEvent.AiResult(frame.id, Keystroke.fromAiResult(json), json.optString("summary")), current)
+      Kind.AI_PROGRESS -> post(SpeechEvent.AiProgress(frame.id, json.optString("kind"), json.optString("text")), current)
     }
   }
 

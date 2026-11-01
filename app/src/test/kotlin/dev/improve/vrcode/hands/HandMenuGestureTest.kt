@@ -334,9 +334,10 @@ class HandMenuGestureTest {
     assertEquals(0.55f / FingerPinch.MIDDLE_START_STRENGTH, g.progress, 0.001f)
     g.step(frame(middle = 0.7f))
     assertTrue(g.progress in 0.9f..0.99f) // almost full: not quite a pinch
-    // The hint sits beyond the middle fingertip (fingers point up, +y) and toward the user (+z).
+    // The hint sits on the middle finger's last segment (fingers point up, +y), toward the user (+z).
     val tip = joints()
-    assertTrue(g.hintPoint!![1] > tip[PalmShape.MIDDLE_TIP * 3 + 1])
+    assertTrue(g.hintPoint!![1] < tip[PalmShape.MIDDLE_TIP * 3 + 1])
+    assertTrue(g.hintPoint!![1] > tip[(PalmShape.MIDDLE_TIP - 1) * 3 + 1])
     assertTrue(g.hintPoint!![2] > tip[PalmShape.MIDDLE_TIP * 3 + 2])
   }
 

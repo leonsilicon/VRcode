@@ -39,18 +39,18 @@ object PalmShape {
     distance(joints, THUMB_TIP, tip) <= radii[THUMB_TIP] + radii[tip] + slackM
 
   /**
-   * Where a hint sits for the finger ending at joint [tipJoint]: [aboveM] beyond the fingertip along
-   * the finger and [outM] off the palm toward the user. In XR_EXT_hand_tracking order each
-   * fingertip's distal joint comes just before it.
+   * Where a hint sits on the finger ending at joint [tipJoint]: [backM] back from the fingertip
+   * toward its distal joint, and [outM] off the palm toward the user, onto the finger's pad. In
+   * XR_EXT_hand_tracking order each fingertip's distal joint comes just before it.
    */
-  fun aboveTip(joints: FloatArray, palm: FloatArray, tipJoint: Int, aboveM: Float, outM: Float): FloatArray {
+  fun onFingertip(joints: FloatArray, palm: FloatArray, tipJoint: Int, backM: Float, outM: Float): FloatArray {
     val tip = point(joints, tipJoint)
     val along = normalize(sub(tip, point(joints, tipJoint - 1)))
     val out = normal(palm)
     return floatArrayOf(
-      tip[0] + along[0] * aboveM + out[0] * outM,
-      tip[1] + along[1] * aboveM + out[1] * outM,
-      tip[2] + along[2] * aboveM + out[2] * outM,
+      tip[0] - along[0] * backM + out[0] * outM,
+      tip[1] - along[1] * backM + out[1] * outM,
+      tip[2] - along[2] * backM + out[2] * outM,
     )
   }
 

@@ -3,6 +3,7 @@ package dev.improve.vrcode
 import dev.improve.xmux.cell.grid.CursorShape
 import dev.improve.xmux.terminal.grid.GridAppearance
 import dev.improve.xmux.window.frame.WindowChrome
+import kotlin.math.roundToLong
 
 /** Default colors from the MIT-licensed iTerm2 Color Schemes collection used by Ghostty.
  * See docs/terminal-appearance.md and assets/terminal-themes/LICENSE. Explicit app colors are kept.
@@ -62,10 +63,24 @@ fun AppSettings.gridAppearance(): GridAppearance = GridAppearance(
   },
 )
 
-/** Keeps all window actions and slots when changing header colors. */
-fun WindowChrome.withTerminalTheme(theme: TerminalTheme): WindowChrome = if (theme == TerminalTheme.Mac) this else WindowChrome(
-  headerHeightDp = headerHeightDp, cornerRadiusDp = cornerRadiusDp,
-  bodyColor = theme.background, headerColor = theme.background, titleColor = theme.foreground,
-  onClose = onClose, onMinimize = onMinimize, onZoom = onZoom,
-  leadingSlot = leadingSlot, trailingSlot = trailingSlot, header = header, overlay = overlay, outline = outline,
-)
+/** [color] (ARGB) with its alpha scaled by [opacity]. */
+fun withOpacity(color: Long, opacity: Float): Long =
+  ((((color ushr 24) and 0xFF) * opacity.coerceIn(0f, 1f)).roundToLong() shl 24) or (color and 0xFFFFFF)
+
+/**
+ * The header and body colors of [theme] with backgrounds at [opacity], keeping all window actions
+ * and slots. Follow Mac uses xmux's default window colors, whatever colors this chrome has (a
+ * terminal window's own chrome leaves its frame clear, since its screen view paints the body).
+ */
+fun WindowChrome.withTerminalTheme(theme: TerminalTheme, opacity: Float = 1f): WindowChrome {
+  val mac = theme == TerminalTheme.Mac
+  val defaults = WindowChrome.Default
+  return WindowChrome(
+    headerHeightDp = headerHeightDp, cornerRadiusDp = cornerRadiusDp,
+    bodyColor = withOpacity(if (mac) defaults.bodyColor else theme.background, opacity),
+    headerColor = withOpacity(if (mac) defaults.headerColor else theme.background, opacity),
+    titleColor = if (mac) defaults.titleColor else theme.foreground,
+    onClose = onClose, onMinimize = onMinimize, onZoom = onZoom,
+    leadingSlot = leadingSlot, trailingSlot = trailingSlot, header = header, overlay = overlay, outline = outline,
+  )
+}

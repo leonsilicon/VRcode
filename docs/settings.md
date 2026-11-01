@@ -31,7 +31,38 @@ Dragging sweeps the window around the user: the grabbed point stays under the po
 distance from the head, and the window turns upright to face the user (no roll), like windows
 placed by Arrange. Dragged sideways, up or down, it never ends up edge-on or drifts nearer or
 further away; an angled window turns to face the user when the drag starts. Movement uses the
-panel's current physical scale, including windows resized with the SDK's corner handles.
+panel's current physical scale, including windows scaled with the corner handles.
+
+A window resizes two ways:
+
+- **Corners scale it.** The SDK's corner handles enlarge or shrink the whole window, text
+  included, at a fixed aspect ratio (Interaction SDK `Simple` resize). The terminal keeps its
+  rows and columns. The scale is saved in the window's cmux layout entry (`scale`), so it returns
+  after a restart.
+- **Edges change its rows or columns.** Point just past the left, right, top or bottom edge (up
+  to 5 cm out, at least 7 cm from a corner): a bar lights up along that edge inside the window.
+  Pinch or pull the trigger and drag. The window grows or shrinks with the pointer a whole cell at
+  a time, and the opposite edge stays put. Until release the terminal keeps its grid, so new
+  space shows empty and a cut-off part is hidden. On release vrcode pins the grid that fills the
+  window in cmux through the Mac service (`TerminalGridSizing`), and the window takes that grid's
+  exact size with the opposite edge (and, across the drag, the title bar) still in place. If no
+  new grid arrives within 3 s, the window returns to its grid's size. The SDK's edge grab handles
+  are off (`SpatialConfig.edgeGrabHandles = false`), so the edges only resize; move a window by its
+  title bar. A fullscreen window does not resize from its edges. Logcat shows `VrcodeWindow` lines
+  `edge resize: screen N right edge by the right hand at 1.02 m x 0.71 m` and `… released at
+  1.24 m x 0.71 m`, and `XmuxSpatial` / `VrcodeGridSize` lines for the requested grids.
+
+To move a window nearer or further, push or pull the hand (or controller) holding the drag: reach
+out along the pointer to send it away, draw the hand back toward you to bring it closer. Depth
+engages after 3 cm of reach, so ordinary sideways drags keep their distance, and only motion along
+the pointer counts (relative to the head, so walking or sweeping the arm does not). Distance scales
+about 1.4× per 10 cm of reach and comes back when the hand returns. The grabbed point stays on the
+pointer, the window keeps its size in the room and still faces you, and its distance stays between
+0.45 m (never closer than the hand) and 4 m. The move is saved like any other drag. The header's
+drag events carry only panel coordinates, so depth is read each frame from the hand whose pinch or
+trigger started the drag (`TitleBarDepthDrag`); a mouse drag keeps its distance. Logcat shows
+`VrcodeWindow` lines `depth drag: screen N held by the right hand at 1.40 m` and `… released at
+2.10 m`.
 
 Each terminal window has working close, minimize and maximize controls in both header styles:
 
@@ -49,15 +80,17 @@ Each terminal window has working close, minimize and maximize controls in both h
   Fixed/Follow toggle also leave fullscreen; minimized windows stay hidden when it ends.
 
 Fullscreen and minimized state last for the mounted window and reset on reconnect. Fullscreen
-keeps the dock and recovery controls available. Mac traffic lights sit in a recessed capsule, with
-64 × 48 dp targets and 28 dp colored circles carrying close/minimize/fullscreen icons. Hovering or
-pressing expands the chosen circle into a 60 × 44 dp pill over 160 ms. The targets and title stay
-in place throughout; the full pill is clickable. Mouse hover and the Quest hand/controller ray
-both drive the expansion, including with No cursor selected. It collapses when the pointer leaves
-or tracking is lost. Both styles expose Close, Minimize, Maximize / Restore window labels.
+keeps the dock and recovery controls available. Mac traffic lights sit in a recessed capsule with
+28 dp colored circles carrying close/minimize/fullscreen icons. Hovering anywhere over the capsule,
+including its padding, expands the entire group over 160 ms: all three controls grow together into
+60 × 44 dp pills with 64 × 48 dp targets. The capsule grows from 128 × 36 to 200 × 52 dp while the
+title and other header actions stay in place. Mouse hover and the Quest hand/controller ray both
+drive the expansion, including with No cursor selected. Moving between the controls keeps the
+group expanded; it collapses when the pointer leaves or tracking is lost. Both styles expose
+Close, Minimize, Maximize / Restore window labels.
 
-Window settings offers Fixed/Follow behavior, macOS/Windows title bars, color theme, text size,
-and cursor shape for that terminal only. Unchanged options follow the app's current preferences;
+Window settings offers Fixed/Follow behavior, macOS/Windows title bars, window opacity, color
+theme, text size, and cursor shape for that terminal only. Unchanged options follow the app's current preferences;
 **Use app defaults** clears this window's overrides and restores the default behavior. Overrides
 survive closing and reopening the sheet and panel resizing, and last for the mounted window
 (reconnecting or reopening the terminal starts with app defaults). Terminal selection, keyboard
@@ -82,13 +115,16 @@ Available app options:
   Screen/workspace creation is sized through the new terminal's attached viewer; logcat tag
   `VrcodeWindow` reports the exact terminal ID and requested size. Other attached cmux viewers
   can constrain the shared terminal grid according to cmux's viewer-size arbitration.
-- New window behavior: Fixed (the default) stays at a position in the room; Follow keeps the
-  window at the same offset in the viewport as the user walks, turns, looks up/down, or tilts their
-  head. The choice saves immediately and applies only when a new screen window mounts. Existing
+- New window behavior: Fixed stays at a position in the room; Follow (the default) keeps the
+  window at the same offset from where the user is, so the windows stay around them as they walk,
+  stand up or sit down. Follow windows track position only: turning, looking up/down or tilting the
+  head does not move them, so the user can look between windows placed all around. Small moves
+  (leaning in to read, swaying) stay inside a 40 cm dead zone; past it the windows ease along and
+  catch up when the user stops. The choice saves immediately and applies only when a new screen window mounts. Existing
   windows retain their individual mode. Each terminal title bar has a Fixed / Follow toggle on
   the right, followed by Settings, in both macOS and Windows styles. Switching modes preserves
   the current pose; switching to Fixed leaves the window where it is. Title-bar dragging and
-  Arrange windows here update a following window's viewport offset. Per-window modes last for
+  Arrange windows here update a following window's offset from the user. Per-window modes last for
   that mounted window; reopening a screen or reconnecting uses the saved default.
 - Connect on launch: reconnect to the last bridge on startup. Disabling it leaves the saved address
   available in the connection picker.
@@ -97,20 +133,46 @@ Available app options:
   plus Follow Mac, 18–36 px JetBrains Mono text, and cursor shape. Changes apply to open and new
   terminals. The live preview uses the same renderer as the terminal. See
   [terminal appearance](terminal-appearance.md) for theme sources and app-color behavior.
-- Customization has a fixed subtab bar with Pointer, Text mic and AI mic tabs. Each tab scrolls its own
+- Appearance → Window opacity: 30–100% in 5% steps, 80% by default, so the room shows faintly
+  through every window. It is a background opacity, like Ghostty's `background-opacity`: the
+  title bar, terminal body and each pane's default background become translucent, while text,
+  cursors, cells an app colors itself (status bars, highlighted rows), tabs, dividers and window
+  outlines stay solid. Changes apply live while dragging, to open and new windows; a window's own
+  Window settings slider overrides it for that window until **Use app defaults**. The setting
+  saves as `window_opacity` and syncs to VRcode Mac. Windows draw no shadow under themselves, only
+  around their edges, so a shadow never darkens the room seen through a window. The Appearance
+  preview sits over a colored stand-in for the room so the opacity is visible in the panel.
+  Rendering uses [`patches/xmux-window-opacity.patch`](../patches/xmux-window-opacity.patch).
+- Customization has a fixed subtab bar with Pointer, Text mic, AI mic and Quick inputs tabs. Each tab scrolls its own
   controls, and changing tabs starts at the top. The selected tab survives navigation to another
   settings page during the session.
 - Customization → Text mic / AI mic → Mic appearance: independently preview and choose Classic microphone,
   News microphone, Megaphone, or Banana Phone, in that order. The right-hand Text mic defaults to
   Classic microphone and transcribes words as spoken; the left-hand AI mic defaults to News
-  microphone, and uses AI before staging text to paste. The News microphone's cube shows the
+  microphone, and sends the AI's keystrokes for the focused pane (Enter included when the AI
+  decides the command or prompt should run). The News microphone's cube shows the
   chosen AI provider's logo on whichever mic wears it.
 - Customization → AI mic → AI provider: Claude (Anthropic, the default), ChatGPT (OpenAI) or
   Gemini (Google). The Mac sends left-fist requests to that provider, using the API key added in
   VRcode Mac's "AI provider keys" section (Keychain service `dev.improve.vrcode`, accounts
   `anthropic-api-key`, `openai-api-key`, `gemini-api-key`). The choice saves as `ai_provider` and
   goes out as the `provider` of each `AI_REQUEST`. Without that provider's key, the AI pane says so
-  and a paste types what was said. The app loads `voice-props/news-microphone-<provider>.glb`.
+  and a paste types what was said.
+- Customization → AI mic → Thinking (`ai_thinking`): **Think, shown above** (`above`, the
+  default), **Think, shown below** (`below`) or **Quick answer** (`off`). Thinking runs the
+  provider's agent CLI on the Mac (Claude Code, Codex or Gemini CLI, signed in with its own login,
+  not the API key) in the target pane's working directory: it reads the project, never changes
+  it, and streams its thinking and each tool call onto a panel just above or below the window it
+  will type into, with Stop. When it answers, the panel shows what it typed and why for 6 s.
+  Quick answer makes one API call with the key below and shows no panel. Goes out as `agent` in
+  each `AI_REQUEST`; see [the protocol](vrcode-protocol.md).
+- Customization → AI mic → Model: the chosen provider's models, fastest first. Claude: Haiku 5.5,
+  Sonnet 5.5 (the default), Opus 5.5, Fable 5.1. ChatGPT: GPT-6 Luna, GPT-6.1 Terra, GPT-6.1 Sol
+  (the default), GPT-6 Astra. Gemini: 3.5 Flash-Lite, 3.8 Flash (the default), 4 Argon. Each
+  provider keeps its own choice (`ai_model_claude`, `ai_model_openai`, `ai_model_gemini`, saved as
+  the API model id), so switching providers and back restores it. The current provider's choice
+  goes out as the `model` of each `AI_REQUEST`; a saved id that is no longer offered falls back to
+  the provider's default. VRcode Mac shows only the selected provider's models (`shownWhen`). The app loads `voice-props/news-microphone-<provider>.glb`.
   If a model is missing from the APK, it shows the classic microphone instead of failing to load.
   Old shared classic/default selections upgrade to these defaults; custom left-hand props survive
   on the AI mic, and saved boombox selections become News microphone. Each choice
@@ -125,6 +187,16 @@ Available app options:
   a 75–200% size control for visible cursors. Changes save immediately and apply to the right-hand
   pointer. No cursor hides the graphic and pressed-state halo while pinch clicks and drag selection
   stay enabled. This preference is separate from the terminal's text cursor in Appearance.
+- Customization → Quick inputs: what each direction of the
+  [quick inputs ring](hand-input.md#quick-inputs-left-index-pinch) sends. A 3 × 3 keypad shows the
+  eight directions around the pinch point; pick one, then pick its input below or **Leave empty**.
+  Inputs: Esc, Ctrl-C, Tab, Enter, Shift-Tab, Backspace, the four arrows, Ctrl-D, Ctrl-Z, Ctrl-L,
+  Ctrl-R, Page Up, Page Down, Home, End and Keyboard (shows the floating keyboard). Choosing a key
+  that is already on the ring swaps it with the chosen direction's, so each key appears once. The
+  default is Esc top-left, Ctrl-C top-right, Tab bottom-left and Enter bottom-right; **Restore
+  default quick inputs** (or Restore default settings) brings it back. Changes save as
+  `quick_inputs` (eight comma-separated entries clockwise from the top, empty where nothing is
+  placed) and apply to the ring at once, including from VRcode Mac.
 - Restore default settings: restores the preferences above, retaining the last bridge address and
   xmux pairing credentials.
 
@@ -150,6 +222,16 @@ the Android emulator. App/settings/xmux-spatial unit tests, xmux API checks, Bun
 validation passed. Installed on Quest 3 over Wi-Fi (`lastUpdateTime` 13:16:05) and relaunched; the
 checked process log showed the bridge online and terminal controls mounted, with no app crash.
 Argent exposed only Quest system chrome, so hand targeting of the sheet still needs a wearer check.
+
+`WindowOpacityTest` renders a terminal window the way the app builds it (clear frame, screen view
+painting the body) over a red stand-in for the room. At 50% the pane, the body around it and the
+title bar each read exactly one translucent layer, and an app-colored cell stays solid; at 100%
+nothing of the room shows. It also checks the 80% default, saving the app setting, a window's
+own override and **Use app defaults**. Captures: `window-opacity-50.png`, `window-opacity-100.png`.
+2026-11-01 window-opacity verification: that test plus the sheet, header, appearance and shadow
+instrumentation tests (14) passed on the Android emulator; app and settings unit tests, Bun tests
+and asset validation passed. Not yet installed on the Quest (it was off the network), so how
+legible 80% is against a real room still needs a wearer check.
 
 Unit tests: `./gradlew :app:testDebugUnitTest :settings-ui:testDebugUnitTest`.
 `TerminalSizeSettingsTest` checks all four presets, independent custom width/height, one-cell

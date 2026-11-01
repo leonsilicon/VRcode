@@ -93,6 +93,10 @@ fun TerminalWindowSettingsSheet(
                   modifier = Modifier.heightIn(min = 48.dp).testTag("window-settings-style-${style.storageValue}"))
               }
             }
+            WindowOpacityControl(current.windowOpacity, "window-settings-opacity", MaterialTheme.typography.titleMedium) {
+              onChange(overrides.copy(opacity = it))
+            }
+            Text(WINDOW_OPACITY_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider()
             Text("Color theme", style = MaterialTheme.typography.titleMedium)
             FlowRow(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

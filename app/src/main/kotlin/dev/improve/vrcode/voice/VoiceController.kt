@@ -8,6 +8,8 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.improve.vrcode.AiModel
+import dev.improve.vrcode.AiThinking
 import dev.improve.vrcode.speech.Kind
 import dev.improve.vrcode.speech.MicCapture
 import dev.improve.vrcode.speech.SpeechEvent
@@ -18,8 +20,9 @@ import org.json.JSONObject
 /**
  * One voice pane: the text of a dictation, typed into the focused pane as soon as it is ready. A
  * [Mode.Passthrough] pane (right fist) types what was said as is; a [Mode.Ai] pane (left fist)
- * types what the AI made of it for the target pane. A pane that could not be typed (no terminal,
- * the AI failed, the Mac dropped) stays staged with a notice until it is pasted or deleted.
+ * sends the keystrokes the AI made of it for the target pane, Enter included when the AI chose to
+ * press it. A pane that could not be typed (no terminal, the AI failed, the Mac dropped) stays
+ * staged with a notice until it is pasted or deleted.
  */
 class VoiceNote(val id: Int, val mode: Mode = Mode.Passthrough) {
   enum class Mode { Passthrough, Ai }
@@ -51,18 +54,65 @@ class VoiceNote(val id: Int, val mode: Mode = Mode.Passthrough) {
   /** The utterance currently streaming into this pane. */
   internal var utterance = 0
 
-  /** [Mode.Ai] panes: the AI's text for the transcript, once it answered. */
-  var aiText by mutableStateOf<String?>(null)
+  /** [Mode.Ai] panes: the AI's keystrokes for the transcript (text and keys such as Enter), once it answered. */
+  var aiKeys by mutableStateOf<List<Keystroke>?>(null)
     internal set
 
   /** The AI request in flight for this pane. */
   internal var aiRequest = 0
 
+  /**
+   * [Mode.Ai] panes asked with thinking on ([AiThinking.agent]): the Mac runs the provider's agent,
+   * and [trace], [aiStatus] and then [aiSummary] show what it does on the thinking panel.
+   */
+  var agent by mutableStateOf(false)
+    internal set
+
+  /** The agent's run in order: its thinking (adjacent chunks joined) and each tool call. */
+  val trace = mutableStateListOf<AiTrace>()
+
+  /** One line about the run ("Claude Code in ~/project"). */
+  var aiStatus by mutableStateOf("")
+    internal set
+
+  /** What the agent's keystrokes do, in one sentence, once it answered. */
+  var aiSummary by mutableStateOf("")
+    internal set
+
+  /** Adds one AI_PROGRESS chunk to [trace]. */
+  internal fun addProgress(kind: String, text: String) {
+    when (kind) {
+      "status" -> aiStatus = text
+      "thinking" -> {
+        val last = trace.lastOrNull()
+        if (last is AiTrace.Thought) trace[trace.size - 1] = AiTrace.Thought((last.text + text).takeLast(MAX_THOUGHT))
+        else if (text.isNotBlank()) trace.add(AiTrace.Thought(text.trimStart().takeLast(MAX_THOUGHT)))
+      }
+      "step" -> trace.add(AiTrace.Step(text))
+      else -> return
+    }
+    while (trace.size > MAX_TRACE) trace.removeAt(0)
+  }
+
+  internal fun clearAgent() {
+    trace.clear()
+    aiStatus = ""
+    aiSummary = ""
+  }
+
+  private companion object {
+    const val MAX_TRACE = 40
+    const val MAX_THOUGHT = 2000
+  }
+
   /** What was said. */
   val text: String get() = joinText(joinText(committed, liveFinal), liveVolatile)
 
-  /** What a paste types: what was said, or for an AI pane the AI's text (what was said if it failed). */
-  val output: String get() = if (mode == Mode.Ai) aiText ?: text else text
+  /**
+   * What a paste types: what was said, or for an AI pane the AI's keystrokes (what was said, with no
+   * Enter, if it failed).
+   */
+  val output: List<Keystroke> get() = if (mode == Mode.Ai) aiKeys ?: Keystroke.text(text) else Keystroke.text(text)
 
   internal fun commitLive() {
     committed = text
@@ -88,8 +138,10 @@ class VoiceController(
    * no terminal to type into, which leaves the pane staged with a notice.
    */
   private val deliver: (note: VoiceNote) -> Boolean = { false },
-  /** The model provider chosen in Settings (an [dev.improve.vrcode.AiProvider] storage value). */
-  private val aiProvider: () -> String = { "claude" },
+  /** The AI mic's provider and model, chosen in Settings. */
+  private val aiModel: () -> AiModel = { AiModel.ClaudeSonnet },
+  /** Whether the AI mic thinks first (the Mac runs the provider's agent), chosen in Settings. */
+  private val aiThinking: () -> AiThinking = { AiThinking.Off },
   private val micAllowed: () -> Boolean,
 ) {
   val notes = mutableStateListOf<VoiceNote>()
@@ -114,18 +166,11 @@ class VoiceController(
   var serviceReady by mutableStateOf(false)
     private set
 
-  /** Press Enter after typing a dictation: the right (text) mic's toggle on its pane. */
+  /**
+   * Press Enter after typing a dictation: the right (text) mic's toggle on its pane. The AI mic has
+   * none: the AI's keystrokes include Enter when it decides the command or prompt should be sent.
+   */
   var enterAfterDictation by mutableStateOf(false)
-
-  /** Press Enter after typing the AI's text: the left (AI) mic's toggle. Off leaves it at the prompt to review. */
-  var enterAfterAi by mutableStateOf(false)
-
-  /** Whether typing a [mode] pane (delivered or pasted) presses Enter after it. */
-  fun enterAfter(mode: VoiceNote.Mode): Boolean = if (mode == VoiceNote.Mode.Ai) enterAfterAi else enterAfterDictation
-
-  fun setEnterAfter(mode: VoiceNote.Mode, on: Boolean) {
-    if (mode == VoiceNote.Mode.Ai) enterAfterAi = on else enterAfterDictation = on
-  }
 
   private val main = Handler(Looper.getMainLooper())
   private var nextNote = 0
@@ -157,7 +202,8 @@ class VoiceController(
     // The Mac handles one utterance at a time; panes still finishing keep what they have.
     notes.filter { it.phase == VoiceNote.Phase.Finalizing }.forEach(::finish)
     val note = editing?.takeIf { it in notes } ?: newNote(mode)
-    note.aiText = null // an AI pane being added to is asked again with the whole transcript
+    cancelAi(note) // an agent still answering this pane is stopped
+    note.aiKeys = null // an AI pane being added to is asked again with the whole transcript
     editing = null
     selected = note
     note.notice = null
@@ -242,7 +288,7 @@ class VoiceController(
     note.committed = ""
     note.liveFinal = ""
     note.liveVolatile = ""
-    note.aiText = null
+    note.aiKeys = null
     note.notice = null
     note.utterance = utterance
     link.send(Kind.AUDIO_START, utterance, audioFormat())
@@ -256,11 +302,17 @@ class VoiceController(
         serviceReady = event.ready
         Log.i(TAG, "speech service connected (locale ${event.locale}, ready ${event.ready})")
       }
+      is SpeechEvent.AiProgress -> {
+        val note = notes.firstOrNull { it.aiRequest == event.id && it.phase == VoiceNote.Phase.Thinking } ?: return
+        note.addProgress(event.kind, event.text)
+      }
       is SpeechEvent.AiResult -> {
         val note = notes.firstOrNull { it.aiRequest == event.id && it.phase == VoiceNote.Phase.Thinking } ?: return
-        note.aiText = event.text
+        note.aiKeys = event.keys
+        note.aiSummary = event.summary
         note.phase = VoiceNote.Phase.Ready
-        Log.i(TAG, "voice: AI answered for pane ${note.id} (${event.text.length} chars)")
+        val pressed = event.keys.filterIsInstance<Keystroke.Press>().map { it.chord }
+        Log.i(TAG, "voice: AI answered for pane ${note.id} (${event.keys.size} steps; keys $pressed)")
         insert(note)
       }
       is SpeechEvent.Disconnected -> {
@@ -298,6 +350,19 @@ class VoiceController(
     }
   }
 
+  /**
+   * Debug builds: an AI pane holding [text] as if it had just been said, asked at once. [target]
+   * runs first, so the host can record the pane's target before the AI is asked.
+   */
+  fun askAiWith(text: String, target: (VoiceNote) -> Unit = {}) {
+    val note = newNote(VoiceNote.Mode.Ai)
+    note.committed = text
+    note.placed = true
+    selected = note
+    target(note)
+    finish(note)
+  }
+
   /** Picks [note] for pasting and for the next fist to add to. */
   fun select(note: VoiceNote) {
     if (note !in notes || note == listening) return
@@ -306,16 +371,31 @@ class VoiceController(
     Log.i(TAG, "voice: pane ${note.id} selected for editing")
   }
 
-  /** Hands [note]'s text to the caller and removes the pane; null when there is nothing to paste. */
-  fun take(note: VoiceNote? = selected): String? {
+  /**
+   * Hands [note]'s keystrokes to the caller and removes the pane; null when there is nothing to
+   * paste. A dictation ends with Enter when the text mic's toggle is on; an AI pane's keystrokes are
+   * sent as the AI gave them.
+   */
+  fun take(note: VoiceNote? = selected): List<Keystroke>? {
     if (note == null || note !in notes || note == listening || note.phase == VoiceNote.Phase.Thinking) return null
-    val text = note.output
-    if (text.isBlank()) return null
+    val steps = note.output
+    if (steps.isEmpty()) return null
     remove(note)
-    return text
+    return if (note.mode == VoiceNote.Mode.Passthrough && enterAfterDictation) steps + Keystroke.Enter else steps
+  }
+
+  /**
+   * Stop on the thinking panel: the Mac stops the agent and nothing is typed. The pane keeps what
+   * was said, staged, like a failed answer (a paste types it, without Enter).
+   */
+  fun stopAi(note: VoiceNote) {
+    if (note.phase != VoiceNote.Phase.Thinking) return
+    cancelAi(note)
+    aiFailed(note, AI_STOPPED)
   }
 
   fun remove(note: VoiceNote) {
+    cancelAi(note)
     if (note == listening) {
       listening = null
       mic.stop()
@@ -331,8 +411,8 @@ class VoiceController(
   /** Keyboard edits to [note] (the palm keyboard types into the pane picked for editing). */
   fun typeInto(note: VoiceNote, text: String) {
     if (note !in notes || note == listening) return
-    note.aiText?.let {
-      note.aiText = it + text
+    note.aiKeys?.let {
+      note.aiKeys = Keystroke.append(it, text)
       return
     }
     note.commitLive()
@@ -341,8 +421,8 @@ class VoiceController(
 
   fun backspaceIn(note: VoiceNote) {
     if (note !in notes || note == listening) return
-    note.aiText?.let {
-      note.aiText = it.dropLast(1)
+    note.aiKeys?.let {
+      note.aiKeys = Keystroke.backspace(it)
       return
     }
     note.commitLive()
@@ -408,26 +488,41 @@ class VoiceController(
   private fun audioFormat(): JSONObject =
     JSONObject().put("sampleRate", MicCapture.SAMPLE_RATE).put("channels", 1).put("encoding", "pcm_s16le")
 
-  /** Sends [note]'s transcript and the target pane's screen to the Mac's AI; the pane shows Thinking. */
+  /** Sends [note]'s transcript and the target pane's screen and cursor to the Mac's AI; the pane shows Thinking. */
   private fun askAi(note: VoiceNote) {
     val id = ++nextUtterance // shares the utterance id space, so AI and audio frames never collide
     note.aiRequest = id
-    note.aiText = null
-    note.phase = VoiceNote.Phase.Thinking
+    note.aiKeys = null
+    note.clearAgent()
     val context = aiContext(note)
+    val model = aiModel()
+    val agent = aiThinking().agent
+    note.agent = agent
+    note.phase = VoiceNote.Phase.Thinking
     val sent =
       link.send(
         Kind.AI_REQUEST,
         id,
         JSONObject().put("transcript", note.text).put("screen", context?.screen ?: "").put("title", context?.title ?: "")
-          .put("provider", aiProvider()),
+          .apply { context?.cursor?.let { put("cursor", JSONObject().put("row", it.row).put("col", it.col).put("visible", it.visible)) } }
+          .apply { context?.terminal?.let { put("terminal", it) } }
+          .put("provider", model.provider.storageValue).put("model", model.id).put("agent", agent),
       )
     if (!sent) return aiFailed(note, "Mac service not connected; the AI didn't answer")
-    Log.i(TAG, "voice: asking the AI for pane ${note.id} (${context?.title ?: "no pane focused"})")
-    main.postDelayed({ if (note.phase == VoiceNote.Phase.Thinking && note.aiRequest == id) aiFailed(note, "The AI took too long") }, AI_TIMEOUT_MS)
+    Log.i(TAG, "voice: asking ${model.id}${if (agent) " (agent)" else ""} for pane ${note.id} (${context?.title ?: "no pane focused"})")
+    // The Mac stops an agent after 120 s and says so; this only covers a Mac that never answers.
+    main.postDelayed({ if (note.phase == VoiceNote.Phase.Thinking && note.aiRequest == id) aiFailed(note, "The AI took too long") },
+      if (agent) AGENT_TIMEOUT_MS else AI_TIMEOUT_MS)
   }
 
-  /** The AI didn't answer: the pane keeps what was said (a paste types it) and shows why. */
+  /** Tells the Mac to stop the agent still answering [note], if any; its late frames are ignored. */
+  private fun cancelAi(note: VoiceNote) {
+    if (note.phase != VoiceNote.Phase.Thinking || !note.agent) return
+    link.send(Kind.AI_CANCEL, note.aiRequest)
+    Log.i(TAG, "voice: stopped the agent for pane ${note.id} (request ${note.aiRequest})")
+  }
+
+  /** The AI didn't answer: the pane keeps what was said (a paste types it, without Enter) and shows why. */
   private fun aiFailed(note: VoiceNote, message: String) {
     note.notice = message
     note.phase = VoiceNote.Phase.Ready
@@ -438,6 +533,7 @@ class VoiceController(
     const val TAG = "vrcode"
     const val FINALIZE_TIMEOUT_MS = 4000L
     const val AI_TIMEOUT_MS = 30_000L
+    const val AGENT_TIMEOUT_MS = 150_000L
     const val NOTICE_MS = 4000L
     const val MAX_PANES = 8
     const val NO_TARGET = "No terminal to type into — pinch a pane to paste"
@@ -451,5 +547,18 @@ class VoiceController(
   }
 }
 
-/** What the AI sees of the target pane: its visible text and its window title. */
-class AiContext(val screen: String, val title: String)
+/**
+ * What the AI sees of the target pane: everything on its screen (one line per row from the top,
+ * blank rows below the text and cursor dropped), its window title, and its cursor (row into
+ * [screen]'s lines, column in cells).
+ */
+class AiContext(val screen: String, val title: String, val cursor: Cursor? = null, val terminal: String? = null) {
+  class Cursor(val row: Int, val col: Int, val visible: Boolean)
+}
+
+/** One entry on the thinking panel: the agent's thinking, or one tool call it made. */
+sealed interface AiTrace {
+  data class Thought(val text: String) : AiTrace
+
+  data class Step(val text: String) : AiTrace
+}

@@ -38,7 +38,7 @@ import java.util.Locale
 
 enum class SettingsPage(val title: String) { Workspace("Workspace"), Appearance("Appearance"), Customization("Customization"), Connection("Connection") }
 enum class CustomizationTab(val title: String, val mic: VoiceMic? = null) {
-  Pointer("Pointer"), TextMic("Text mic", VoiceMic.Text), AiMic("AI mic", VoiceMic.Ai)
+  Pointer("Pointer"), TextMic("Text mic", VoiceMic.Text), AiMic("AI mic", VoiceMic.Ai), QuickInputs("Quick inputs")
 }
 
 private val colors = darkColorScheme(
@@ -99,7 +99,7 @@ fun SettingsPanel(
               }
             }
             Spacer(Modifier.weight(1f))
-            Text("Palm toward you, then pinch your left index finger and thumb to open or close.", Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Open with the dock's gear or the left controller's menu button.", Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
           }
           Column(Modifier.weight(1f).fillMaxHeight()) {
             if (page == SettingsPage.Customization) {
@@ -168,6 +168,10 @@ fun SettingsPanel(
                         }
                       }
                     }
+                    WindowOpacityControl(settings.windowOpacity, "settings-window-opacity", MaterialTheme.typography.titleMedium) {
+                      onChange(settings.copy(windowOpacity = it))
+                    }
+                    Text("$WINDOW_OPACITY_NOTE A window's own settings can change it for that window.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     HorizontalDivider()
                     TerminalAppearanceControls(settings, onChange)
                   }
@@ -176,6 +180,7 @@ fun SettingsPanel(
                       CustomizationTab.Pointer -> PointerCursorControls(settings, onChange)
                       CustomizationTab.TextMic -> MicrophoneControls(VoiceMic.Text, settings, onChange)
                       CustomizationTab.AiMic -> MicrophoneControls(VoiceMic.Ai, settings, onChange)
+                      CustomizationTab.QuickInputs -> QuickInputControls(settings, onChange)
                     }
                   }
                   SettingsPage.Connection -> {
@@ -211,7 +216,30 @@ private fun MicrophoneControls(mic: VoiceMic, settings: AppSettings, onChange: (
         AiProviderOption(provider, settings.aiProvider == provider, Modifier.weight(1f)) { onChange(settings.copy(aiProvider = provider)) }
       }
     }
-    Text("Your Mac sends what you say to ${settings.aiProvider.label}. Add its API key in VRcode Mac on the Mac. The news microphone shows its logo.",
+    Text("Model", style = MaterialTheme.typography.titleMedium)
+    Column(Modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+      for (row in settings.aiProvider.models.chunked(2)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+          for (model in row) {
+            AiModelOption(model, settings.aiModel() == model, Modifier.weight(1f)) { onChange(settings.withAiModel(model)) }
+          }
+          if (row.size == 1) Spacer(Modifier.weight(1f))
+        }
+      }
+    }
+    Text("Thinking", style = MaterialTheme.typography.titleMedium)
+    Column(Modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+      for (thinking in AiThinking.entries) {
+        AiThinkingOption(thinking, settings.aiThinking == thinking, Modifier.fillMaxWidth()) { onChange(settings.copy(aiThinking = thinking)) }
+      }
+    }
+    val how = if (settings.aiThinking.agent) {
+      "Your Mac runs ${settings.aiProvider.agentCli} with ${settings.aiModel().label} in the pane's folder, signed in with its own login. " +
+        "It reads your project but never changes it; its keystrokes run in your terminal."
+    } else {
+      "Your Mac sends what you say to ${settings.aiProvider.label} (${settings.aiModel().label}). Add the ${settings.aiProvider.company} API key in VRcode Mac on the Mac."
+    }
+    Text("$how The news microphone shows ${settings.aiProvider.label}'s logo. Each provider remembers its own model.",
       style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
   }
   Text("Mic appearance", style = MaterialTheme.typography.titleLarge)
@@ -248,6 +276,50 @@ private fun AiProviderOption(provider: AiProvider, selected: Boolean, modifier: 
         Text(provider.company, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
       }
       RadioButton(selected, onClick = null)
+    }
+  }
+}
+
+@Composable
+private fun AiModelOption(model: AiModel, selected: Boolean, modifier: Modifier, onSelect: () -> Unit) {
+  Surface(
+    modifier,
+    shape = RoundedCornerShape(16.dp),
+    color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+    border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+  ) {
+    Row(
+      Modifier.testTag("settings-ai-model-${model.id}")
+        .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect).heightIn(min = 64.dp).padding(12.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      RadioButton(selected, onClick = null)
+      Column(Modifier.padding(start = 8.dp).weight(1f)) {
+        Text(model.label, style = MaterialTheme.typography.titleMedium)
+        Text(model.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      }
+    }
+  }
+}
+
+@Composable
+private fun AiThinkingOption(thinking: AiThinking, selected: Boolean, modifier: Modifier, onSelect: () -> Unit) {
+  Surface(
+    modifier,
+    shape = RoundedCornerShape(16.dp),
+    color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+    border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+  ) {
+    Row(
+      Modifier.testTag("settings-ai-thinking-${thinking.storageValue}")
+        .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect).heightIn(min = 64.dp).padding(12.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      RadioButton(selected, onClick = null)
+      Column(Modifier.padding(start = 8.dp).weight(1f)) {
+        Text(thinking.label, style = MaterialTheme.typography.titleMedium)
+        Text(thinking.detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      }
     }
   }
 }

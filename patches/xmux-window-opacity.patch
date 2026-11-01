@@ -1,0 +1,150 @@
+diff --git a/packages/dev/improve/xmux/components/terminal-grid/src/main/kotlin/dev/improve/xmux/terminal/grid/TerminalGridView.kt b/packages/dev/improve/xmux/components/terminal-grid/src/main/kotlin/dev/improve/xmux/terminal/grid/TerminalGridView.kt
+index 4b75343..5dc1ac6 100644
+--- a/packages/dev/improve/xmux/components/terminal-grid/src/main/kotlin/dev/improve/xmux/terminal/grid/TerminalGridView.kt
++++ b/packages/dev/improve/xmux/components/terminal-grid/src/main/kotlin/dev/improve/xmux/terminal/grid/TerminalGridView.kt
+@@ -19,4 +19,8 @@ import kotlin.math.roundToInt
+ private const val DIM_ALPHA = 140
+ 
++/** [color] with its alpha scaled by [opacity]. */
++private fun withOpacity(color: Int, opacity: Float): Int =
++  (((color ushr 24) * opacity).roundToInt().coerceIn(0, 255) shl 24) or (color and 0xFFFFFF)
++
+ /** Local display overrides. Null values follow the terminal; the streamed grid is never changed. */
+ public data class GridAppearance(
+@@ -68,4 +72,16 @@ public class TerminalGridView(context: Context, grid: CellGrid, public val font:
+       invalidate()
+     }
++  /**
++   * How opaque the default background is, from 0 (clear) to 1. Below 1 the grid paints its whole
++   * area with the default background at this opacity, so whatever is behind the view shows
++   * through; text, cells with their own background color and the cursor stay opaque.
++   */
++  public var backgroundOpacity: Float = 1f
++    set(value) {
++      val clamped = if (value.isNaN()) 1f else value.coerceIn(0f, 1f)
++      if (field == clamped) return
++      field = clamped
++      invalidate()
++    }
+ 
+   private val textPaint = Paint(font.paint)
+@@ -146,7 +162,9 @@ public class TerminalGridView(context: Context, grid: CellGrid, public val font:
+     var calls = 0
+     for (b in batches) b.n = 0
+-    if (appearance.background != null || grid.defaultBg != CellGrid.DEFAULT_BG) {
+-      // The terminal has its own background (the Mac's theme): paint the whole grid with it.
+-      fillPaint.color = background
++    val translucent = backgroundOpacity < 1f
++    if (translucent || appearance.background != null || grid.defaultBg != CellGrid.DEFAULT_BG) {
++      // The terminal has its own background (the Mac's theme): paint the whole grid with it. A
++      // translucent grid always paints its own, since its parent leaves the grid's area clear.
++      fillPaint.color = if (translucent) withOpacity(background, backgroundOpacity) else background
+       canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), fillPaint)
+       calls++
+diff --git a/packages/dev/improve/xmux/components/terminal-grid/api/xmux-terminal-grid.api b/packages/dev/improve/xmux/components/terminal-grid/api/xmux-terminal-grid.api
+index 7eb2ba6..0c2f419 100644
+--- a/packages/dev/improve/xmux/components/terminal-grid/api/xmux-terminal-grid.api
++++ b/packages/dev/improve/xmux/components/terminal-grid/api/xmux-terminal-grid.api
+@@ -22,4 +22,5 @@ public final class dev/improve/xmux/terminal/grid/TerminalGridView : android/vie
+ 	public final fun cellAt (FF)Lkotlin/Pair;
+ 	public final fun getAppearance ()Ldev/improve/xmux/terminal/grid/GridAppearance;
++	public final fun getBackgroundOpacity ()F
+ 	public final fun getBodyColor ()I
+ 	public final fun getContentHeight ()I
+@@ -34,4 +35,5 @@ public final class dev/improve/xmux/terminal/grid/TerminalGridView : android/vie
+ 	public final fun refreshIfDirty ()V
+ 	public final fun setAppearance (Ldev/improve/xmux/terminal/grid/GridAppearance;)V
++	public final fun setBackgroundOpacity (F)V
+ 	public final fun setBodyColor (I)V
+ 	public final fun setCursorColor (I)V
+diff --git a/packages/dev/improve/xmux/components/screen-view/src/main/kotlin/dev/improve/xmux/screen/view/ScreenView.kt b/packages/dev/improve/xmux/components/screen-view/src/main/kotlin/dev/improve/xmux/screen/view/ScreenView.kt
+index b88ada3..8ddd02f 100644
+--- a/packages/dev/improve/xmux/components/screen-view/src/main/kotlin/dev/improve/xmux/screen/view/ScreenView.kt
++++ b/packages/dev/improve/xmux/components/screen-view/src/main/kotlin/dev/improve/xmux/screen/view/ScreenView.kt
+@@ -20,4 +20,5 @@ import dev.improve.xmux.screen.layout.ScreenLayoutEngine
+ import dev.improve.xmux.terminal.font.TerminalFont
+ import dev.improve.xmux.terminal.grid.TerminalGridView
++import kotlin.math.roundToInt
+ 
+ /**
+@@ -59,5 +60,26 @@ public class ScreenView(context: Context, public val font: TerminalFont) : ViewG
+   public var listener: Listener? = null
+ 
++  /** The screen's background, which the view paints behind and around its panes. */
+   public var bodyColor: Int = 0xFF1E1E1E.toInt()
++    set(value) {
++      if (field == value) return
++      field = value
++      for (v in views.values) v.bodyColor = value
++      invalidate()
++    }
++
++  /**
++   * How opaque the screen's background is, from 0 (clear) to 1. Below 1 whatever is behind the view
++   * shows through the body and each pane's default background; text, cells with their own color,
++   * tabs, dividers, the focus outline and cursors stay opaque.
++   */
++  public var backgroundOpacity: Float = 1f
++    set(value) {
++      val clamped = if (value.isNaN()) 1f else value.coerceIn(0f, 1f)
++      if (field == clamped) return
++      field = clamped
++      for (v in views.values) v.backgroundOpacity = clamped
++      invalidate()
++    }
+   public var dividerColor: Int = 0xFF3A3A3A.toInt()
+   public var focusColor: Int = 0xFF4A90D9.toInt()
+@@ -71,4 +93,5 @@ public class ScreenView(context: Context, public val font: TerminalFont) : ViewG
+   private var rects: Map<Int, PxRect> = emptyMap()
+   private val fill = Paint()
++  private val bodyPaint = Paint()
+   private val outline = Paint().apply {
+     style = Paint.Style.STROKE
+@@ -172,5 +195,8 @@ public class ScreenView(context: Context, public val font: TerminalFont) : ViewG
+       val view = views[p.id]
+       if (view == null) {
+-        val v = TerminalGridView(context, p.grid, font).apply { bodyColor = this@ScreenView.bodyColor }
++        val v = TerminalGridView(context, p.grid, font).apply {
++          bodyColor = this@ScreenView.bodyColor
++          backgroundOpacity = this@ScreenView.backgroundOpacity
++        }
+         views[p.id] = v
+         addView(v)
+@@ -232,4 +258,21 @@ public class ScreenView(context: Context, public val font: TerminalFont) : ViewG
+   }
+ 
++  // A rect, not drawColor: inside a Compose AndroidView the canvas clip can reach past the view,
++  // and drawColor would paint over whatever sits next to it (a window's title bar).
++  override fun onDraw(canvas: Canvas) {
++    val alpha = ((bodyColor ushr 24) * backgroundOpacity).roundToInt().coerceIn(0, 255)
++    bodyPaint.color = (alpha shl 24) or (bodyColor and 0xFFFFFF)
++    if (backgroundOpacity >= 1f) {
++      canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bodyPaint)
++      return
++    }
++    // Each shown pane's grid paints its own translucent background; leave its area clear so the
++    // two never stack into a more opaque patch.
++    canvas.save()
++    for (v in views.values) if (v.visibility == View.VISIBLE) canvas.clipOutRect(v.left, v.top, v.right, v.bottom)
++    canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bodyPaint)
++    canvas.restore()
++  }
++
+   override fun dispatchDraw(canvas: Canvas) {
+     super.dispatchDraw(canvas)
+diff --git a/packages/dev/improve/xmux/components/screen-view/api/xmux-screen-view.api b/packages/dev/improve/xmux/components/screen-view/api/xmux-screen-view.api
+index 0a14403..f1848de 100644
+--- a/packages/dev/improve/xmux/components/screen-view/api/xmux-screen-view.api
++++ b/packages/dev/improve/xmux/components/screen-view/api/xmux-screen-view.api
+@@ -6,4 +6,5 @@ public final class dev/improve/xmux/screen/view/ScreenView : android/view/ViewGr
+ 	public final fun getActive ()Z
+ 	public final fun getActiveTabColor ()I
++	public final fun getBackgroundOpacity ()F
+ 	public final fun getBodyColor ()I
+ 	public final fun getDividerColor ()I
+@@ -25,4 +26,5 @@ public final class dev/improve/xmux/screen/view/ScreenView : android/view/ViewGr
+ 	public final fun setActive (Z)V
+ 	public final fun setActiveTabColor (I)V
++	public final fun setBackgroundOpacity (F)V
+ 	public final fun setBodyColor (I)V
+ 	public final fun setDividerColor (I)V

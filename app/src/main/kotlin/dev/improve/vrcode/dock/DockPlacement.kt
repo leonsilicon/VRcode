@@ -13,8 +13,8 @@ import kotlin.math.sqrt
 /**
  * Like an iPhone's home bar: the dock's bar sits at the bottom of the view, [BELOW_GAZE_DEG] below
  * where the user looks and [DISTANCE_M] from the eyes, so a hand can reach it. It follows yaw and
- * pitch (lazily, see [DockFollow]) but never roll, and always faces the eyes. Swiping up from the
- * bar raises the dock's body above it.
+ * pitch (lazily, see [DockFollow]) but never roll, and always faces the eyes. Touching the bar
+ * raises the dock's body above it.
  *
  * Dock-local frame: the bar is at the origin; X to the user's right, Y up (tilted toward the eyes),
  * Z away from the user. The body spans [BODY_BOTTOM_M]..[BODY_TOP_M] above the bar.
@@ -25,17 +25,34 @@ internal object DockPlacement {
   private const val MIN_ELEVATION_DEG = -80f
   private const val MAX_ELEVATION_DEG = -15f
 
-  /** The bar as drawn, and its larger touch/pointer target. */
+  /** The bar as drawn, and its larger touch/pointer target (the bar's panel). */
   const val BAR_WIDTH_M = 0.07f
-  const val BAR_HIT_WIDTH_M = 0.10f
-  const val BAR_HIT_HEIGHT_M = 0.05f
+  const val BAR_HIT_WIDTH_M = 0.12f
+  const val BAR_HIT_HEIGHT_M = 0.06f
 
-  /** The raised dock: a row of options with a grabber (the bar, moved up) at its top centre. */
+  /**
+   * The raised dock: a row of options above the bar, which stays where it is underneath them. The
+   * body starts 1 cm above the bar's panel, so the two panels never overlap.
+   */
   const val BODY_WIDTH_M = DockLayout.MAX_SPAN_M + 0.06f
-  const val BODY_BOTTOM_M = 0.02f
+  const val BODY_BOTTOM_M = BAR_HIT_HEIGHT_M / 2f + 0.01f
   const val BODY_TOP_M = 0.13f
-  const val ROW_Y_M = 0.06f
-  const val GRAB_Y_M = 0.11f
+  const val ROW_Y_M = (BODY_BOTTOM_M + BODY_TOP_M) / 2f
+
+  /** The raised body's panel: the body plus room above it for the lifted option's label. */
+  const val BODY_PANEL_TOP_M = BODY_TOP_M + 0.06f
+  const val BODY_PANEL_HEIGHT_M = BODY_PANEL_TOP_M - BODY_BOTTOM_M
+  const val BODY_PANEL_CENTER_M = (BODY_PANEL_TOP_M + BODY_BOTTOM_M) / 2f
+
+  /**
+   * A touch on the bar's or the body's panel, given as fractions of that panel's width and height
+   * from its top-left corner, in dock-local metres (X right, Y up from the bar).
+   */
+  fun touchPoint(surface: DockGesture.Surface, fx: Float, fy: Float): Pair<Float, Float> =
+    when (surface) {
+      DockGesture.Surface.Bar -> (fx - 0.5f) * BAR_HIT_WIDTH_M to (0.5f - fy) * BAR_HIT_HEIGHT_M
+      DockGesture.Surface.Body -> (fx - 0.5f) * BODY_WIDTH_M to BODY_PANEL_TOP_M - fy * BODY_PANEL_HEIGHT_M
+    }
 
   /** What other overlays (voice pane, keyboard) stack above: the raised body, centred on the bar. */
   const val WIDTH_M = BODY_WIDTH_M

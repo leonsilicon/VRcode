@@ -88,7 +88,12 @@ class ConnectionControllerTest {
     val noWifi = failureStatus("Mac", automatic = true, failures = listOf("Local Wi-Fi: Join the selected Wi-Fi network on the Quest first.", "USB: refused"),
       identity = false, missingWifi = true, missingNetwork = true)
     assertEquals("Connect the Quest to Wi-Fi", noWifi.title)
-    val down = failureStatus("Mac", automatic = true, failures = listOf("Local Wi-Fi: 10.0.0.2: ECONNREFUSED"),
+    // With a bonded Mac, Wi-Fi is not required: the fix is the Mac, not the network.
+    val noWifiNoBluetooth = failureStatus("Mac", automatic = true, failures = listOf("Local Wi-Fi: Join the selected Wi-Fi network on the Quest first.",
+      "Bluetooth: 5C:E9:1E:82:C8:72: read failed"), identity = false, missingWifi = true, missingNetwork = true, bluetooth = true)
+    assertEquals("Make sure the VRcode Mac app is running", noWifiNoBluetooth.title)
+    assertTrue("Bluetooth" in noWifiNoBluetooth.detail)
+    val down =failureStatus("Mac", automatic = true, failures = listOf("Local Wi-Fi: 10.0.0.2: ECONNREFUSED"),
       identity = false, missingWifi = false, missingNetwork = false)
     assertEquals("Make sure the VRcode Mac app is running", down.title)
     assertTrue(listOf(wrongKey, noWifi, down).all { it.attention && it.busy })

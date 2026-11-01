@@ -219,6 +219,35 @@ mod tests {
         list.iter().map(|arg| arg.to_string()).collect()
     }
 
+    /// Against a running vrcode-mac (and a Quest or stand-in): VRCODE_SETTINGS_PORT=7273 cargo test -- --ignored live
+    #[test]
+    #[ignore]
+    fn live_service_mirrors_and_forwards() {
+        let port = std::env::var("VRCODE_SETTINGS_PORT").expect("set VRCODE_SETTINGS_PORT").parse().unwrap();
+        let client = Client::start(port);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while client.view(0).settings.is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let view = client.view(0);
+        assert!(view.linked, "WELCOME from the service");
+        let settings = view.settings.expect("SETTINGS from the service");
+        let size = settings["values"]["terminal_font_size"].as_f64().unwrap_or(25.0);
+        let next = if size >= 30.0 { 24.0 } else { size + 1.0 };
+        client.set(json!({ "terminal_font_size": next })).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(settings) = client.view(view.revision).settings {
+                let echoed = settings["pending"]["terminal_font_size"].as_f64().or(settings["values"]["terminal_font_size"].as_f64());
+                if echoed == Some(next) {
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "the change came back in SETTINGS");
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     #[test]
     fn finds_the_service_port() {
         assert_eq!(service_port(&args(&["--bluetooth"])), Some(7273));

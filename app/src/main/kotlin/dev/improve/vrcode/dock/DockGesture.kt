@@ -23,21 +23,42 @@ internal object DockLayout {
 }
 
 /**
- * The dock works like an iPhone's home bar, by touch:
- * 1. Collapsed, only the bar shows. A fingertip (or pointer) near it makes it bulge ([hover]).
- * 2. Pressing the bar and swiping up raises the dock ([Event.Revealed]).
- * 3. Raised, pressing an option, sliding sideways to another and flicking up activates it
- *    ([Event.Activated]); the dock then lowers. Pulling the finger back cancels the press.
- * 4. The bar sits at the raised dock's top centre as a grabber: pressing it and swiping down
- *    lowers the dock ([Event.Dismissed]), as does leaving it alone for [IDLE_MS].
+ * The dock works like an iPhone's home bar, pulled up with a pinch:
+ * 1. Collapsed, only the bar shows. A hand about to pinch it, or a pointer on it, makes it bulge
+ *    ([hover]).
+ * 2. Pinching the bar and pulling up raises the dock ([Event.Revealed]) once the pinch has moved
+ *    [REVEAL_DRAG_M] up from where it closed, mostly upward and while still held; until then the
+ *    bar rises with the pull ([lift]). The pinch can close on the bar itself (thumb and index meeting
+ *    there) or along a pointer ray aimed at it; a controller's trigger works like a pinch. Touching
+ *    or tapping the bar does nothing while the dock is down, so brushing it never raises it, and
+ *    neither does a pinch that closed elsewhere and swept onto it. The bar stays where it is,
+ *    underneath the raised options.
+ * 3. Raised, a fingertip (or pointer) near an option highlights it ([highlighted]) so its label
+ *    shows, and touching an option runs it at once ([Event.Activated]); the dock then lowers.
+ * 4. Touching the bar again lowers the dock ([Event.Dismissed]), as does leaving it alone for
+ *    [IDLE_MS].
  *
- * A touch needs the fingertip to reach the dock's plane from in front, inside the touched part, so
- * hands typing below the dock or a finger behind it never press it. Pointer rays work the same way
- * with a pinch, from at least [MIN_POINT_M] away. All positions are dock-local (see
- * [DockPlacement]): X right, Y up, Z away from the user, the plane at Z = 0.
+ * Touches are ignored while the pinch that raised the dock is still held, and for [GUARD_MS] after
+ * it lets go or the dock lowers: the pulling hand ends up among the options, and direct touch can
+ * report a finger resting on the bar as a quick release and press, neither of which may run an
+ * option or flip the dock straight back. A pinch closing within [GUARD_MS] of the dock lowering does
+ * not start a pull either.
+ *
+ * Touches are the Interaction SDK's own: a fingertip touching a dock panel (direct touch) or a
+ * pinching ray on it, delivered to the panel's Compose content and passed in as [Touch]es. The SDK
+ * decides contact, so a finger must reach the panel from in front. Only a touch's start counts.
+ * Pinches, hover and highlights come from each [Hand]'s tracked joints and pointer ray. All
+ * positions are dock-local (see [DockPlacement]): X right, Y up, Z away from the user, the plane at
+ * Z = 0.
  */
 internal class DockGesture {
-  enum class Part { Bar, Option, Grabber }
+  /** The panel a touch landed on: the bar (always shown), or the raised body above it. */
+  enum class Surface { Bar, Body }
+
+  enum class Phase { Down, Move, Up }
+
+  /** A touch on [surface] at dock-local ([x], [y]), in metres. */
+  data class Touch(val surface: Surface, val phase: Phase, val x: Float, val y: Float)
 
   sealed interface Event {
     data object None : Event
@@ -49,176 +70,194 @@ internal class DockGesture {
     data object Dismissed : Event
   }
 
-  /** A pointer ray and whether its hand is pinching. */
-  data class Pointer(val origin: Vector3, val direction: Vector3, val pinched: Boolean)
+  /** A hand's or controller's pointer ray, and whether its trigger (or the SDK's pinch) is held. */
+  data class Pointer(val origin: Vector3, val direction: Vector3, val pressed: Boolean = false)
+
+  /**
+   * One hand this frame, in scene space: its index [fingertip] and [pinch] point (midway between the
+   * thumb and index tips; both null for a controller), its [pointer] ray, and whether its pinch, or a
+   * controller's trigger, is [pressed].
+   */
+  data class Hand(
+    val fingertip: Vector3? = null,
+    val pinch: Vector3? = null,
+    val pointer: Pointer? = null,
+    val pressed: Boolean = false,
+  )
 
   var revealed = false
     private set
 
-  /** The part being pressed, if any. */
-  var pressing: Part? = null
-    private set
-
-  /** 0..1: how close a fingertip or pointer is to the bar (collapsed) or grabber (raised). */
+  /** 0..1: how close a hand about to pinch, or a pointer, is to the bar; 1 while pulling it. */
   var hover = 0f
     private set
 
-  /** 0..1: progress of the swipe up from the bar or down from the grabber. */
-  var swipe = 0f
-    private set
-
-  var highlighted: Int? = null
-    private set
-
-  /** Local X of the pressing finger (or ray), and 0..1 progress of a flick up from an option. */
-  var fingerX = 0f
-    private set
-
+  /** 0..1: how far a pinch on the bar has pulled it toward raising the dock. */
   var lift = 0f
     private set
 
-  private var byRay = false
-  private var hand = -1
-  private var pressX = 0f
-  private var pressY = 0f
-  private var pressedAtMs = 0L
-  private var lostSinceMs: Long? = null
+  /** The option a fingertip or pointer is near while raised, whose label shows. */
+  var highlighted: Int? = null
+    private set
+
+  /** Whether a pinch is holding the bar, before it has pulled far enough to raise the dock. */
+  val pulling: Boolean get() = pull != null
+
+  /** A pinch that closed on the bar while the dock was down: its hand, whether along the ray, and where. */
+  private class Pull(val hand: Int, val ray: Boolean, val x: Float, val y: Float)
+
+  /** A hand in dock-local space; [aim] is where its ray crosses the dock's plane, [aimM] along the ray. */
+  private class Local(val tip: Vector3?, val pinch: Vector3?, val aim: Vector3?, val aimM: Float, val pressed: Boolean) {
+    /** The ray's crossing, when far enough from the hand to be pointing rather than a typing hand's ray. */
+    val pointed: Vector3? get() = aim?.takeIf { aimM >= MIN_POINT_M }
+  }
+
+  private var pull: Pull? = null
+
+  /** The hand whose pinch raised the dock, until it lets go. */
+  private var raisedBy: Int? = null
+
+  /** Each hand's pinch on the previous frame: only a pinch that closes on the bar grabs it. */
+  private val wasPressed = BooleanArray(HANDS) { true }
+
   private var lastNearMs = 0L
-  private val previousZ = arrayOfNulls<Float>(2)
-  private val previousPinch = BooleanArray(2)
+  private var quietUntilMs = 0L
 
   /**
-   * One frame. [fingertips] and [pointers] are per hand (0 = left, 1 = right), null when that hand
-   * is not tracked; [optionXs] comes from [DockLayout].
+   * One frame. [hands] are per hand (0 = left, 1 = right), null when that hand is not tracked.
+   * [touches] are the panels' touches since the last frame, in order. [optionXs] comes from
+   * [DockLayout].
    */
-  fun update(bar: Pose, fingertips: List<Vector3?>, pointers: List<Pointer?>, optionXs: FloatArray, nowMs: Long): Event {
+  fun update(bar: Pose, hands: List<Hand?>, touches: List<Touch>, optionXs: FloatArray, nowMs: Long): Event {
     val inverse = bar.inverse()
-    val tips = List(2) { i -> fingertips.getOrNull(i)?.let { inverse.q * it + inverse.t } }
-    val hits = List(2) { i -> pointers.getOrNull(i)?.let { aimed(inverse, it) } }
-    hover = hoverAmount(tips, hits)
-    val event = if (pressing != null) follow(tips, pointers, hits, optionXs, nowMs) else detectPress(tips, pointers, hits, optionXs, nowMs)
-    if (revealed && pressing == null && event == Event.None) {
-      if (tips.any { it != null && near(it, optionXs) } || hits.any { it != null && onBody(it, optionXs) }) lastNearMs = nowMs
-      if (nowMs - lastNearMs > IDLE_MS) return lower(Event.Dismissed)
+    val local = List(HANDS) { i -> hands.getOrNull(i)?.let { localHand(inverse, it) } }
+    var event = pinches(local, nowMs)
+    hover = if (pull != null) 1f else hoverAmount(local)
+    highlighted = if (revealed) pointedOption(local, optionXs) else null
+    for (touch in touches) {
+      if (touch.phase != Phase.Down) continue
+      val result = down(touch, optionXs, nowMs)
+      if (event == Event.None) event = result
     }
-    for (i in 0..1) {
-      previousZ[i] = tips[i]?.z
-      previousPinch[i] = pointers.getOrNull(i)?.pinched == true
+    if (revealed && event == Event.None) {
+      val near = local.any { hand ->
+        hand != null && (hand.tip?.let { near(it, optionXs) } == true || hand.pointed?.let { onBody(it, optionXs) } == true)
+      }
+      if (near || raisedBy != null) lastNearMs = nowMs
+      if (nowMs - lastNearMs > IDLE_MS) return lower(Event.Dismissed)
     }
     return event
   }
 
-  /** Lowers the dock without an event (e.g. VRcode paused). */
+  /** Lowers the dock without an event (e.g. VRcode paused); a pinch held meanwhile must close again. */
   fun reset() {
     lower(Event.None)
-    for (i in 0..1) {
-      previousZ[i] = null
-      previousPinch[i] = false
-    }
-  }
-
-  private fun detectPress(tips: List<Vector3?>, pointers: List<Pointer?>, hits: List<Vector3?>, optionXs: FloatArray, nowMs: Long): Event {
-    for (i in 0..1) {
-      val tip = tips[i] ?: continue
-      val before = previousZ[i] ?: continue
-      if (before >= -FRONT_M || tip.z < -CONTACT_M || tip.z > THROUGH_M) continue
-      val part = partAt(tip, optionXs) ?: continue
-      return press(part, byRay = false, index = i, at = tip, optionXs = optionXs, nowMs = nowMs)
-    }
-    for (i in 0..1) {
-      val pointer = pointers.getOrNull(i) ?: continue
-      val hit = hits[i] ?: continue
-      if (!pointer.pinched || previousPinch[i]) continue
-      val part = partAt(hit, optionXs) ?: continue
-      return press(part, byRay = true, index = i, at = hit, optionXs = optionXs, nowMs = nowMs)
-    }
-    return Event.None
-  }
-
-  private fun press(part: Part, byRay: Boolean, index: Int, at: Vector3, optionXs: FloatArray, nowMs: Long): Event {
-    pressing = part
-    this.byRay = byRay
-    hand = index
-    pressX = at.x
-    pressY = at.y
-    fingerX = at.x
+    pull = null
+    raisedBy = null
     lift = 0f
-    swipe = 0f
-    pressedAtMs = nowMs
-    lostSinceMs = null
-    lastNearMs = nowMs
-    if (part == Part.Option) highlighted = nearest(optionXs, at.x, null)
-    return Event.None
+    quietUntilMs = 0L
+    wasPressed.fill(true)
   }
 
-  private fun follow(tips: List<Vector3?>, pointers: List<Pointer?>, hits: List<Vector3?>, optionXs: FloatArray, nowMs: Long): Event {
-    if (byRay && pointers.getOrNull(hand)?.pinched != true) return release()
-    val point = if (byRay) hits[hand] else tips[hand]
-    if (point == null) {
-      val since = lostSinceMs ?: nowMs.also { lostSinceMs = it }
-      return if (nowMs - since > LOST_MS) release() else Event.None
+  /** Starts, follows and ends pulls on the bar; returns [Event.Revealed] when one raises the dock. */
+  private fun pinches(hands: List<Local?>, nowMs: Long): Event {
+    var event: Event = Event.None
+    for (i in 0 until HANDS) {
+      val hand = hands[i]
+      val pressed = hand?.pressed == true
+      val closed = pressed && !wasPressed[i]
+      wasPressed[i] = pressed
+      if (raisedBy == i && !pressed) {
+        raisedBy = null
+        quietUntilMs = nowMs + GUARD_MS
+      }
+      val current = pull
+      if (current == null) {
+        if (closed && hand != null && !revealed && nowMs >= quietUntilMs) pull = grab(i, hand)
+        continue
+      }
+      if (current.hand != i) continue
+      if (!pressed) {
+        pull = null
+        continue
+      }
+      // Tracking can drop a frame mid-pull: hold the pull where it was.
+      val at = (if (current.ray) hand?.aim else hand?.pinch) ?: continue
+      val up = at.y - current.y
+      lift = (up / REVEAL_DRAG_M).coerceIn(0f, 1f)
+      if (up >= REVEAL_DRAG_M && up >= abs(at.x - current.x)) {
+        pull = null
+        revealed = true
+        raisedBy = i
+        lastNearMs = nowMs
+        quietUntilMs = nowMs + GUARD_MS
+        event = Event.Revealed
+      }
     }
-    lostSinceMs = null
-    lastNearMs = nowMs
-    fingerX = point.x
-    val rise = point.y - pressY
-    val retreated = !byRay && point.z < -RETREAT_M
-    when (pressing) {
-      Part.Bar -> {
-        swipe = (rise / REVEAL_M).coerceIn(0f, 1f)
-        if (rise >= REVEAL_M) {
-          release()
-          revealed = true
-          lastNearMs = nowMs
-          return Event.Revealed
-        }
-      }
-      Part.Grabber -> {
-        swipe = (-rise / DISMISS_M).coerceIn(0f, 1f)
-        if (-rise >= DISMISS_M) return lower(Event.Dismissed)
-      }
-      Part.Option -> {
-        lift = (rise / FLICK_M).coerceIn(0f, 1f)
-        highlighted = nearest(optionXs, point.x, highlighted)
-        val picked = highlighted
-        if (rise >= FLICK_M && picked != null) return lower(Event.Activated(picked))
-        if (rise < -DOWN_M) return release()
-      }
-      null -> return Event.None
-    }
-    if (retreated || nowMs - pressedAtMs > TIMEOUT_MS) return release()
-    return Event.None
+    if (pull == null) lift = 0f
+    return event
   }
 
-  /** Ends the current press; the dock stays as it is. */
-  private fun release(): Event {
-    pressing = null
-    hand = -1
-    lift = 0f
-    swipe = 0f
-    lostSinceMs = null
-    if (!revealed) highlighted = null
-    return Event.None
+  /** A pull for a pinch that just closed: on the bar itself, else along the hand's ray onto it. */
+  private fun grab(hand: Int, state: Local): Pull? {
+    state.pinch?.takeIf(::inGrabZone)?.let { return Pull(hand, ray = false, it.x, it.y) }
+    state.aim?.takeIf(::onBar)?.let { return Pull(hand, ray = true, it.x, it.y) }
+    return null
+  }
+
+  private fun down(touch: Touch, optionXs: FloatArray, nowMs: Long): Event {
+    lastNearMs = nowMs
+    // Down, the bar only rises to a pinch; raised, the pulling hand must let go first.
+    if (!revealed || raisedBy != null || nowMs < quietUntilMs) return Event.None
+    return when (touch.surface) {
+      Surface.Bar -> {
+        quietUntilMs = nowMs + GUARD_MS
+        lower(Event.Dismissed)
+      }
+      Surface.Body -> {
+        if (!onRow(touch.x, touch.y, optionXs)) return Event.None
+        val picked = nearest(optionXs, touch.x, highlighted) ?: return Event.None
+        quietUntilMs = nowMs + GUARD_MS
+        lower(Event.Activated(picked))
+      }
+    }
   }
 
   private fun lower(event: Event): Event {
-    release()
     revealed = false
     highlighted = null
     return event
   }
 
-  /** The part a point on the dock's plane is over, given the dock's state. */
-  private fun partAt(p: Vector3, optionXs: FloatArray): Part? =
-    if (!revealed) {
-      Part.Bar.takeIf { abs(p.x) <= DockPlacement.BAR_HIT_WIDTH_M / 2f && abs(p.y) <= DockPlacement.BAR_HIT_HEIGHT_M / 2f }
-    } else {
-      when {
-        abs(p.x) <= DockPlacement.BAR_HIT_WIDTH_M / 2f && abs(p.y - DockPlacement.GRAB_Y_M) <= GRAB_HALF_HEIGHT_M -> Part.Grabber
-        abs(p.x) <= rowHalfWidth(optionXs) && abs(p.y - DockPlacement.ROW_Y_M) <= ROW_HALF_HEIGHT_M -> Part.Option
-        else -> null
+  private fun localHand(inverse: Pose, hand: Hand): Local {
+    fun toLocal(p: Vector3) = inverse.q * p + inverse.t
+    var aim: Vector3? = null
+    var aimM = 0f
+    hand.pointer?.let { pointer ->
+      val origin = toLocal(pointer.origin)
+      val direction = inverse.q * pointer.direction.normalize()
+      if (direction.z > 0.0001f) {
+        val t = -origin.z / direction.z
+        if (t > 0f) {
+          aim = origin + direction * t
+          aimM = t
+        }
       }
     }
+    return Local(hand.fingertip?.let(::toLocal), hand.pinch?.let(::toLocal), aim, aimM, hand.pressed)
+  }
+
+  /** Whether a pinch point is close enough in front of the bar to grab it (and to bulge it). */
+  private fun inGrabZone(p: Vector3): Boolean =
+    abs(p.x) <= GRAB_HALF_WIDTH_M && abs(p.y) <= GRAB_HALF_HEIGHT_M && p.z >= -HOVER_M && p.z <= THROUGH_M
+
+  /** Whether a point on the dock's plane is on the bar's panel. */
+  private fun onBar(p: Vector3): Boolean =
+    abs(p.x) <= DockPlacement.BAR_HIT_WIDTH_M / 2f && abs(p.y) <= DockPlacement.BAR_HIT_HEIGHT_M / 2f
+
+  /** Whether a dock-local point is on the raised row of options. */
+  private fun onRow(x: Float, y: Float, optionXs: FloatArray): Boolean =
+    abs(x) <= rowHalfWidth(optionXs) && abs(y - DockPlacement.ROW_Y_M) <= ROW_HALF_HEIGHT_M
 
   private fun rowHalfWidth(optionXs: FloatArray): Float = (optionXs.lastOrNull() ?: 0f) + DockLayout.MAX_SPACING_M / 2f
 
@@ -227,35 +266,30 @@ internal class DockGesture {
 
   private fun near(tip: Vector3, optionXs: FloatArray): Boolean = tip.z >= -NEAR_M && tip.z <= THROUGH_M && onBody(tip, optionXs)
 
-  /** How close a fingertip in front of the bar (or grabber), or a pointer on it, is: 0 far, 1 touching. */
-  private fun hoverAmount(tips: List<Vector3?>, hits: List<Vector3?>): Float {
-    val centreY = if (revealed) DockPlacement.GRAB_Y_M else 0f
+  /**
+   * The option under the fingertip nearest the row (within [HOVER_M] in front of it), else under a
+   * pointer; keeps the current one until the finger is clearly nearer another.
+   */
+  private fun pointedOption(hands: List<Local?>, optionXs: FloatArray): Int? {
+    val tip = hands.mapNotNull { it?.tip }
+      .filter { it.z >= -HOVER_M && it.z <= THROUGH_M && onRow(it.x, it.y, optionXs) }
+      .minByOrNull { abs(it.z) }
+    val point = tip ?: hands.firstNotNullOfOrNull { hand -> hand?.pointed?.takeIf { onRow(it.x, it.y, optionXs) } } ?: return null
+    return nearest(optionXs, point.x, highlighted)
+  }
+
+  /** How close a pinch point in front of the bar, or a pointer on it, is: 0 far, 1 touching. */
+  private fun hoverAmount(hands: List<Local?>): Float {
     var best = 0f
-    for (tip in tips) {
-      if (tip == null || abs(tip.x) > HOVER_HALF_WIDTH_M || abs(tip.y - centreY) > HOVER_HALF_HEIGHT_M) continue
-      if (tip.z > THROUGH_M || tip.z < -HOVER_M) continue
-      best = maxOf(best, (1f - (-tip.z).coerceAtLeast(0f) / HOVER_M).coerceIn(0f, 1f))
-    }
-    for (hit in hits) {
-      if (hit != null && abs(hit.x) <= DockPlacement.BAR_HIT_WIDTH_M / 2f && abs(hit.y - centreY) <= DockPlacement.BAR_HIT_HEIGHT_M / 2f) {
-        best = maxOf(best, POINTER_HOVER)
-      }
+    for (hand in hands) {
+      hand ?: continue
+      hand.pinch?.takeIf(::inGrabZone)?.let { best = maxOf(best, (1f - (-it.z).coerceAtLeast(0f) / HOVER_M).coerceIn(0f, 1f)) }
+      if (hand.pointed?.let(::onBar) == true) best = maxOf(best, POINTER_HOVER)
     }
     return best
   }
 
-  /** Where a ray from at least [MIN_POINT_M] away crosses the dock's plane (local), ignoring extents. */
-  private fun aimed(inverse: Pose, pointer: Pointer): Vector3? {
-    val origin = inverse.q * pointer.origin + inverse.t
-    val direction = inverse.q * pointer.direction.normalize()
-    if (direction.z <= 0.0001f) return null
-    val t = -origin.z / direction.z
-    // Pointing at something within arm's reach from a few centimetres is a typing hand's ray.
-    if (t < MIN_POINT_M) return null
-    return origin + direction * t
-  }
-
-  /** Nearest option to [x]; keeps [current] until the finger is clearly nearer another. */
+  /** Nearest option to [x]; keeps [current] until [x] is clearly nearer another. */
   private fun nearest(optionXs: FloatArray, x: Float, current: Int?): Int? {
     if (optionXs.isEmpty()) return null
     val spacing = if (optionXs.size > 1) optionXs[1] - optionXs[0] else DockLayout.MAX_SPACING_M
@@ -264,28 +298,20 @@ internal class DockGesture {
   }
 
   companion object {
-    /** The fingertip must come from at least this far in front of the plane... */
-    const val FRONT_M = 0.005f
-    /** ...and reach within this of it (tracking puts the tip joint slightly behind the skin)... */
-    const val CONTACT_M = 0.012f
-    /** ...without being this far through it (a hand already behind the dock is not a press). */
-    const val THROUGH_M = 0.04f
-    const val REVEAL_M = 0.03f
-    const val DISMISS_M = 0.03f
-    const val FLICK_M = 0.04f
-    const val RETREAT_M = 0.07f
-    const val DOWN_M = 0.05f
-    const val LOST_MS = 400L
-    const val TIMEOUT_MS = 10_000L
     const val IDLE_MS = 5_000L
+    const val GUARD_MS = 400L
+    /** How far up a pinch on the bar must pull it to raise the dock: past a pinch's own jitter. */
+    const val REVEAL_DRAG_M = 0.03f
     const val MIN_POINT_M = 0.25f
     const val HOVER_M = 0.06f
     const val NEAR_M = 0.15f
-    private const val HOVER_HALF_WIDTH_M = 0.07f
-    private const val HOVER_HALF_HEIGHT_M = 0.05f
+    /** A fingertip this far through the plane still counts as at the dock (tracking puts the tip joint behind the skin). */
+    const val THROUGH_M = 0.04f
+    private const val HANDS = 2
+    private const val GRAB_HALF_WIDTH_M = 0.07f
+    private const val GRAB_HALF_HEIGHT_M = 0.05f
     private const val POINTER_HOVER = 0.6f
     private const val ROW_HALF_HEIGHT_M = 0.03f
-    private const val GRAB_HALF_HEIGHT_M = 0.02f
     private const val STICKY = 0.6f
   }
 }

@@ -32,18 +32,18 @@ against a terminal app that handles right mouse events.
 ## Palm menus (both hands)
 
 Turn either **palm toward yourself** and touch the **middle finger to the thumb**, keeping the index
-finger up. A ring of items appears around the pinch, with a hint above the middle fingertip that
-fills as the fingers close. Actions start as **circular icon buttons**. While pinching, **move the
-hand onto an icon** (about 7 cm): it expands into a pill with its label and a progress fill.
-Reaching an icon runs nothing by itself. **Hold the pinch on the same item for one full second** to
-run it, or **swipe on outward to the far end of the expanded pill** to run it sooner. The fill
-sweeps outward from the end nearest the centre, and moving outward along the item adds to the
-clock: a whole swipe (from reaching the icon to the pill's far end, 4 to 7 cm depending on the
-item) runs it at once, half a swipe halves the wait, and moving back inward takes the swipe away
-again. The swipe counts from the innermost point of the current hover, so sliding into a
-neighbouring item far out cannot run it. Moving away or switching items resets the fill. A dropped
-tracking frame or a brief flicker of the runtime's pinch reading pauses both the clock and the
-swipe. The other hand's ray can hover over an icon too; that hover only uses the clock. **Releasing
+finger up. A ring of items appears around the pinch. Before that, a small hint ring (about 1.6 cm, like the
+system's menu glyph) sits on the middle fingertip's pad and fills as the fingers close. Actions are **circular icon buttons** about 7 cm out. While pinching,
+**move the hand onto an icon** (about 5 cm): its **label pill**, with the action's name, appears
+further out on that item's spoke (the line from the centre through the icon), as far past the icon
+as the icon is from the centre. Reaching an icon runs nothing by itself. **Hold the pinch on the
+icon (anywhere short of its label) for one full second** to run it; the label pill fills from its
+icon end meanwhile (the icon itself never fills). Or **move on out to the label** to run it at
+once: about 13 cm out, the same in every direction. A label only works once it is showing, so
+jumping straight to that spot shows it first. Moving away or switching items resets the fill. A
+dropped tracking frame or a brief flicker of the runtime's pinch reading pauses the clock. The
+other hand's ray can hover an icon (clock) or a shown label (at once) too; the stretch of spoke
+between them keeps the item hovered. **Releasing
 the pinch anywhere dismisses the menu without launching**, because the runtime sometimes reports
 a release that did not happen. Clicking cannot launch an item either. The chosen item
 stays marked (white outline, other items dimmed) for a quarter
@@ -52,7 +52,7 @@ pinch; a fully filled hint means the runtime reports a full middle pinch.
 
 | Hand | Items (item 0 at the top, then clockwise) |
 |---|---|
-| Left | **Add terminal** (terminal with a plus), **Codex**, **Claude Code**. Each opens a new cmux screen (a new floating window) and focuses it. Codex and Claude Code are started by typing `codex` / `claude` into that new login shell, so the shell remains when they exit. Nothing is sent to an existing terminal. If the Mac service is unavailable, the Terminal actions panel opens with the error. **Bring forward** (a small window with arrows out of its corners, on the ring's left side) glides the focused window from wherever it is to straight ahead of you at eye height, at Settings' window distance and facing you: where Arrange puts a single window. Only your head's heading counts, not its tilt, because you are looking down at your palm when you pick it. A Follow window keeps following at the new spot; a minimized one is shown; a fullscreen one is already in front and stays as it is. The move is saved to cmux like a drag. |
+| Left | **Add terminal** (terminal with a plus), **Codex**, **Claude Code**. Add terminal opens a new cmux screen (a new floating window) and focuses it. Codex and Claude Code type `codex` / `claude` into the focused terminal when its shell waits at an empty prompt: no program in the foreground (cmux `terminal.process.get`) and nothing typed after the prompt (read off the screen: the cursor follows a prompt character such as `%`, `#`, `>` or `❯`, with nothing after it except a right prompt). Otherwise, or when that cannot be checked, they open a new cmux screen and type the command into its fresh login shell. Either way the shell remains when they exit. If the Mac service is unavailable, the Terminal actions panel opens with the error. **Bring forward** (a small window with arrows out of its corners, on the ring's left side) glides the focused window from wherever it is to straight ahead of you at eye height, at Settings' window distance and facing you: where Arrange puts a single window. Only your head's heading counts, not its tilt, because you are looking down at your palm when you pick it. A Follow window keeps following at the new spot; a minimized one is shown; a fullscreen one is already in front and stays as it is. The move is saved to cmux like a drag. |
 | Right | **Keyboard** (the same floating keyboard as the dock's), Enter, Esc, Ctrl-C (focused pane), Paste voice, Clear voice |
 
 Only one ring is open at a time. Neither opens while voice is listening or while Settings or
@@ -75,8 +75,14 @@ uses a fixed 2.5 cm fingertip distance and has no palm-facing check. So `cpp/han
 one `XR_EXT_hand_tracking` tracker per hand, in VIEW space, and passes on what the runtime reports:
 
 - **Pinch** (`hands/FingerPinch.kt`, `MiddlePinch`): Meta's `XR_FB_hand_tracking_aim` `MIDDLE_PINCHING` signal
-  starts it. Its `pinchStrengthMiddle` keeps a held pinch down (≥ 0.5) through a dropout of that
-  signal and fills the hint. An index pinch blocks a new pinch when `INDEX_PINCHING` is set and
+  starts it, and so does `pinchStrengthMiddle` reaching 0.75 (`MIDDLE_START_STRENGTH`) when the
+  middle reads stronger than an unflagged index: on-device logs only show the signal at full
+  strength (1.0), and a light touch could leave the hint almost full without opening the ring. The
+  hint fills with the strength and is full exactly where a pinch starts. The strength also keeps a
+  held pinch down (≥ 0.5) through a dropout of the signal. A hint that fills past 60% and empties
+  without a pinch logs `middle pinch near miss, hint peaked at N%`, and `opened (…)` lines log the
+  flags and strengths, so the threshold can be tuned from headset logs. The index pinch still needs
+  `INDEX_PINCHING`. An index pinch blocks a new pinch when `INDEX_PINCHING` is set and
   its strength is at least the middle's. A held pinch only yields to the index once the runtime
   reports `INDEX_PINCHING` *without* `MIDDLE_PINCHING` and a stronger index: a middle pinch can
   saturate both strengths because the index sits beside it. Only if the runtime withholds pinch data (no valid aim, or a
@@ -110,7 +116,7 @@ depend on private class layouts. `XR_EXT_hand_interaction` and `XR_META_hand_tra
 cover the index pinch and thumb microgestures only. The runtime's aim signals stay the detector;
 only the app's use of them changed.
 
-Every close is logged with its cause: `palm menu: dwell complete (swiped N%)`,
+Every close is logged with its cause: `palm menu: dwell complete` or `reached label`,
 `released (cancelled)`, or `palm menu cancelled: Fist|OtherFinger|TrackingLost`, each
 with how far the hand moved. While the ring is open, `palm menu held: flags=… middle=… index=…`
 records each change in the runtime's pinch flags, and `middle pinch did not open the palm menu`
@@ -126,12 +132,16 @@ says no pinch, palm-away versus palm-facing, the `SYSTEM_GESTURE` path, the join
 take-over (and both fingers reading as pinched), fists while open, flickering readings while the hand
 moves, dropouts versus real tracking loss, and fresh-pinch rules including a flicker after an item ran. `PieSelectionTest`
 covers clockwise picking, reach, the VIEW-to-scene conversion and the menu axes at several head
-yaws. `MenuDwellTest` covers the one-second deadline, swiping to the pill's end, part swipes that
-speed up the clock, moving back inward, crossing into a neighbour far out, flickers during a swipe,
-ray hovers (clock only), switching/leaving items, release at the deadline, reopening, and firing
-only once. `PieGeometryTest` checks where each pill's swipe ends. `PieMenuTest` renders the production Compose UI on the
-Android emulator and checks circular icons, expanded labels, progress, six-item bounds, the
-fill sweeping outward on the up, right, down and left pills, and the absence of click-to-launch. Selection accuracy, the left ring's cmux launch, and whether a palm-facing middle pinch
+yaws. `MenuDwellTest` covers the one-second deadline, reaching the label (only for the item whose label
+is showing, once, not across a reopen), flickers, switching/leaving items, release at the
+deadline, reopening, and firing only once. `PieGeometryTest` checks that every label begins as far
+past its icon as the icon is from the centre, the same distance out on every spoke, stays on the
+panel, and clears the other icons for one to eight items, and what the other hand's ray is on
+anywhere along a spoke (`pieRayTarget`). `PieMenuTest` renders the production Compose UI on the Android emulator. It checks
+that icons stay circles, that hovering reveals the label that far out along the spoke, and that
+the ray stays on the item across the gap and runs it on the shown label. It also checks that only the label carries the progress, that the fill runs from
+the icon's end and never over the icon, the four-, six- and eight-item bounds, and that clicking
+launches nothing. Selection accuracy, the left ring's cmux launch, and whether a palm-facing middle pinch
 ever triggers OS behavior need a Quest wearer. Watch `adb logcat -s vrcode` for
 `palm menu opened (Runtime pinch, palm N°)` and the once-a-second `left|right hand facing=…` lines.
 
@@ -149,14 +159,24 @@ ANDROID_SERIAL=emulator-5554 ./gradlew :settings-ui:connectedDebugAndroidTest \
 
 Turn the **left palm toward yourself** and pinch the **index finger to the thumb**: the runtime's
 app menu gesture, which used to toggle Settings. A ring of keys opens at the pinch, each where it
-points. Move onto one and hover for a second, or swipe on outward to the end of its pill, to send
-it to the focused pane (as in the palm menus; releasing cancels):
+points. Move onto one and hold for a second, or move on out along its spoke, to send it to the
+focused pane (picked as in the palm menus; releasing cancels). By default:
 
 |  |  |  |
 |---|---|---|
-| **Esc** | **↑** | **Keyboard** (shows the floating keyboard) |
-| **←** | *Input* | **→** |
-| **Tab** | **↓** | **Enter** |
+| **Esc** |  | **Ctrl-C** |
+|  | *Input* |  |
+| **Tab** |  | **Enter** |
+
+The ring has eight compass directions, and **Settings → Customization → Quick inputs** chooses
+what each one sends, or leaves it empty (see [settings](settings.md)): Esc, Ctrl-C, Tab, Enter,
+Shift-Tab, Backspace, the four arrows, Ctrl-D, Ctrl-Z, Ctrl-L, Ctrl-R, Page Up, Page Down, Home,
+End, or Keyboard (shows the floating keyboard). Keys stay on their compass directions, and empty
+directions draw nothing and pick nothing: moving the hand picks the nearest placed key, so with
+the four default keys each one owns a quarter of the ring. A full ring is the 8-way keypad, 45°
+per key. Ctrl chords go out as the key with Ctrl (`c` + Ctrl for Ctrl-C), Shift-Tab as `backtab`.
+Changes apply to the ring at once, including from VRcode Mac; with every direction empty the
+pinch opens nothing and logs `left quick inputs: nothing to open`.
 
 It is the palm menus' gesture driven by the index finger (`HandMenuGesture(IndexPinch)`), sharing the
 left hand's tracker with the left palm menu, so the same opening, picking, release, fist and
@@ -168,12 +188,15 @@ for this pose. Settings stays on the dock's gear and the controller's menu butto
 tracking, the runtime's `MENU_PRESSED` / menu-key echo of this pinch is ignored.
 
 Logs use `left quick inputs` in place of `left palm menu`, for example
-`left quick inputs opened (Runtime index pinch, palm 12°)`. `QuickInputsTest` checks that every key
-sits in the direction it points; `HandMenuGestureTest` covers the index pinch (opening, the joint
-fallback, the system gesture, both fingers at once, take-over); `PieMenuTest` renders the eight
-items and keeps each expanded pill inside the ring. Emulator captures:
-[ring](screenshots/palm-quick-actions/quick-inputs.png),
-[hovering →](screenshots/palm-quick-actions/quick-inputs-hover.png).
+`left quick inputs opened (Runtime index pinch, palm 12°)`, and `left quick inputs changed: [Top
+right=Ctrl-C, …]` when Settings changes the ring. `QuickInputsTest` checks that the default keys
+sit on their diagonals and share the empty directions, that a full ring picks exactly like the
+8-way keypad, and the keys each input sends; `QuickInputRingTest` (settings unit tests) covers
+storage, swapping and Mac sync. `HandMenuGestureTest` covers the index pinch (opening, the joint
+fallback, the system gesture, both fingers at once, take-over). On the emulator, the pie
+package's `QuickInputRingTest` renders the default ring on its diagonals and every input in the
+catalogue with its label pill inside the ring, and `QuickInputSettingsTest` edits,
+swaps, empties, reloads and restores the ring in Settings.
 
 ## Pointer cursor and text selection
 

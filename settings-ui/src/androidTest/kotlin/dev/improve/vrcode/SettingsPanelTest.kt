@@ -63,15 +63,15 @@ class SettingsPanelTest {
         }
       }
     }
+    compose.onNodeWithTag("settings-window-mode-follow").performScrollTo().assertIsSelected()
+    compose.onNodeWithTag("settings-window-mode-fixed").performScrollTo().performClick().assertIsSelected()
+    compose.onNodeWithTag("settings-window-mode-follow").assertIsNotSelected()
+    compose.runOnIdle { assertEquals(WindowMode.Fixed, SettingsStore(preferences).load().defaultWindowMode); generation++ }
     compose.onNodeWithTag("settings-window-mode-fixed").assertIsSelected()
-    compose.onNodeWithTag("settings-window-mode-follow").performScrollTo().performClick().assertIsSelected()
-    compose.onNodeWithTag("settings-window-mode-fixed").assertIsNotSelected()
-    compose.runOnIdle { assertEquals(WindowMode.Follow, SettingsStore(preferences).load().defaultWindowMode); generation++ }
-    compose.onNodeWithTag("settings-window-mode-follow").assertIsSelected()
     capture(context, "settings-window-mode.png")
     compose.onNodeWithTag("settings-defaults").performScrollTo().performClick()
-    compose.runOnIdle { assertEquals(WindowMode.Fixed, SettingsStore(preferences).load().defaultWindowMode) }
-    compose.onNodeWithTag("settings-window-mode-fixed").performScrollTo().assertIsSelected()
+    compose.runOnIdle { assertEquals(WindowMode.Follow, SettingsStore(preferences).load().defaultWindowMode) }
+    compose.onNodeWithTag("settings-window-mode-follow").performScrollTo().assertIsSelected()
     preferences.edit().clear().commit()
   }
 
@@ -145,8 +145,28 @@ class SettingsPanelTest {
     }
     compose.onNodeWithTag("settings-ai-provider-gemini").performScrollTo().performClick()
     compose.onNodeWithText("Your Mac sends what you say to Gemini", substring = true).assertExists()
+    // Each provider offers only its own models and keeps its choice when switching away and back.
+    compose.onNodeWithTag("settings-ai-model-gemini-3.8-flash").performScrollTo().assertIsSelected()
+    compose.onNodeWithTag("settings-ai-model-claude-sonnet-5-5").assertDoesNotExist()
+    compose.onNodeWithTag("settings-ai-model-gemini-4-argon").performScrollTo().performClick().assertIsSelected()
+    compose.onNodeWithTag("settings-ai-model-gemini-3.8-flash").assertIsNotSelected()
+    compose.runOnIdle { assertEquals(AiModel.GeminiArgon, SettingsStore(preferences).load().aiModel()) }
     capture(context, "settings-ai-provider-gemini.png")
     compose.onNodeWithTag("settings-ai-provider-claude").performScrollTo().performClick()
+    compose.onNodeWithTag("settings-ai-model-gemini-4-argon").assertDoesNotExist()
+    compose.onNodeWithTag("settings-ai-model-claude-sonnet-5-5").performScrollTo().assertIsSelected() // the Claude default
+    compose.onNodeWithTag("settings-ai-model-claude-opus-5-5").performScrollTo().performClick().assertIsSelected()
+    compose.onNodeWithTag("settings-ai-model-claude-sonnet-5-5").assertIsNotSelected()
+    compose.onNodeWithText("Your Mac sends what you say to Claude (Claude Opus 5.5)", substring = true).assertExists()
+    compose.runOnIdle {
+      val saved = SettingsStore(preferences).load()
+      assertEquals(AiModel.ClaudeOpus, saved.aiModel())
+      assertEquals(AiModel.GeminiArgon, saved.aiModel(AiProvider.Gemini))
+    }
+    compose.onNodeWithTag("settings-ai-provider-gemini").performScrollTo().performClick()
+    compose.onNodeWithTag("settings-ai-model-gemini-4-argon").performScrollTo().assertIsSelected()
+    compose.onNodeWithTag("settings-ai-provider-claude").performScrollTo().performClick()
+    compose.onNodeWithTag("settings-ai-model-claude-sonnet-5-5").performScrollTo().performClick()
     compose.onNodeWithTag("settings-voice-prop-news-microphone").performScrollTo()
     capture(context, "settings-customization.png")
     compose.onNodeWithTag("settings-customization-tab-Pointer").performClick()
@@ -157,6 +177,7 @@ class SettingsPanelTest {
     compose.runOnIdle {
       assertEquals(VoiceProp.Microphone, SettingsStore(preferences).load().textMicProp)
       assertEquals(VoiceProp.NewsMicrophone, SettingsStore(preferences).load().aiMicProp)
+      assertEquals(AiModel.GeminiFlash, SettingsStore(preferences).load().aiModel(AiProvider.Gemini))
     }
     compose.onNodeWithTag("settings-page-Customization").performClick()
     compose.onNodeWithTag("settings-customization-tab-TextMic").performClick()

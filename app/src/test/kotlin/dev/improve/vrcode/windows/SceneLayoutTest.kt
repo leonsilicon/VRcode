@@ -13,6 +13,9 @@ class SceneLayoutTest {
   private val movedHead = Pose(Vector3(2f, 1.9f, 0.5f), Quaternion(20f, 90f, 15f))
   private val offset = Pose(Vector3(-0.35f, -0.1f, 1.4f), Quaternion(0f, -10f, 0f))
   private val world = head * offset
+  /** Where the user stands for each head; following windows hang from it, not from the gaze. */
+  private val user = head.t
+  private val walked = movedHead.t
   private val a = "screen_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   private val b = "screen_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
@@ -25,51 +28,84 @@ class SceneLayoutTest {
     for (axis in listOf(Vector3(1f, 0f, 0f), Vector3(0f, 1f, 0f), Vector3(0f, 0f, 1f))) assertVector(expected.q * axis, actual.q * axis)
   }
 
-  private fun layout(mode: WindowMode = WindowMode.Fixed) =
-    SceneLayout().seeded(a, mode, world, head).seeded(b, WindowMode.Fixed, Pose(Vector3(1f, 1f, 1f)), head)
+  private fun Pose.shifted(by: Vector3) = Pose(t + by, q)
 
-  @Test fun fixedWindowsStayInTheRoomWhenTheHeadMoves() {
+  private fun layout(mode: WindowMode = WindowMode.Fixed) =
+    SceneLayout().seeded(a, mode, world, user).seeded(b, WindowMode.Fixed, Pose(Vector3(1f, 1f, 1f)), user)
+
+  @Test fun fixedWindowsStayInTheRoomWhenTheUserMoves() {
     val l = layout()
-    assertPose(world, l.renderPose(a, head, 1f, 1f))
-    assertPose(world, l.renderPose(a, movedHead, 1f, 1f))
-    assertPose(world, l.renderPose(a, null, 1f, 1f))
+    assertPose(world, l.renderPose(a, head, user, 1f, 1f))
+    assertPose(world, l.renderPose(a, movedHead, walked, 1f, 1f))
+    assertPose(world, l.renderPose(a, null, null, 1f, 1f))
   }
 
-  @Test fun followKeepsItsOffsetThroughTranslationYawPitchAndRoll() {
+  @Test fun followTravelsWithTheUserButDoesNotTurnWithTheHead() {
     val l = layout(WindowMode.Follow)
-    assertPose(world, l.renderPose(a, head, 1f, 1f))
-    assertPose(movedHead * offset, l.renderPose(a, movedHead, 1f, 1f))
-    assertNull(l.renderPose(a, null, 1f, 1f))
+    assertPose(world, l.renderPose(a, head, user, 1f, 1f))
+    // Looking around (yaw, pitch, roll) from the same spot leaves it where it is.
+    assertPose(world, l.renderPose(a, Pose(user, movedHead.q), user, 1f, 1f))
+    // Walking carries it along, still facing the same way.
+    assertPose(world.shifted(walked - user), l.renderPose(a, movedHead, walked, 1f, 1f))
+    assertNull(l.renderPose(a, head, null, 1f, 1f))
   }
 
   @Test fun switchingModesNeverMovesTheWindow() {
-    val following = layout().withMode(a, WindowMode.Follow, head)
-    assertPose(world, following.renderPose(a, head, 1f, 1f))
-    val frozen = following.withMode(a, WindowMode.Fixed, movedHead)
-    assertPose(movedHead * offset, frozen.renderPose(a, head, 1f, 1f))
+    val following = layout().withMode(a, WindowMode.Follow, user)
+    assertPose(world, following.renderPose(a, head, user, 1f, 1f))
+    val frozen = following.withMode(a, WindowMode.Fixed, walked)
+    assertPose(world.shifted(walked - user), frozen.renderPose(a, head, user, 1f, 1f))
     assertEquals(WindowMode.Fixed, frozen.windows[a]!!.mode)
   }
 
   @Test fun movesRebaseFollowingWindowsAndLeaveOthersAlone() {
     val arranged = Pose(Vector3(1f, 1f, 2f), Quaternion(0f, 30f, 0f))
-    val l = layout(WindowMode.Follow).moved(a, arranged, head)
-    assertPose(arranged, l.renderPose(a, head, 1f, 1f))
-    assertPose(movedHead * head.inverse() * arranged, l.renderPose(a, movedHead, 1f, 1f))
+    val l = layout(WindowMode.Follow).moved(a, arranged, user)
+    assertPose(arranged, l.renderPose(a, head, user, 1f, 1f))
+    assertPose(arranged.shifted(walked - user), l.renderPose(a, movedHead, walked, 1f, 1f))
     assertEquals(layout().windows[b], l.windows[b])
   }
 
   @Test fun fullscreenFollowsTheHeadHidesOthersAndRestoresTheNormalPlacement() {
     val full = layout().fullscreenToggled(a)
     val relative = SceneLayout.fullscreenOffset(1.6f, 0.9f)
-    assertPose(movedHead * relative, full.renderPose(a, movedHead, 1.6f, 0.9f))
+    assertPose(movedHead * relative, full.renderPose(a, movedHead, walked, 1.6f, 0.9f))
     assertTrue(full.visible(a))
     assertFalse(full.visible(b))
     // Grabbing the fullscreen window cannot change where it returns to.
-    val grabbed = full.moved(a, Pose(Vector3(5f, 5f, 5f)), movedHead)
+    val grabbed = full.moved(a, Pose(Vector3(5f, 5f, 5f)), walked)
     val restored = grabbed.fullscreenToggled(a)
     assertNull(restored.fullscreen)
-    assertPose(world, restored.renderPose(a, movedHead, 1.6f, 0.9f))
+    assertPose(world, restored.renderPose(a, movedHead, walked, 1.6f, 0.9f))
     assertTrue(restored.visible(b))
+  }
+
+  @Test fun theUserAnchorIgnoresLeaningInButKeepsUpWithWalking() {
+    val follow = SceneLayout.userFollow()
+    val standing = Vector3(0f, 1.6f, 0f)
+    val frame = 1f / 72f
+    assertEquals(standing, follow.update(standing, 0f))
+    // Leaning 30 cm toward a window to read it, and swaying, leave the windows still.
+    repeat(216) { assertEquals(standing, follow.update(standing + Vector3(0.3f * (it % 2), -0.08f, 0.1f), frame)) }
+    // Walking 4 m at 1.4 m/s: it follows smoothly, never snapping, and never trails by more than ~0.6 m.
+    var at = standing
+    var previous = standing
+    val walk = Vector3(0.6f, 0f, -0.8f) * 1.4f
+    repeat((4f / 1.4f / frame).toInt()) {
+      at += walk * frame
+      val anchor = follow.update(at, frame)
+      assertTrue((anchor - previous).length() < 0.05f)
+      assertTrue((at - anchor).length() < 0.65f)
+      previous = anchor
+    }
+    // Once the user stops, it catches up and rests.
+    repeat(144) { follow.update(at, frame) }
+    assertEquals(0f, (follow.position!! - at).length(), 0.005f)
+    // A tracking jump snaps, and a reset reappears wherever the user is.
+    val far = at + Vector3(5f, 0f, 0f)
+    assertEquals(far, follow.update(far, frame))
+    follow.reset()
+    assertEquals(standing, follow.update(standing, frame))
   }
 
   @Test fun minimizingLeavesFullscreenAndShowingKeepsTheMode() {
@@ -116,6 +152,32 @@ class SceneLayoutTest {
     assertEquals(1.0, window.getJSONArray("orientation_xyzw").getDouble(3), 1e-6)
     assertFalse(window.getBoolean("minimized"))
     assertFalse(json.has("fullscreen_screen_id"))
+  }
+
+  @Test fun cornerScaleIsKeptAndWrittenOnlyWhenSet() {
+    val scaled = layout().scaled(a, 1.5f)
+    assertEquals(1.5f, scaled.windows[a]!!.scale)
+    assertEquals(1f, scaled.windows[b]!!.scale)
+    val json = scaled.toJson().getJSONObject("windows")
+    assertEquals(1.5, json.getJSONObject(a).getDouble("scale"), 1e-6)
+    assertFalse(json.getJSONObject(b).has("scale"))
+    val read = SceneLayout.fromJson(scaled.toJson())!!
+    assertEquals(1.5f, read.windows[a]!!.scale)
+    assertNull(read.windows[a]!!.extra)
+    // Back to 1 removes the field again; the pose is untouched throughout.
+    assertFalse(read.scaled(a, 1f).toJson().getJSONObject("windows").getJSONObject(a).has("scale"))
+    assertPose(world, read.renderPose(a, head, user, 1f, 1f))
+  }
+
+  @Test fun invalidScalesAreIgnored() {
+    val l = layout()
+    assertSame(l, l.scaled(a, 0f))
+    assertSame(l, l.scaled(a, Float.NaN))
+    assertSame(l, l.scaled(a, 50f))
+    assertSame(l, l.scaled("screen_missing", 2f))
+    val json = l.toJson()
+    json.getJSONObject("windows").getJSONObject(a).put("scale", -3)
+    assertEquals(1f, SceneLayout.fromJson(json)!!.windows[a]!!.scale)
   }
 
   @Test fun otherSchemasAreNotReadAndBadWindowsAreSkipped() {

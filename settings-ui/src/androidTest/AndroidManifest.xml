@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Compose test screen (ComponentActivity from ui-test-manifest) otherwise gets the device
+     default theme. Its action bar casts an elevation shadow over the top ~20 px of the content,
+     which shades the first rows of anything the rendering tests capture and compare exactly. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <activity
+      android:name="androidx.activity.ComponentActivity"
+      android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+  </application>
+</manifest>

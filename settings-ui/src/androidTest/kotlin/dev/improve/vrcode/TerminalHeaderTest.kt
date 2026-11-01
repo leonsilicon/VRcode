@@ -3,6 +3,7 @@ package dev.improve.vrcode
 import android.content.Context
 import android.graphics.Bitmap
 import android.widget.TextView
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.requiredSize
@@ -212,7 +213,7 @@ class TerminalHeaderTest {
   }
 
   @OptIn(ExperimentalTestApi::class)
-  @Test fun trafficLightsExpandOnHoverWithoutMovingTargetsAndClickAcrossTheWholePill() {
+  @Test fun trafficLightPillExpandsAllControlsTogetherWithoutMovingTheTitle() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     val calls = mutableListOf<String>()
     val hover = TerminalHeaderHover()
@@ -228,44 +229,70 @@ class TerminalHeaderTest {
       }
     }
     val tags = listOf("xmux-close", "xmux-minimize", "xmux-zoom")
-    val targets = tags.associateWith { compose.onNodeWithTag(it).fetchSemanticsNode().boundsInRoot }
+    val pill = compose.onNodeWithTag("vrcode-traffic-lights")
+    val restingPill = pill.fetchSemanticsNode().boundsInRoot
     val title = compose.onNodeWithTag("xmux-title").fetchSemanticsNode().boundsInRoot
-    for (tag in tags) {
-      compose.onNodeWithTag(tag).assertWidthIsAtLeast(64.dp).assertHeightIsAtLeast(48.dp)
-      compose.onNodeWithTag("$tag-shape", useUnmergedTree = true).assertWidthIsEqualTo(28.dp).assertHeightIsEqualTo(28.dp)
+    fun assertGroup(expanded: Boolean) {
+      pill.assertWidthIsEqualTo(if (expanded) 200.dp else 128.dp)
+        .assertHeightIsEqualTo(if (expanded) 52.dp else 36.dp)
+      for (tag in tags) {
+        compose.onNodeWithTag(tag).assertWidthIsEqualTo(if (expanded) 64.dp else 40.dp)
+          .assertHeightIsEqualTo(if (expanded) 48.dp else 32.dp)
+        compose.onNodeWithTag("$tag-shape", useUnmergedTree = true)
+          .assertWidthIsEqualTo(if (expanded) 60.dp else 28.dp)
+          .assertHeightIsEqualTo(if (expanded) 44.dp else 28.dp)
+      }
+      assertEquals(title, compose.onNodeWithTag("xmux-title").fetchSemanticsNode().boundsInRoot)
     }
+    assertGroup(false)
     capture(context, "window-lights-resting.png")
+    // The capsule padding is outside all three buttons, but still expands the whole group.
+    pill.performMouseInput { enter(Offset(2f, center.y)) }
+    compose.mainClock.advanceTimeBy(220)
+    assertGroup(true)
+    capture(context, "window-lights-hover.png")
+    val targets = tags.associateWith { compose.onNodeWithTag(it).fetchSemanticsNode().boundsInRoot }
     for (tag in tags) {
       val target = compose.onNodeWithTag(tag)
-      target.performMouseInput { enter(center) }
+      target.performMouseInput { moveTo(center) }
       compose.mainClock.advanceTimeBy(220)
-      compose.onNodeWithTag("$tag-shape", useUnmergedTree = true).assertWidthIsEqualTo(60.dp).assertHeightIsEqualTo(44.dp)
-      assertEquals(title, compose.onNodeWithTag("xmux-title").fetchSemanticsNode().boundsInRoot)
+      assertGroup(true)
       for (other in tags) assertEquals(targets[other], compose.onNodeWithTag(other).fetchSemanticsNode().boundsInRoot)
-      if (tag == "xmux-minimize") capture(context, "window-lights-hover.png")
       // Click the expanded pill's edge, well outside its resting circle.
-      target.performMouseInput { click(Offset(5f, center.y)); exit() }
-      compose.mainClock.advanceTimeBy(220)
-      compose.onNodeWithTag("$tag-shape", useUnmergedTree = true).assertWidthIsEqualTo(28.dp)
+      target.performMouseInput { click(Offset(5f, center.y)) }
     }
-    compose.runOnIdle { assertEquals(listOf("close", "minimize", "zoom"), calls) }
-    // Quest geometry-driven hover follows the same targets even without Android mouse events.
-    compose.runOnIdle { hover.updatePointer(targets.getValue("xmux-close").center) }
+    pill.performMouseInput { exit() }
     compose.mainClock.advanceTimeBy(220)
-    compose.onNodeWithTag("xmux-close-shape", useUnmergedTree = true).assertWidthIsEqualTo(60.dp)
+    assertGroup(false)
+    compose.runOnIdle { assertEquals(listOf("close", "minimize", "zoom"), calls) }
+    // Quest geometry-driven hover includes the capsule padding without Android mouse events.
+    compose.runOnIdle { hover.updatePointer(Offset(restingPill.left + 2f, restingPill.center.y)) }
+    compose.mainClock.advanceTimeBy(220)
+    assertGroup(true)
+    // Moving onto a portion revealed by expansion keeps all three controls expanded.
+    val expandedPill = pill.fetchSemanticsNode().boundsInRoot
+    compose.runOnIdle { hover.updatePointer(Offset(expandedPill.right - 2f, expandedPill.center.y)) }
+    compose.mainClock.advanceTimeBy(220)
+    assertGroup(true)
     compose.runOnIdle { hover.updatePointer(null) }
     compose.mainClock.advanceTimeBy(220)
-    compose.onNodeWithTag("xmux-close-shape", useUnmergedTree = true).assertWidthIsEqualTo(28.dp)
+    assertGroup(false)
   }
 
   @OptIn(ExperimentalTestApi::class)
-  @Test fun onlyTheFocusedWindowIsOutlinedAndUnfocusedTrafficLightsAreGrayUntilHovered() {
+  @Test fun unfocusedWindowLooksLikeAnInactiveMacWindowAndOnlyTheFocusedOneIsOutlined() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     val theme = TerminalTheme.Dracula
     var focused by mutableStateOf(true)
+    var activations = 0
     val chrome = WindowChrome(
       onClose = {}, onMinimize = {}, onZoom = {},
-      header = { s, c -> VrcodeWindowHeader(s, WindowStyle.MacOS, c, focused = focused) },
+      trailingSlot = { Box(Modifier.requiredSize(20.dp).background(Color.White).testTag("toolbar-item")) },
+      header = { s, c ->
+        VrcodeWindowHeader(s, WindowStyle.MacOS, c, focused = focused,
+          badge = { Box(Modifier.requiredSize(20.dp).background(Color.White).testTag("badge-item")) },
+          onActivate = { activations++ })
+      },
       outline = { windowOutline(focused, theme) },
     ).withTerminalTheme(theme)
     compose.setContent {
@@ -288,11 +315,24 @@ class TerminalHeaderTest {
     fun Int.isAccent() = r() in 170..210 && g() in 130..165 && b() > 230
     // Mid-height on the left edge, inside the focused ring but past the plain 1dp hairline.
     val edge = Offset(window.left + 1.5f, window.top + 150f)
+    fun brightness(tag: String) = compose.onNodeWithTag(tag, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.center
+      .let { pixel(it.x, it.y).r() }
+    fun titleInk(): Int {
+      val title = compose.onNodeWithTag("xmux-title").fetchSemanticsNode().boundsInRoot
+      val image = compose.onNodeWithTag("test-window").captureToImage().asAndroidBitmap()
+      var max = 0
+      for (x in title.left.toInt() until title.right.toInt()) for (y in title.top.toInt() until title.bottom.toInt()) {
+        max = maxOf(max, image.getPixel((x - window.left).toInt(), (y - window.top).toInt()).r())
+      }
+      return max
+    }
 
     val active = shape()
     assertTrue("focused close light is red", pixel(active.left + 5f, active.center.y).isRed())
-    assertFalse("focused close light shows its glyph", pixel(active.center.x, active.center.y).isRed())
+    assertTrue("a resting light is a plain circle, without its glyph", pixel(active.center.x, active.center.y).isRed())
     assertTrue("focused window has the accent outline", pixel(edge.x, edge.y).isAccent())
+    assertTrue("focused title is full strength", titleInk() > 230)
+    assertTrue("focused toolbar is full strength", brightness("toolbar-item") > 250)
     capture(context, "window-focused.png")
 
     compose.runOnIdle { focused = false }
@@ -300,13 +340,59 @@ class TerminalHeaderTest {
     assertTrue("unfocused close light is gray", pixel(resting.left + 5f, resting.center.y).isGray())
     assertTrue("unfocused close light hides its glyph", pixel(resting.center.x, resting.center.y).isGray())
     assertFalse("unfocused window has no accent outline", pixel(edge.x, edge.y).isAccent())
+    assertTrue("unfocused title is dimmed", titleInk() < 180)
+    assertTrue("unfocused toolbar is dimmed", brightness("toolbar-item") < 180)
+    assertTrue("status badge stays full strength", brightness("badge-item") > 250)
     capture(context, "window-unfocused.png")
 
     compose.onNodeWithTag("xmux-close").performMouseInput { enter(center) }
     compose.mainClock.advanceTimeBy(220)
     val hovered = shape()
     assertTrue("hovering an unfocused light restores its color", pixel(hovered.left + 8f, hovered.center.y).isRed())
+    assertFalse("hovering shows the glyph", pixel(hovered.center.x, hovered.center.y).isRed())
     capture(context, "window-unfocused-hover.png")
+    compose.onNodeWithTag("xmux-close").performMouseInput { exit() }
+
+    // Pressing the title brings a background window forward, as clicking a Mac title bar does.
+    compose.onNodeWithTag("xmux-title").performTouchInput { down(center); up() }
+    compose.runOnIdle { assertEquals(1, activations) }
+  }
+
+  @Test fun laggingLinkShowsASpinnerTopRightLevelWithTheTrafficLightsWithoutMovingButtons() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    var lagging by mutableStateOf(false)
+    val state = TerminalWindowState("main · Terminal").apply { loading = false }
+    compose.setContent {
+      CompositionLocalProvider(LocalDensity provides Density(1f)) {
+        Box(Modifier.requiredSize(900.dp, 120.dp).testTag("test-window")) {
+          VrcodeWindowHeader(state, WindowStyle.MacOS, WindowChrome(
+            onClose = {}, onMinimize = {}, onZoom = {},
+            trailingSlot = { Row { WindowModeButton(WindowMode.Fixed) {}; SettingsButton {} } },
+          ), lagging = lagging)
+        }
+      }
+    }
+    fun bounds(tag: String) = compose.onNodeWithTag(tag, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+    compose.onNodeWithTag("xmux-spinner", useUnmergedTree = true).assertDoesNotExist()
+    val toolbar = bounds("vrcode-trailing-toolbar")
+    val title = bounds("xmux-title")
+
+    compose.runOnIdle { lagging = true }
+    compose.onNodeWithContentDescription("Connection is slow", useUnmergedTree = true).assertExists()
+    val spinner = bounds("xmux-spinner")
+    val lights = bounds("vrcode-traffic-lights")
+    val header = bounds("xmux-header")
+    assertEquals("level with the traffic lights", lights.center.y, spinner.center.y, 1f)
+    assertTrue("rightmost in the header", spinner.left >= toolbar.right && header.right - spinner.right <= 20f)
+    assertEquals("buttons stay put", toolbar, bounds("vrcode-trailing-toolbar"))
+    assertEquals("title stays put", title, bounds("xmux-title"))
+    capture(context, "window-lagging.png")
+
+    // Attaching shows the same spinner; recovering hides it.
+    compose.runOnIdle { lagging = false; state.loading = true }
+    compose.onNodeWithContentDescription("Connecting", useUnmergedTree = true).assertExists()
+    compose.runOnIdle { state.loading = false }
+    compose.onNodeWithTag("xmux-spinner", useUnmergedTree = true).assertDoesNotExist()
   }
 
   private fun capture(context: Context, name: String) {

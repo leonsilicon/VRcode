@@ -166,6 +166,26 @@ class TerminalSelectionInputTest {
     compose.runOnIdle { input.close() }
   }
 
+  @Test fun firstPressOnABackgroundWindowOnlyFocusesIt() {
+    mount()
+    compose.runOnIdle {
+      screen.active = false
+      event(MotionEvent.ACTION_DOWN, point(0, 1, pane = 2))
+      event(MotionEvent.ACTION_MOVE, point(1, 6, pane = 2))
+      event(MotionEvent.ACTION_UP, point(1, 6, pane = 2))
+      assertEquals("the pressed pane takes focus", 2, screen.focusedPane)
+      assertTrue("no click reaches the terminal", clicks.isEmpty())
+      assertTrue("no selection starts", copies.isEmpty())
+
+      // Once the window is in front, presses reach the terminal again.
+      screen.active = true
+      event(MotionEvent.ACTION_DOWN, point(0, 1))
+      event(MotionEvent.ACTION_UP, point(0, 1))
+      assertEquals(listOf("first terminal" to TerminalTextSelection.Cell(0, 1)), clicks)
+      input.close()
+    }
+  }
+
   @Test fun stationaryPinchClicksAndTabReleaseCannotClickTheNewTerminal() {
     mount(tabs = true)
     compose.runOnIdle {

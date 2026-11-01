@@ -29,13 +29,14 @@ import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.Visible
 import dev.improve.vrcode.FocusKeeper
 import dev.improve.vrcode.VoiceProp
+import dev.improve.vrcode.AiModel
 import dev.improve.vrcode.AiProvider
+import dev.improve.vrcode.AiThinking
 import dev.improve.vrcode.VoiceMic
 import dev.improve.vrcode.dock.DockPlacement
 import dev.improve.vrcode.hands.HandInput
 import dev.improve.vrcode.hands.RightFistInput
 import dev.improve.vrcode.speech.SpeechLink
-import dev.improve.xmux.client.Key
 import dev.improve.xmux.client.ScreenId
 import dev.improve.xmux.client.TerminalHandle
 import dev.improve.xmux.client.TerminalId
@@ -48,16 +49,17 @@ import kotlinx.coroutines.CoroutineScope
 /**
  * Voice mode end to end, for any activity that hosts xmux. Two fists, two modes:
  * - right fist: plain dictation, typed exactly as said;
- * - left fist: speak to the AI, which turns what was said into the input for the focused pane (a
- *   shell command, or a prompt for a coding agent) using that pane's screen.
+ * - left fist: speak to the AI, which turns what was said into keystrokes for the focused pane (a
+ *   shell command, a prompt for a coding agent, or keys for a menu or running program) using
+ *   everything on that pane's screen and its cursor.
  * Like dictation on a Mac, voice goes to the focused pane ([focus] keeps one focused whenever a
  * terminal window is open): when the fist opens, the pane focused at that moment is the target, and
- * the text is typed there as soon as the Mac finalizes it (dictation) or the AI answers. Nothing
- * presses Enter unless that mic's Enter-after toggle is on (each mic has its own, remembered; both
- * start off, so AI text waits at the prompt to review).
+ * the text is typed there as soon as the Mac finalizes it (dictation) or the AI answers. The AI
+ * decides whether to press Enter (its keystrokes include it); a dictation is followed by Enter only
+ * when the text mic's Enter-after toggle is on (remembered; off by default).
  * The live voice pane floats just above the mic in the fist while it is closed; the other hand
- * presses its buttons: the Enter-after toggle in the corner nearest that hand, Cancel and Clear at
- * the far end. It hides when the fist opens,
+ * presses its buttons: on a dictation the Enter-after toggle in the corner nearest that hand, and
+ * Cancel and Clear at the far end. It hides when the fist opens,
  * unless the text could not be typed (no terminal, the AI failed): then it stays, staged, for a
  * left pinch on a terminal pane (or its Paste button) to paste it.
  * The host calls [onSceneReady], [onSceneTick] and [close], and [connectSpeech] with the Mac's
@@ -77,7 +79,7 @@ class VoiceFeature(
   private val rightFist = RightFistInput(activity, predictedTimeNs)
   private val link: SpeechLink = SpeechLink(scope) { voice.onSpeechEvent(it) }
   val voice: VoiceController =
-    VoiceController(link, aiContext = ::paneContext, deliver = ::deliver, aiProvider = { aiProvider.storageValue }) {
+    VoiceController(link, aiContext = ::paneContext, deliver = ::deliver, aiModel = { aiModel }, aiThinking = { aiThinking }) {
       activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     }
 
@@ -88,17 +90,19 @@ class VoiceFeature(
   private val targets = mutableStateMapOf<VoiceNote, Target>()
 
   /** The hand whose fist started the live dictation; only that hand opening ends it. */
-  private enum class VoiceHand { Left, Right }
+  enum class VoiceHand { Left, Right }
 
   /** State, so the live pane mirrors its buttons when the other fist takes over a pane. */
   private var voiceHand by mutableStateOf<VoiceHand?>(null)
 
-  /** Each mic's Enter-after toggle survives restarts (and reinstalls). */
+  /** The hand holding the mic while it is listening; null when the mic is off. */
+  val micHand: VoiceHand? get() = voiceHand.takeIf { voice.listening != null }
+
+  /** The text mic's Enter-after toggle survives restarts (and reinstalls). */
   private val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
   init {
     voice.enterAfterDictation = prefs.getBoolean(PREF_ENTER_DICTATION, false)
-    voice.enterAfterAi = prefs.getBoolean(PREF_ENTER_AI, false)
   }
 
   /** Eases the live pane after the mic in the fist (see [MicPanePlacement]). */
@@ -137,6 +141,12 @@ class VoiceFeature(
   private var selectedProp = VoiceProp.NewsMicrophone
   /** The AI mic's model provider; the news microphone's flag shows its logo. */
   private var aiProvider = AiProvider.Claude
+  /** The model the AI mic asks, one of [aiProvider]'s. */
+  private var aiModel = AiProvider.Claude.defaultModel
+  /** Whether the AI mic runs the provider's agent on the Mac first, and where its thinking shows. */
+  private var aiThinking = AiThinking.Above
+  /** The agent's thinking, on a panel above or below the window it will type into. */
+  private val thinkingPanels = ThinkingPanels(xmux) { voice.stopAi(it) }
   private var selectedAsset = VoiceProp.Microphone.assetPath(aiProvider)
   /** Prop models in the APK: a missing one would abort the app in the glTF loader. */
   private val bundledProps: Set<String> by lazy { activity.assets.list("voice-props")?.toSet().orEmpty() }
@@ -180,7 +190,7 @@ class VoiceFeature(
   /**
    * Debug builds only: drives voice mode without hands, e.g.
    * `adb shell am broadcast -a dev.improve.vrcode.VOICE --es cmd start` (start, ai, stop, cancel,
-   * clear, delete, paste; `enter` presses the Enter-after toggle, `--es mic ai` for the AI mic's;
+   * clear, delete, paste, stop-ai, ask with `--es text "..."`; `enter` presses the text mic's Enter-after toggle;
    * `prop` toggles a preview of the voice prop in front of the head).
    */
   private val debugReceiver =
@@ -193,24 +203,29 @@ class VoiceFeature(
           "cancel" -> voice.cancelListening() // the pane's Cancel button
           "clear" -> voice.clearListening() // the pane's Clear button
           "delete" -> voice.selected?.let(voice::remove)
+          // `--es cmd ask --es text "run the tests"`: the AI mic, as if that was just said.
+          "ask" -> voice.askAiWith(intent.getStringExtra("text") ?: "") { note -> focusedTarget()?.let { targets[note] = it } }
+          "stop-ai" -> voice.notes.lastOrNull { it.phase == VoiceNote.Phase.Thinking }?.let(voice::stopAi) // the thinking panel's Stop
           "paste", "insert" -> voice.selected?.let(::pasteIntoFocused)
-          "enter" -> toggleEnterAfter(if (intent.getStringExtra("mic") == "ai") VoiceNote.Mode.Ai else VoiceNote.Mode.Passthrough)
+          "enter" -> toggleEnterAfter()
           "prop" -> {
             debugMic = if (intent.getStringExtra("mic") == "text") VoiceMic.Text else VoiceMic.Ai
             propPreview = !propPreview
           }
         }
-        Log.i(TAG, "debug voice ${intent.getStringExtra("cmd")}: panes=${voice.notes.map { "${it.id}:${it.mode}:${it.phase}:\"${it.output}\"" }}")
+        Log.i(TAG, "debug voice ${intent.getStringExtra("cmd")}: panes=${voice.notes.map { "${it.id}:${it.mode}:${it.phase}:${it.output}" }}")
       }
     }
   private var debugRegistered = false
 
   /** The preference also applies immediately if voice mode is already active. */
-  fun setVoiceProps(text: VoiceProp, ai: VoiceProp, provider: AiProvider) {
+  fun setVoiceProps(text: VoiceProp, ai: VoiceProp, model: AiModel, thinking: AiThinking = AiThinking.Above) {
     textProp = text
     aiProp = ai
-    aiProvider = provider
-    Log.i(TAG, "voice props: text=${text.storageValue} right hand; AI=${ai.storageValue} left hand; AI provider=${provider.storageValue}")
+    aiProvider = model.provider
+    aiModel = model
+    aiThinking = thinking
+    Log.i(TAG, "voice props: text=${text.storageValue} right hand; AI=${ai.storageValue} left hand; AI model=${model.provider.storageValue}/${model.id}; thinking=${thinking.storageValue}")
   }
 
   fun onSceneTick(allowGestures: Boolean = true, previewMic: VoiceMic? = null) {
@@ -234,6 +249,7 @@ class VoiceFeature(
     // Resolve the prop first: the pane and badge use its visibility in this same frame.
     placeProp()
     syncPanes()
+    if (sceneReady) thinkingPanels.tick(voice.notes, { targets[it]?.window }, aiThinking != AiThinking.Below, now)
     placeMarker()
     if (allowGestures && hands.leftPinched) onLeftPinch()
   }
@@ -270,26 +286,45 @@ class VoiceFeature(
     return xmux.focusedTerminal()?.let { it to window }
   }
 
-  /** The target pane's visible text (bottom [CONTEXT_LINES] rows) and title, for the AI. */
+  /**
+   * Everything on the target pane's screen, its title and its cursor, for the AI. Read when the AI
+   * is asked (once the Mac has finished the transcript), so it is what the pane shows at that
+   * moment. Every row from the top is kept, so the cursor's row indexes the lines; only blank rows
+   * below both the text and the cursor are dropped.
+   */
   private fun paneContext(note: VoiceNote): AiContext? {
     val (handle, window) = handleFor(targets[note]) ?: return null
+    // cmux's id for the terminal, so the Mac can run the agent in its working directory.
+    val terminal = (targets[note]?.terminal ?: window?.focusedTerminal)?.let { window?.session?.topology?.value?.terminals?.get(it)?.cmuxId }
     val grid = handle.grid.value
-    val lines = (0 until grid.rows).map { grid.rowText(it) }.dropLastWhile { it.isBlank() }.takeLast(CONTEXT_LINES)
-    return AiContext(lines.joinToString("\n"), window?.state?.title ?: "")
+    val cursor = handle.cursor.value
+    val lines = (0 until grid.rows).map { grid.rowText(it) }
+    val last = maxOf(lines.indexOfLast { it.isNotBlank() }, cursor.row.coerceIn(-1, grid.rows - 1))
+    return AiContext(
+      lines.take(last + 1).joinToString("\n"),
+      window?.state?.title ?: "",
+      AiContext.Cursor(cursor.row, cursor.col, cursor.visible),
+      terminal,
+    )
   }
 
   /**
-   * Types a ready voice pane into its target (no review step, like dictation on a Mac), then Enter
-   * if its mic's toggle is on. The AI mic's is off by default, so its command or prompt waits at the
-   * prompt to be checked.
+   * Types a ready voice pane into its target (no review step, like dictation on a Mac): the AI's
+   * keystrokes as given (Enter only if the AI pressed it), or a dictation followed by Enter if the
+   * text mic's toggle is on.
    */
   private fun deliver(note: VoiceNote): Boolean {
     val (handle, window) = handleFor(targets.remove(note)) ?: return false
-    val text = voice.take(note) ?: return false
-    type(handle, text, enter = voice.enterAfter(note.mode))
-    Log.i(TAG, "voice: typed pane ${note.id} (${note.mode}, ${text.length} chars) into screen ${window?.screen?.value} \"${window?.state?.title}\"")
+    val steps = voice.take(note) ?: return false
+    Keystroke.send(handle, steps)
+    Log.i(TAG, "voice: typed pane ${note.id} (${note.mode}, ${describe(steps)}) into screen ${window?.screen?.value} \"${window?.state?.title}\"")
     return true
   }
+
+  /** [steps] for the log without what they type: `12 chars, enter`. */
+  private fun describe(steps: List<Keystroke>): String =
+    (listOf("${steps.filterIsInstance<Keystroke.Text>().sumOf { it.text.length }} chars") +
+      steps.filterIsInstance<Keystroke.Press>().map { it.chord }).joinToString(", ")
 
   /** How [screen]'s header shows voice: focused, listening into it, or about to type there. */
   private fun targetOf(screen: ScreenId): VoiceTarget? {
@@ -297,6 +332,9 @@ class VoiceFeature(
     val live = voice.listening
     return when {
       focused && live != null -> if (live.mode == VoiceNote.Mode.Ai) VoiceTarget.TalkingToAi else VoiceTarget.Dictating
+      targets.any { (note, target) ->
+        target.window.screen == screen && note in voice.notes && note.phase == VoiceNote.Phase.Thinking && note.agent
+      } -> VoiceTarget.Thinking
       targets.any { (note, target) -> target.window.screen == screen && note in voice.notes && note.phase != VoiceNote.Phase.Ready } ->
         VoiceTarget.Typing
       focused -> VoiceTarget.Focused
@@ -314,6 +352,7 @@ class VoiceFeature(
     if (debugRegistered) activity.unregisterReceiver(debugReceiver)
     debugRegistered = false
     voice.shutdown()
+    thinkingPanels.close()
     link.close()
     hands.close()
     rightFist.close()
@@ -340,31 +379,26 @@ class VoiceFeature(
     val terminal = hit.terminal ?: return
     val session = hit.window.session ?: return
     val note = voice.selected ?: return
-    val text = voice.take(note) ?: return
+    val steps = voice.take(note) ?: return
     xmux.focus(hit.window, hit.pane)
-    type(session.terminal(terminal), text, enter = voice.enterAfter(note.mode))
-    Log.i(TAG, "voice: pasted pane ${note.id} (${text.length} chars) into terminal ${terminal.value}")
+    Keystroke.send(session.terminal(terminal), steps)
+    Log.i(TAG, "voice: pasted pane ${note.id} (${describe(steps)}) into terminal ${terminal.value}")
   }
 
   /** Pastes [note] into the focused terminal pane and removes it. */
   fun pasteIntoFocused(note: VoiceNote) {
     val handle = xmux.focusedTerminal() ?: return
-    val text = voice.take(note) ?: return
-    type(handle, text, enter = voice.enterAfter(note.mode))
-    Log.i(TAG, "voice: pasted pane ${note.id} (${text.length} chars) into the focused terminal")
+    val steps = voice.take(note) ?: return
+    Keystroke.send(handle, steps)
+    Log.i(TAG, "voice: pasted pane ${note.id} (${describe(steps)}) into the focused terminal")
   }
 
-  private fun type(handle: TerminalHandle, text: String, enter: Boolean) {
-    handle.write(text)
-    if (enter) handle.keys(Key("enter"))
-  }
-
-  /** The pane's Enter-after button: flips [mode]'s mic toggle and remembers it. */
-  private fun toggleEnterAfter(mode: VoiceNote.Mode) {
-    val on = !voice.enterAfter(mode)
-    voice.setEnterAfter(mode, on)
-    prefs.edit().putBoolean(if (mode == VoiceNote.Mode.Ai) PREF_ENTER_AI else PREF_ENTER_DICTATION, on).apply()
-    Log.i(TAG, "voice: Enter after ${if (mode == VoiceNote.Mode.Ai) "AI" else "dictation"} ${if (on) "on" else "off"}")
+  /** A dictation pane's Enter-after button: flips the text mic's toggle and remembers it. */
+  private fun toggleEnterAfter() {
+    val on = !voice.enterAfterDictation
+    voice.enterAfterDictation = on
+    prefs.edit().putBoolean(PREF_ENTER_DICTATION, on).apply()
+    Log.i(TAG, "voice: Enter after dictation ${if (on) "on" else "off"}")
   }
 
   /**
@@ -453,7 +487,7 @@ class VoiceFeature(
       xmux.mountPanel(PANE_WIDTH_PX, PANE_HEIGHT_PX, Placement.InFrontOfHead) {
         slot.note?.let {
           VoiceBubble(it, voice, target = focusedTitle(), freeHandLeft = freeHandLeft(it), onPasteFocused = ::pasteIntoFocused,
-            onCancel = voice::cancelListening, onClear = voice::clearListening, onToggleEnter = { toggleEnterAfter(it.mode) })
+            onCancel = voice::cancelListening, onClear = voice::clearListening, onToggleEnter = ::toggleEnterAfter)
         }
       }
     entity.setComponent(Visible(false))
@@ -567,10 +601,8 @@ class VoiceFeature(
     private const val PANE_HEIGHT_PX = 230
     private const val MARKER_PX = 96
     private const val ABOVE_DOCK_GAP_M = 0.015f
-    private const val CONTEXT_LINES = 60
     private const val PREVIEW_DISTANCE_M = 0.4f
     private const val PREFS = "voice"
     private const val PREF_ENTER_DICTATION = "enter_after_dictation"
-    private const val PREF_ENTER_AI = "enter_after_ai"
   }
 }

@@ -86,6 +86,9 @@ final class Client: @unchecked Sendable {
   private let frameStream: AsyncStream<Frame>
   private var utterance: Utterance?
   private let name: String
+  /// Agent runs in flight, by AI_REQUEST id, so AI_CANCEL or a disconnect can stop them.
+  private let aiLock = NSLock()
+  private var aiTasks: [UInt32: Task<Void, Never>] = [:]
 
   init(connection: NWConnection, speech: SpeechServiceState, cmuxEndpoint: CmuxEndpoint, allowControl: Bool, onClose: @escaping () -> Void) {
     self.connection = connection
@@ -143,6 +146,7 @@ final class Client: @unchecked Sendable {
     }
     await utterance?.cancel()
     utterance = nil
+    aiLock.withLock { aiTasks.values.forEach { $0.cancel() }; aiTasks.removeAll() }
     cmux.close()
   }
 
@@ -217,19 +221,39 @@ final class Client: @unchecked Sendable {
       let info = frame.json() ?? [:]
       let id = frame.id
       let transcript = info["transcript"] as? String ?? ""
-      let screen = info["screen"] as? String ?? ""
-      let title = info["title"] as? String ?? ""
+      let cursor = info["cursor"] as? [String: Any]
+      let pane = AiService.Pane(
+        screen: info["screen"] as? String ?? "",
+        title: info["title"] as? String ?? "",
+        cursorRow: cursor?["visible"] as? Bool == false ? nil : (cursor?["row"] as? NSNumber)?.intValue,
+        cursorCol: (cursor?["col"] as? NSNumber)?.intValue ?? 0
+      )
       let provider = AiProvider.from(info["provider"] as? String)
+      let model = provider.model(info["model"] as? String)
+      if info["agent"] as? Bool == true {
+        runAgent(id: id, provider: provider, model: model, transcript: transcript, pane: pane, terminal: info["terminal"] as? String)
+        return
+      }
       Task { [weak self] in
         do {
-          let text = try await AiService.complete(provider: provider, transcript: transcript, screen: screen, title: title)
-          log("ai \(id) (\(provider.rawValue)): \(text.count) chars")
-          self?.send(.aiResult, id: id, body: jsonBody(["text": text, "provider": provider.rawValue, "model": provider.model]))
+          let steps = try await AiService.complete(provider: provider, model: model, transcript: transcript, pane: pane)
+          log("ai \(id) (\(provider.rawValue) \(model)): \(AiKeystroke.summary(steps))")
+          // `text` is what the steps type, for headset builds that predate `keys`.
+          let typed = steps.compactMap { step -> String? in if case .text(let text) = step { return text } else { return nil } }.joined()
+          self?.send(.aiResult, id: id, body: jsonBody([
+            "keys": steps.map(\.json), "text": typed, "provider": provider.rawValue, "model": model,
+          ]))
         } catch {
           self?.sendError("\(error)", id: id)
         }
       }
-    case .welcome, .transcript, .error, .cmuxEvent, .aiResult, .none:
+    case .aiCancel:
+      let task = aiLock.withLock { aiTasks.removeValue(forKey: frame.id) }
+      if let task {
+        task.cancel()
+        log("ai \(frame.id): cancelled by the headset")
+      }
+    case .welcome, .transcript, .error, .cmuxEvent, .aiResult, .aiProgress, .none:
       break
     }
   }
@@ -248,6 +272,37 @@ final class Client: @unchecked Sendable {
         self?.sendLock.withLock { self?.pendingSendBytes -= data.count }
       })
     }
+  }
+
+  /**
+   * Thinking mode: runs the provider's agent CLI in the target terminal's working directory (from
+   * cmux), streams what it does as AI_PROGRESS, then answers with AI_RESULT (adding `summary`) or
+   * ERROR. A cancelled run (AI_CANCEL, or the headset left) sends nothing more.
+   */
+  private func runAgent(id: UInt32, provider: AiProvider, model: String, transcript: String, pane: AiService.Pane, terminal: String?) {
+    let endpoint = cmuxEndpoint
+    let report: @Sendable (AiAgent.Progress) -> Void = { [weak self] progress in
+      self?.send(.aiProgress, id: id, body: jsonBody(progress.json))
+    }
+    let task = Task { [weak self] in
+      let cwd = terminal.flatMap { AiAgent.workingDirectory(endpoint: endpoint, terminal: $0) }
+      let started = Date()
+      do {
+        let answer = try await AiAgent.run(provider: provider, model: model, transcript: transcript, pane: pane, cwd: cwd, progress: report)
+        let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
+        log("ai \(id) (agent \(provider.rawValue) \(model), \(seconds) s): \(AiKeystroke.summary(answer.steps))")
+        let typed = answer.steps.compactMap { step -> String? in if case .text(let text) = step { return text } else { return nil } }.joined()
+        self?.send(.aiResult, id: id, body: jsonBody([
+          "keys": answer.steps.map(\.json), "text": typed, "summary": answer.summary, "provider": provider.rawValue, "model": model,
+        ]))
+      } catch is CancellationError {
+        log("ai \(id): agent stopped")
+      } catch {
+        if !Task.isCancelled { self?.sendError("\(error)", id: id) }
+      }
+      self?.aiLock.withLock { _ = self?.aiTasks.removeValue(forKey: id) }
+    }
+    aiLock.withLock { aiTasks[id] = task }
   }
 
   private func sendError(_ message: String, id: UInt32) {

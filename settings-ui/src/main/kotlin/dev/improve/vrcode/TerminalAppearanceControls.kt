@@ -11,6 +11,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -126,15 +127,24 @@ fun TerminalAppearancePreview(settings: AppSettings) {
     }
   }
   val state = remember { TerminalWindowState("Preview").apply { loading = false } }
-  val chrome = remember(settings.terminalTheme) { WindowChrome().withTerminalTheme(settings.terminalTheme) }
-  Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(chrome.bodyColor)).testTag("settings-terminal-preview")) {
+  val opacity = settings.windowOpacity
+  val chrome = remember(settings.terminalTheme, opacity) { WindowChrome().withTerminalTheme(settings.terminalTheme, opacity) }
+  val shape = RoundedCornerShape(12.dp)
+  // A stand-in for the room, which shows through a translucent window as it would in the headset.
+  // A translucent grid paints its own background, so the frame stays clear rather than doubling it.
+  Column(
+    Modifier.fillMaxWidth().clip(shape).background(PREVIEW_ROOM)
+      .background(if (opacity < 1f) Color.Transparent else Color(chrome.bodyColor)).testTag("settings-terminal-preview"),
+  ) {
     Box(Modifier.clearAndSetSemantics {}) { VrcodeWindowHeader(state, settings.windowStyle, chrome) }
     key(font) {
       AndroidView(
         factory = { TerminalGridView(it, grid, font) },
-        update = { it.appearance = settings.gridAppearance() },
+        update = { it.appearance = settings.gridAppearance(); it.backgroundOpacity = opacity },
         modifier = Modifier.fillMaxWidth().height((font.cellHeight * grid.rows + 20f).dp).clearAndSetSemantics {},
       )
     }
   }
 }
+
+private val PREVIEW_ROOM = Brush.linearGradient(listOf(Color(0xFFE9C46A), Color(0xFF8AB6D6), Color(0xFF9CC5A1), Color(0xFFE76F51)))

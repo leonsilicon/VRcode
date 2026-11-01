@@ -62,6 +62,22 @@ git -C ../../leonsilicon/xmux apply "$(pwd)/patches/xmux-custom-header.patch"
 git -C ../../leonsilicon/xmux apply "$(pwd)/patches/xmux-terminal-appearance.patch"
 ```
 
+Window opacity (2026-11-01) needs [`patches/xmux-window-opacity.patch`](../patches/xmux-window-opacity.patch),
+applied after the patches above:
+
+```sh
+git -C ../../leonsilicon/xmux apply "$(pwd)/patches/xmux-window-opacity.patch"
+```
+
+It adds `backgroundOpacity` (0–1) to `ScreenView` and `TerminalGridView`, with their API dumps.
+Below 1, each pane's grid paints its default background at that opacity over its whole area, and
+the screen paints `bodyColor` at that opacity only around the shown panes, so no pixel gets two
+translucent layers. Inverse video and the block cursor's glyph still use the opaque background
+color, so they keep their contrast. `ScreenView` now paints `bodyColor` itself (VRcode no longer
+sets a view background), and VRcode builds terminal window frames with a clear `bodyColor` so the
+frame does not fill in behind the translucent body. The header takes the same opacity through
+`WindowChrome.withTerminalTheme(theme, opacity)`.
+
 These changes are already applied to the current local checkout. Do not apply them twice.
 
 The app reapplies the current display overrides after each topology update, including newly
